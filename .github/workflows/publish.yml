@@ -117,15 +117,31 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          # cargo publish waits until each crate is in the index before the next one, which depends on it
-          for c in $CRATES; do cargo publish --locked -p "$c"; done
+          # cargo publish waits until each crate is in the index before the next one, which depends on it; a version
+          # already on crates.io is left as it is, so a run can be repeated after a later step failed
+          for c in $CRATES; do
+            v=$(cargo metadata --format-version 1 --no-deps --locked | jq -r --arg c "$c" '.packages[] | select(.name == $c) | .version')
+            if curl -fsS -o /dev/null -A "celobus-sdk-publish (https://github.com/celobus/sdk)" "https://crates.io/api/v1/crates/$c/$v"; then
+              echo "$c $v is on crates.io already"
+              continue
+            fi
+            cargo publish --locked -p "$c"
+          done
 
       # npm: an automation token for the first release. Afterwards, configure trusted publishing for this workflow on
       # npmjs.com, drop NODE_AUTH_TOKEN and the secret: npm publish then authenticates with the run's OIDC token.
       - name: npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish packages/celobus-sdk-*.tgz --provenance --access public
+        run: |
+          # a path, not packages/<name>: npm would read that as a GitHub repository
+          tgz=$(ls ./packages/celobus-sdk-*.tgz)
+          v=$(jq -r .version sdk/node/package.json)
+          if npm view "@celobus/sdk@$v" version >/dev/null 2>&1; then
+            echo "@celobus/sdk $v is on npm already"
+          else
+            npm publish "$tgz" --provenance --access public
+          fi
 
       # NuGet: trusted publishing (a policy on nuget.org for this repository and workflow, owned by the nuget.org user in the secret NUGET_USER)
       - uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
@@ -137,3 +153,4 @@ jobs:
           dotnet nuget push packages/*.nupkg
           --api-key "${{ steps.nuget.outputs.NUGET_API_KEY }}"
           --source https://api.nuget.org/v3/index.json
+          --skip-duplicate

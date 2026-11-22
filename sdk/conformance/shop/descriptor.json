@@ -1,0 +1,4108 @@
+{
+  "agents": [
+    {
+      "connection": "models",
+      "delegates": [
+        "packer"
+      ],
+      "description": "Answers questions about orders.",
+      "engine": "codex",
+      "icon": "package",
+      "model": "gpt-5.5",
+      "name": "helper",
+      "roles": [
+        "clerk"
+      ],
+      "session": true,
+      "skills": [
+        "order-notes"
+      ],
+      "ssh_key": true,
+      "timeout_s": 900,
+      "title": "Order helper",
+      "topic": "orders"
+    },
+    {
+      "admin": true,
+      "description": "Says how an order is packed.",
+      "name": "packer",
+      "roles": []
+    }
+  ],
+  "capabilities": [],
+  "connections": [
+    {
+      "description": "The model provider the order helper runs on.",
+      "kind": "llm",
+      "name": "models",
+      "title": "Order models"
+    },
+    {
+      "kind": "stt",
+      "name": "speech"
+    }
+  ],
+  "dependencies": [],
+  "description": "",
+  "endpoints": [
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "ListOrdersRequest",
+      "name": "ListOrders",
+      "output": "ListOrdersResponse",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "GetOrderRequest",
+      "name": "GetOrder",
+      "output": "Order",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "optional",
+      "input": "CancelOrderRequest",
+      "invalidates": [
+        {
+          "topic": "orders"
+        },
+        {
+          "key": [
+            {
+              "field": "id",
+              "from": "id"
+            }
+          ],
+          "topic": "order"
+        }
+      ],
+      "name": "CancelOrder",
+      "output": "Order",
+      "roles": [
+        "clerk"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "CountOpenRequest",
+      "name": "CountOpen",
+      "output": "CountResponse",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "SalesRequest",
+      "name": "Sales",
+      "output": "SalesResponse",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "TopProductsRequest",
+      "name": "TopProducts",
+      "output": "TopProductsResponse",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "GetActivityRequest",
+      "name": "GetActivity",
+      "output": "ActivityView",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "GetLiveRequest",
+      "name": "GetLive",
+      "output": "LiveView",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "GetWatchersRequest",
+      "name": "GetWatchers",
+      "output": "WatchersView",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "PreviewNoteRequest",
+      "name": "PreviewNote",
+      "output": "PreviewView",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "off",
+      "input": "GetJobRequest",
+      "name": "GetJob",
+      "output": "JobView",
+      "read_only": true,
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "optional",
+      "input": "AddNoteRequest",
+      "invalidates": [
+        {
+          "topic": "orders"
+        }
+      ],
+      "name": "AddNote",
+      "output": "AddNoteResponse",
+      "roles": [],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "optional",
+      "input": "NoteActionRequest",
+      "name": "NoteAction",
+      "output": "Done",
+      "roles": [],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "optional",
+      "input": "WatchRequest",
+      "name": "Watch",
+      "output": "Done",
+      "roles": [],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
+      "idempotency": "optional",
+      "input": "AssignRequest",
+      "name": "Assign",
+      "output": "Done",
+      "roles": [],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    }
+  ],
+  "entities": [],
+  "enums": [
+    {
+      "name": "OrderStatus",
+      "values": [
+        "placed",
+        "paid",
+        "cancelled"
+      ]
+    }
+  ],
+  "id": "shop",
+  "messages": [
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "status",
+          "number": 1,
+          "optional": true,
+          "repeated": false,
+          "type": "enum:OrderStatus"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "page_token",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "page_size",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        }
+      ],
+      "kind": "message",
+      "name": "ListOrdersRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "orders",
+          "number": 1,
+          "optional": false,
+          "repeated": true,
+          "type": "message:Order"
+        },
+        {
+          "description": "",
+          "name": "next_page_token",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "total",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "ListOrdersResponse"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "uuid"
+        },
+        {
+          "description": "",
+          "name": "number",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "customer",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "email",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "total",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        },
+        {
+          "description": "",
+          "name": "currency",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "status",
+          "number": 7,
+          "optional": false,
+          "repeated": false,
+          "type": "enum:OrderStatus"
+        },
+        {
+          "description": "",
+          "name": "placed_at",
+          "number": 8,
+          "optional": false,
+          "repeated": false,
+          "type": "timestamp"
+        }
+      ],
+      "kind": "message",
+      "name": "Order"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "uuid"
+        }
+      ],
+      "kind": "message",
+      "name": "GetOrderRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "uuid"
+        },
+        {
+          "description": "",
+          "name": "reason",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "CancelOrderRequest"
+    },
+    {
+      "description": "",
+      "fields": [],
+      "kind": "message",
+      "name": "CountOpenRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "count",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "CountResponse"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "channel",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "range",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "SalesRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "days",
+          "number": 1,
+          "optional": false,
+          "repeated": true,
+          "type": "message:DaySales"
+        },
+        {
+          "description": "",
+          "name": "revenue",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        }
+      ],
+      "kind": "message",
+      "name": "SalesResponse"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "day",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "channel",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "total",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        },
+        {
+          "description": "",
+          "name": "online",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        },
+        {
+          "description": "",
+          "name": "retail",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        }
+      ],
+      "kind": "message",
+      "name": "DaySales"
+    },
+    {
+      "description": "",
+      "fields": [],
+      "kind": "message",
+      "name": "TopProductsRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "products",
+          "number": 1,
+          "optional": false,
+          "repeated": true,
+          "type": "message:Product"
+        }
+      ],
+      "kind": "message",
+      "name": "TopProductsResponse"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "name",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "revenue",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        },
+        {
+          "description": "",
+          "name": "units",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        }
+      ],
+      "kind": "message",
+      "name": "Product"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "order",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "page_token",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "tab",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "GetActivityRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "title",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "status",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "ends",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "notes",
+          "number": 4,
+          "optional": false,
+          "repeated": true,
+          "type": "message:Note"
+        },
+        {
+          "description": "",
+          "name": "people",
+          "number": 5,
+          "optional": false,
+          "repeated": true,
+          "type": "message:Person"
+        },
+        {
+          "description": "",
+          "name": "older_page_token",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "pinned",
+          "number": 7,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        },
+        {
+          "description": "",
+          "name": "closed",
+          "number": 8,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        },
+        {
+          "description": "",
+          "name": "placeholder",
+          "number": 9,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "watching",
+          "number": 10,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "ActivityView"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "by",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "time",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "kind",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "edited",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        },
+        {
+          "description": "",
+          "name": "mine",
+          "number": 7,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        },
+        {
+          "description": "",
+          "name": "pinned",
+          "number": 8,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        },
+        {
+          "description": "",
+          "name": "receipt",
+          "number": 9,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "receipt_tone",
+          "number": 10,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "reactions",
+          "number": 11,
+          "optional": false,
+          "repeated": true,
+          "type": "message:Reaction"
+        },
+        {
+          "description": "",
+          "name": "replies",
+          "number": 12,
+          "optional": true,
+          "repeated": false,
+          "type": "message:Replies"
+        },
+        {
+          "description": "",
+          "name": "job",
+          "number": 13,
+          "optional": true,
+          "repeated": false,
+          "type": "message:Job"
+        },
+        {
+          "description": "",
+          "name": "job_id",
+          "number": 14,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Note"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "emoji",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "count",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        },
+        {
+          "description": "",
+          "name": "mine",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "Reaction"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "count",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        },
+        {
+          "description": "",
+          "name": "last",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Replies"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "state",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "label",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "meta",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "started",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "rows",
+          "number": 5,
+          "optional": false,
+          "repeated": true,
+          "type": "message:JobStep"
+        },
+        {
+          "description": "",
+          "name": "steps",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        },
+        {
+          "description": "",
+          "name": "retry_label",
+          "number": 7,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Job"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "kind",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "detail",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "JobStep"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "avatar",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "agent",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        },
+        {
+          "description": "",
+          "name": "icon",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "engine",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "role",
+          "number": 7,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "online",
+          "number": 8,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "Person"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "order",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "GetLiveRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "notes",
+          "number": 1,
+          "optional": false,
+          "repeated": true,
+          "type": "message:Note"
+        },
+        {
+          "description": "",
+          "name": "people",
+          "number": 2,
+          "optional": false,
+          "repeated": true,
+          "type": "message:Person"
+        },
+        {
+          "description": "",
+          "name": "jobs",
+          "number": 3,
+          "optional": false,
+          "repeated": true,
+          "type": "message:Packing"
+        },
+        {
+          "description": "",
+          "name": "label",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "hint",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "can_stop",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "LiveView"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "job",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "agent",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "icon",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "engine",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "state",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "since",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "until",
+          "number": 7,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "sub",
+          "number": 8,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "note",
+          "number": 9,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Packing"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "order",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "GetWatchersRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "people",
+          "number": 1,
+          "optional": false,
+          "repeated": true,
+          "type": "message:Person"
+        }
+      ],
+      "kind": "message",
+      "name": "WatchersView"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "order",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "PreviewNoteRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "hint",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "PreviewView"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "call",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "GetJobRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "title",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "call",
+          "number": 2,
+          "optional": true,
+          "repeated": false,
+          "type": "message:JobStep"
+        }
+      ],
+      "kind": "message",
+      "name": "JobView"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "order",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "reply",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "urgent",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "AddNoteRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "note",
+          "number": 1,
+          "optional": true,
+          "repeated": false,
+          "type": "message:Note"
+        }
+      ],
+      "kind": "message",
+      "name": "AddNoteResponse"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "note",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "action",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "emoji",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "NoteActionRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "ok",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "Done"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "order",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "watch",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "WatchRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "order",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "people",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "AssignRequest"
+    },
+    {
+      "description": "",
+      "fields": [],
+      "kind": "message",
+      "name": "AllOrders"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "uuid"
+        }
+      ],
+      "kind": "message",
+      "name": "OrderKey"
+    }
+  ],
+  "permissions": [],
+  "roles": [
+    {
+      "default_for": "none",
+      "description": "",
+      "name": "clerk",
+      "strict": false,
+      "title": "Order clerk"
+    }
+  ],
+  "schema": 1,
+  "scopes": [],
+  "title": "Shop",
+  "topics": [
+    {
+      "description": "",
+      "key": "AllOrders",
+      "name": "orders",
+      "roles": [
+        "clerk"
+      ]
+    },
+    {
+      "authorize": "GetOrder",
+      "description": "",
+      "key": "OrderKey",
+      "name": "order"
+    }
+  ],
+  "ui": {
+    "catalog": 3,
+    "commands": [
+      {
+        "icon": "search",
+        "id": "find",
+        "target": {
+          "screen": "orders"
+        },
+        "title": "Find an order"
+      },
+      {
+        "icon": "bar-chart",
+        "id": "week",
+        "target": {
+          "args": [
+            {
+              "field": "range",
+              "value": {
+                "lit": "7"
+              }
+            }
+          ],
+          "screen": "report"
+        },
+        "title": "Sales: last 7 days"
+      }
+    ],
+    "home": [
+      {
+        "id": "sales",
+        "node": {
+          "fallback": {
+            "metric": {
+              "title": "Revenue",
+              "value": {
+                "data": {
+                  "field": "revenue",
+                  "query": "home_sales_days"
+                }
+              }
+            }
+          },
+          "viz": {
+            "bind": [
+              {
+                "from": {
+                  "column": {
+                    "as": "date",
+                    "field": "day",
+                    "query": "home_sales_days"
+                  }
+                },
+                "to": "labels"
+              },
+              {
+                "from": {
+                  "column": {
+                    "field": "total",
+                    "query": "home_sales_days"
+                  }
+                },
+                "to": "values"
+              }
+            ],
+            "family": "line",
+            "kind": "line",
+            "open": {
+              "screen": "report"
+            },
+            "options": {
+              "compact": true
+            }
+          }
+        },
+        "title": "Sales"
+      }
+    ],
+    "landing": "orders",
+    "nav": [
+      {
+        "entries": [
+          {
+            "badge": {
+              "data": {
+                "field": "count",
+                "query": "badge_count"
+              }
+            },
+            "badge_style": "alert",
+            "screen": "orders",
+            "title": {
+              "key": "nav.all"
+            }
+          }
+        ],
+        "icon": "shopping-bag",
+        "title": "Orders"
+      }
+    ],
+    "overlays": [
+      {
+        "actions": [
+          {
+            "name": "alternate_1",
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "id",
+                      "value": {
+                        "param": "id"
+                      }
+                    }
+                  ],
+                  "endpoint": "CancelOrder",
+                  "form": true
+                }
+              },
+              {
+                "close": {}
+              }
+            ]
+          },
+          {
+            "name": "submit_2",
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "id",
+                      "value": {
+                        "param": "id"
+                      }
+                    }
+                  ],
+                  "endpoint": "CancelOrder",
+                  "form": true
+                }
+              },
+              {
+                "toast": {
+                  "text": "Order cancelled"
+                }
+              },
+              {
+                "close": {}
+              }
+            ]
+          }
+        ],
+        "id": "cancel_form",
+        "kind": "dialog",
+        "layout": {
+          "form": {
+            "alternate": {
+              "action": "alternate_1",
+              "label": "Cancel quietly"
+            },
+            "cancel_label": "Keep it",
+            "endpoint": "CancelOrder",
+            "note": "The customer gets an email.",
+            "sections": [
+              {
+                "inputs": [
+                  {
+                    "control": "textarea",
+                    "label": "Why",
+                    "name": "reason",
+                    "required": true
+                  }
+                ]
+              }
+            ],
+            "submit": "submit_2",
+            "submit_label": "Cancel order"
+          }
+        },
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "type": "uuid"
+          }
+        ],
+        "size": "medium",
+        "title": "Cancel order"
+      },
+      {
+        "actions": [
+          {
+            "name": "submit_1",
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "order",
+                      "value": {
+                        "param": "order"
+                      }
+                    }
+                  ],
+                  "endpoint": "Assign",
+                  "form": true
+                }
+              },
+              {
+                "close": {}
+              }
+            ]
+          }
+        ],
+        "id": "assign",
+        "kind": "dialog",
+        "layout": {
+          "form": {
+            "endpoint": "Assign",
+            "notes": [
+              {
+                "text": "An agent works on the order at once.",
+                "visible": {
+                  "gt": [
+                    {
+                      "form": "people.agents"
+                    },
+                    {
+                      "lit": "0"
+                    }
+                  ]
+                }
+              }
+            ],
+            "sections": [
+              {
+                "inputs": [
+                  {
+                    "control": "pick",
+                    "label": "People",
+                    "name": "people",
+                    "pick": {
+                      "agent": "agent",
+                      "avatar": "avatar",
+                      "detail": "role",
+                      "empty": "Nobody matches",
+                      "empty_done": "Everyone is assigned",
+                      "engine": "engine",
+                      "exclude": {
+                        "lit": []
+                      },
+                      "icon": "icon",
+                      "label": "name",
+                      "query": "directory",
+                      "value": "name"
+                    },
+                    "placeholder": "Find people",
+                    "required": true
+                  }
+                ]
+              }
+            ],
+            "submit": "submit_1",
+            "submit_label": {
+              "args": {
+                "first": {
+                  "form": "people.first"
+                }
+              },
+              "key": "assign.submit"
+            }
+          }
+        },
+        "params": [
+          {
+            "name": "order",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "queries": [
+          {
+            "args": [
+              {
+                "field": "order",
+                "value": {
+                  "param": "order"
+                }
+              }
+            ],
+            "endpoint": "GetWatchers",
+            "name": "directory",
+            "rows": "people"
+          }
+        ],
+        "size": "medium",
+        "title": "Assign"
+      }
+    ],
+    "queries": [
+      {
+        "endpoint": "CountOpen",
+        "follow": [
+          {
+            "min_interval_ms": 2000,
+            "topic": "orders"
+          }
+        ],
+        "name": "badge_count"
+      },
+      {
+        "endpoint": "Sales",
+        "name": "home_sales_days",
+        "rows": "days"
+      }
+    ],
+    "screens": [
+      {
+        "actions": [
+          {
+            "name": "open",
+            "steps": [
+              {
+                "navigate": {
+                  "args": [
+                    {
+                      "field": "id",
+                      "value": {
+                        "row": "id"
+                      }
+                    }
+                  ],
+                  "screen": "order"
+                }
+              }
+            ]
+          },
+          {
+            "name": "cancel",
+            "on_error": [
+              {
+                "toast": {
+                  "error": true,
+                  "tone": "danger"
+                }
+              }
+            ],
+            "steps": [
+              {
+                "confirm": {
+                  "cancel_label": "Keep it",
+                  "danger": true,
+                  "summary": {
+                    "row": "number"
+                  },
+                  "summary_icon": "receipt",
+                  "text": "The customer is told.",
+                  "title": "Cancel this order?"
+                }
+              },
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "id",
+                      "value": {
+                        "row": "id"
+                      }
+                    }
+                  ],
+                  "endpoint": "CancelOrder"
+                }
+              },
+              {
+                "toast": {
+                  "action": {
+                    "action": "open",
+                    "label": "Open"
+                  },
+                  "description": {
+                    "row": "customer"
+                  },
+                  "text": {
+                    "key": "orders.cancelled"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "id": "orders",
+        "layout": {
+          "stack": {
+            "children": [
+              {
+                "filter_bar": {
+                  "inputs": [
+                    {
+                      "control": "select",
+                      "label": "Status",
+                      "name": "status",
+                      "options": [
+                        {
+                          "label": "Placed",
+                          "value": "placed"
+                        },
+                        {
+                          "label": "Paid",
+                          "value": "paid"
+                        },
+                        {
+                          "label": "Cancelled",
+                          "value": "cancelled"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "table": {
+                  "columns": [
+                    {
+                      "field": "number",
+                      "format": {
+                        "mono": {}
+                      },
+                      "title": "Order"
+                    },
+                    {
+                      "avatar": "customer",
+                      "field": "customer",
+                      "subtitle": "email",
+                      "title": "Customer"
+                    },
+                    {
+                      "align": "end",
+                      "field": "total",
+                      "format": {
+                        "money": {
+                          "currency": "currency"
+                        }
+                      },
+                      "title": "Total"
+                    },
+                    {
+                      "field": "status",
+                      "format": {
+                        "status": {
+                          "tones": {
+                            "paid": "ok",
+                            "placed": "attention"
+                          }
+                        }
+                      },
+                      "title": "Status"
+                    },
+                    {
+                      "field": "placed_at",
+                      "format": {
+                        "relative": {}
+                      },
+                      "title": "Placed"
+                    }
+                  ],
+                  "compact": {
+                    "meta": {
+                      "row": "total"
+                    },
+                    "meta_format": {
+                      "money": {
+                        "currency": "currency"
+                      }
+                    },
+                    "status": {
+                      "field": "status",
+                      "tones": {
+                        "paid": "ok"
+                      }
+                    },
+                    "subtitle": {
+                      "row": "number"
+                    },
+                    "title": {
+                      "row": "customer"
+                    }
+                  },
+                  "count": {
+                    "data": {
+                      "field": "total",
+                      "query": "orders"
+                    }
+                  },
+                  "count_label": {
+                    "args": {
+                      "total": {
+                        "data": {
+                          "field": "total",
+                          "query": "orders"
+                        }
+                      }
+                    },
+                    "key": "orders.count"
+                  },
+                  "open": "open",
+                  "query": "orders",
+                  "row_actions": [
+                    {
+                      "button": {
+                        "action": "cancel",
+                        "emphasis": "danger",
+                        "label": "Cancel"
+                      },
+                      "visible": {
+                        "eq": [
+                          {
+                            "row": "status"
+                          },
+                          {
+                            "lit": "placed"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "direction": "vertical",
+            "gap": "normal"
+          }
+        },
+        "params": [
+          {
+            "name": "status",
+            "required": false,
+            "type": "enum:OrderStatus"
+          }
+        ],
+        "queries": [
+          {
+            "args": [
+              {
+                "field": "status",
+                "value": {
+                  "param": "status"
+                }
+              }
+            ],
+            "endpoint": "ListOrders",
+            "follow": [
+              {
+                "topic": "orders"
+              }
+            ],
+            "name": "orders",
+            "paged": true,
+            "rows": "orders"
+          }
+        ],
+        "title": {
+          "key": "orders.title"
+        }
+      },
+      {
+        "actions": [
+          {
+            "name": "cancel",
+            "steps": [
+              {
+                "open": {
+                  "args": [
+                    {
+                      "field": "id",
+                      "value": {
+                        "param": "id"
+                      }
+                    }
+                  ],
+                  "overlay": "cancel_form"
+                }
+              }
+            ]
+          },
+          {
+            "name": "back",
+            "steps": [
+              {
+                "back": {}
+              }
+            ]
+          },
+          {
+            "name": "remind",
+            "steps": [
+              {
+                "toast": {
+                  "text": "Reminder sent"
+                }
+              }
+            ]
+          }
+        ],
+        "id": "order",
+        "layout": {
+          "stack": {
+            "children": [
+              {
+                "record_header": {
+                  "actions": [
+                    {
+                      "button": {
+                        "action": "cancel",
+                        "emphasis": "danger",
+                        "label": "Cancel order"
+                      },
+                      "visible": {
+                        "eq": [
+                          {
+                            "data": {
+                              "field": "status",
+                              "query": "order"
+                            }
+                          },
+                          {
+                            "lit": "placed"
+                          }
+                        ]
+                      }
+                    }
+                  ],
+                  "close": "back",
+                  "menu": {
+                    "icon": "more-horizontal",
+                    "items": [
+                      {
+                        "action": "remind",
+                        "label": "Send a reminder"
+                      }
+                    ],
+                    "label": "More actions"
+                  },
+                  "subtitle": {
+                    "data": {
+                      "field": "customer",
+                      "query": "order"
+                    }
+                  },
+                  "tags": [
+                    {
+                      "status": {
+                        "tones": {
+                          "paid": "ok"
+                        },
+                        "value": {
+                          "data": {
+                            "field": "status",
+                            "query": "order"
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "title": {
+                    "data": {
+                      "field": "number",
+                      "query": "order"
+                    }
+                  }
+                }
+              },
+              {
+                "columns": {
+                  "children": [
+                    {
+                      "fields": {
+                        "items": [
+                          {
+                            "label": "Customer",
+                            "value": {
+                              "data": {
+                                "field": "customer",
+                                "query": "order"
+                              }
+                            }
+                          },
+                          {
+                            "format": {
+                              "datetime": {}
+                            },
+                            "label": "Placed",
+                            "value": {
+                              "data": {
+                                "field": "placed_at",
+                                "query": "order"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "card": {
+                        "children": [
+                          {
+                            "status": {
+                              "tones": {
+                                "paid": "ok"
+                              },
+                              "value": {
+                                "data": {
+                                  "field": "status",
+                                  "query": "order"
+                                }
+                              }
+                            }
+                          }
+                        ],
+                        "title": "Payment",
+                        "trailing": {
+                          "data": {
+                            "field": "total",
+                            "query": "order"
+                          }
+                        },
+                        "trailing_format": {
+                          "money": {
+                            "code": "USD"
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "ratios": [
+                    2,
+                    1
+                  ]
+                }
+              }
+            ],
+            "direction": "vertical",
+            "gap": "normal"
+          }
+        },
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "type": "uuid"
+          }
+        ],
+        "queries": [
+          {
+            "args": [
+              {
+                "field": "id",
+                "value": {
+                  "param": "id"
+                }
+              }
+            ],
+            "endpoint": "GetOrder",
+            "follow": [
+              {
+                "key": [
+                  {
+                    "field": "id",
+                    "value": {
+                      "param": "id"
+                    }
+                  }
+                ],
+                "topic": "order"
+              }
+            ],
+            "name": "order"
+          }
+        ],
+        "title": {
+          "data": {
+            "field": "number",
+            "query": "order"
+          }
+        }
+      },
+      {
+        "id": "report",
+        "layout": {
+          "stack": {
+            "children": [
+              {
+                "segmented": {
+                  "bind": {
+                    "param": "range"
+                  },
+                  "options": [
+                    {
+                      "label": {
+                        "key": "report.week"
+                      },
+                      "value": "7"
+                    },
+                    {
+                      "label": {
+                        "key": "report.month"
+                      },
+                      "value": "30"
+                    }
+                  ]
+                }
+              },
+              {
+                "board": {
+                  "children": [
+                    {
+                      "node": {
+                        "fallback": {
+                          "table": {
+                            "columns": [
+                              {
+                                "field": "day",
+                                "format": {
+                                  "date": {}
+                                },
+                                "title": "Day"
+                              },
+                              {
+                                "field": "total",
+                                "title": "Revenue"
+                              }
+                            ],
+                            "query": "sales"
+                          }
+                        },
+                        "viz": {
+                          "bind": [
+                            {
+                              "from": {
+                                "column": {
+                                  "as": "date",
+                                  "field": "day",
+                                  "query": "sales"
+                                }
+                              },
+                              "to": "labels"
+                            },
+                            {
+                              "from": {
+                                "column": {
+                                  "field": "total",
+                                  "query": "sales"
+                                }
+                              },
+                              "to": "values"
+                            }
+                          ],
+                          "family": "line",
+                          "height": 280,
+                          "kind": "line",
+                          "open": {
+                            "args": [
+                              {
+                                "field": "status",
+                                "value": {
+                                  "lit": "paid"
+                                }
+                              }
+                            ],
+                            "screen": "orders"
+                          },
+                          "options": {
+                            "curve": "smooth",
+                            "fmt": "money"
+                          },
+                          "range": "Last 30 days",
+                          "title": {
+                            "key": "report.revenue"
+                          }
+                        }
+                      },
+                      "span": 8
+                    },
+                    {
+                      "node": {
+                        "viz": {
+                          "bind": [
+                            {
+                              "from": {
+                                "rows": {
+                                  "map": {
+                                    "name": "name",
+                                    "units": "units",
+                                    "value": "revenue"
+                                  },
+                                  "query": "top",
+                                  "text": [
+                                    "name"
+                                  ]
+                                }
+                              },
+                              "to": "rows"
+                            }
+                          ],
+                          "family": "bar",
+                          "kind": "bar",
+                          "options": {
+                            "field": "product",
+                            "fmt": "money",
+                            "limit": 5
+                          },
+                          "select": {
+                            "param": "product"
+                          },
+                          "title": "Top products"
+                        }
+                      },
+                      "span": 4
+                    },
+                    {
+                      "node": {
+                        "viz": {
+                          "bind": [
+                            {
+                              "from": {
+                                "value": {
+                                  "data": {
+                                    "field": "revenue",
+                                    "query": "sales"
+                                  }
+                                }
+                              },
+                              "to": "value"
+                            },
+                            {
+                              "from": {
+                                "value": {
+                                  "lit": 120000
+                                }
+                              },
+                              "to": "target"
+                            },
+                            {
+                              "from": {
+                                "value": {
+                                  "lit": "this month"
+                                }
+                              },
+                              "to": "caption"
+                            },
+                            {
+                              "from": {
+                                "value": {
+                                  "state": "channel"
+                                }
+                              },
+                              "to": "filter.channel"
+                            }
+                          ],
+                          "family": "figure",
+                          "kind": "metric",
+                          "title": "Revenue"
+                        }
+                      },
+                      "span": 3
+                    },
+                    {
+                      "node": {
+                        "viz": {
+                          "bind": [
+                            {
+                              "from": {
+                                "pivot": {
+                                  "as": "date",
+                                  "query": "sales",
+                                  "series": "channel",
+                                  "value": "total",
+                                  "x": "day"
+                                }
+                              },
+                              "to": "series"
+                            }
+                          ],
+                          "family": "bar",
+                          "kind": "column",
+                          "options": {
+                            "stacked": true
+                          },
+                          "select": {
+                            "state": "channel"
+                          },
+                          "title": "By channel"
+                        }
+                      },
+                      "span": 9
+                    },
+                    {
+                      "node": {
+                        "text": {
+                          "style": "heading",
+                          "text": "Channels"
+                        }
+                      }
+                    },
+                    {
+                      "node": {
+                        "visible": {
+                          "empty": {
+                            "param": "product"
+                          }
+                        },
+                        "viz": {
+                          "bind": [
+                            {
+                              "from": {
+                                "column": {
+                                  "as": "text",
+                                  "field": "channel",
+                                  "query": "sales"
+                                }
+                              },
+                              "to": "labels"
+                            },
+                            {
+                              "from": {
+                                "series": {
+                                  "fields": [
+                                    {
+                                      "field": "online",
+                                      "label": "Online"
+                                    },
+                                    {
+                                      "field": "retail",
+                                      "label": {
+                                        "key": "report.retail"
+                                      }
+                                    },
+                                    {
+                                      "field": "total",
+                                      "label": "Total"
+                                    }
+                                  ],
+                                  "query": "sales"
+                                }
+                              },
+                              "to": "series"
+                            },
+                            {
+                              "from": {
+                                "column": {
+                                  "as": "text",
+                                  "field": "channel",
+                                  "query": "sales"
+                                }
+                              },
+                              "to": "notes"
+                            },
+                            {
+                              "from": {
+                                "rows": {
+                                  "map": {
+                                    "name": "name"
+                                  },
+                                  "query": "top"
+                                }
+                              },
+                              "to": "parts"
+                            }
+                          ],
+                          "family": "line",
+                          "kind": "multiples"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "fallback": {
+                  "table": {
+                    "columns": [
+                      {
+                        "field": "name",
+                        "title": "Product"
+                      }
+                    ],
+                    "query": "top"
+                  }
+                }
+              }
+            ],
+            "direction": "vertical",
+            "gap": "normal"
+          }
+        },
+        "params": [
+          {
+            "name": "product",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "default": "30",
+            "name": "range",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "queries": [
+          {
+            "args": [
+              {
+                "field": "channel",
+                "value": {
+                  "state": "channel"
+                }
+              },
+              {
+                "field": "range",
+                "value": {
+                  "param": "range"
+                }
+              }
+            ],
+            "endpoint": "Sales",
+            "name": "sales",
+            "rows": "days"
+          },
+          {
+            "endpoint": "TopProducts",
+            "name": "top",
+            "rows": "products"
+          }
+        ],
+        "state": [
+          {
+            "default": "",
+            "name": "channel",
+            "type": "string"
+          }
+        ],
+        "title": "Report"
+      },
+      {
+        "actions": [
+          {
+            "name": "add",
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "order",
+                      "value": {
+                        "param": "order"
+                      }
+                    },
+                    {
+                      "field": "text",
+                      "value": {
+                        "form": "text"
+                      }
+                    },
+                    {
+                      "field": "reply",
+                      "value": {
+                        "form": "reply"
+                      }
+                    },
+                    {
+                      "field": "urgent",
+                      "value": {
+                        "form": "urgent"
+                      }
+                    }
+                  ],
+                  "endpoint": "AddNote"
+                }
+              },
+              {
+                "merge": {
+                  "query": "notes",
+                  "row": {
+                    "result": "note"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "seen",
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "note",
+                      "value": {
+                        "row": "id"
+                      }
+                    },
+                    {
+                      "field": "action",
+                      "value": {
+                        "lit": "seen"
+                      }
+                    }
+                  ],
+                  "endpoint": "NoteAction"
+                }
+              }
+            ]
+          },
+          {
+            "name": "react",
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "note",
+                      "value": {
+                        "row": "id"
+                      }
+                    },
+                    {
+                      "field": "action",
+                      "value": {
+                        "lit": "react"
+                      }
+                    },
+                    {
+                      "field": "emoji",
+                      "value": {
+                        "form": "emoji"
+                      }
+                    }
+                  ],
+                  "endpoint": "NoteAction"
+                }
+              }
+            ]
+          },
+          {
+            "name": "edit",
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "note",
+                      "value": {
+                        "row": "id"
+                      }
+                    },
+                    {
+                      "field": "action",
+                      "value": {
+                        "lit": "edit"
+                      }
+                    },
+                    {
+                      "field": "text",
+                      "value": {
+                        "form": "text"
+                      }
+                    }
+                  ],
+                  "endpoint": "NoteAction"
+                }
+              }
+            ]
+          },
+          {
+            "name": "retry",
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "note",
+                      "value": {
+                        "row": "id"
+                      }
+                    },
+                    {
+                      "field": "action",
+                      "value": {
+                        "lit": "retry"
+                      }
+                    }
+                  ],
+                  "endpoint": "NoteAction"
+                }
+              }
+            ]
+          },
+          {
+            "name": "open_job",
+            "steps": [
+              {
+                "set": {
+                  "param": "job",
+                  "value": {
+                    "row": "job_id"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "close_job",
+            "steps": [
+              {
+                "set": {
+                  "param": "job",
+                  "value": {
+                    "lit": null
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "quote",
+            "steps": [
+              {
+                "draft": {
+                  "text": {
+                    "args": {
+                      "who": {
+                        "row": "who.name"
+                      }
+                    },
+                    "key": "activity.quote"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "answer",
+            "steps": [
+              {
+                "reply_to": {
+                  "key": {
+                    "row": "id"
+                  },
+                  "name": {
+                    "row": "who.name"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "copy_link",
+            "steps": [
+              {
+                "copy": {
+                  "link": {
+                    "param": "order"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "copy_title",
+            "steps": [
+              {
+                "copy": {
+                  "value": {
+                    "data": {
+                      "field": "title",
+                      "query": "notes"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "watch",
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "order",
+                      "value": {
+                        "param": "order"
+                      }
+                    },
+                    {
+                      "field": "watch",
+                      "value": {
+                        "form": "pressed"
+                      }
+                    }
+                  ],
+                  "endpoint": "Watch"
+                }
+              }
+            ]
+          },
+          {
+            "name": "mention",
+            "steps": [
+              {
+                "toast": {
+                  "text": {
+                    "args": {
+                      "to": {
+                        "form": "to"
+                      }
+                    },
+                    "key": "activity.mention"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "stop",
+            "steps": [
+              {
+                "toast": {
+                  "text": "Stopping"
+                }
+              }
+            ]
+          },
+          {
+            "name": "stop_job",
+            "steps": [
+              {
+                "toast": {
+                  "text": "Stopping the job"
+                }
+              }
+            ]
+          },
+          {
+            "name": "jump",
+            "steps": [
+              {
+                "scroll_to": {
+                  "key": {
+                    "data": {
+                      "field": "label",
+                      "query": "live"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "assign",
+            "steps": [
+              {
+                "open": {
+                  "args": [
+                    {
+                      "field": "order",
+                      "value": {
+                        "param": "order"
+                      }
+                    }
+                  ],
+                  "overlay": "assign"
+                }
+              }
+            ]
+          }
+        ],
+        "id": "activity",
+        "layout": {
+          "split": {
+            "detail": {
+              "stack": {
+                "children": [
+                  {
+                    "header": {
+                      "back": "Activity",
+                      "close": "close_job",
+                      "context": {
+                        "data": {
+                          "field": "title",
+                          "query": "notes"
+                        }
+                      },
+                      "expand": true,
+                      "icons": [
+                        {
+                          "icon_button": {
+                            "action": "watch",
+                            "icon": "eye",
+                            "icon_off": "eye-off",
+                            "label": "Watching",
+                            "label_off": "Watch",
+                            "pressed": {
+                              "data": {
+                                "field": "watching",
+                                "query": "notes"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "title": "Watchers"
+                    }
+                  },
+                  {
+                    "strip": {
+                      "aria_label": "Live jobs",
+                      "buttons": [
+                        {
+                          "action": "stop_job",
+                          "icon": "square",
+                          "label": "Stop",
+                          "style": "stop",
+                          "visible": {
+                            "eq": [
+                              {
+                                "row": "state"
+                              },
+                              {
+                                "lit": "working"
+                              }
+                            ]
+                          }
+                        }
+                      ],
+                      "countdown_text": "ends in {left}",
+                      "jump": {
+                        "field": "note",
+                        "label": "Jump to the note",
+                        "label_waiting": "Jump to its last note"
+                      },
+                      "key": "job",
+                      "label": {
+                        "data": {
+                          "field": "label",
+                          "query": "live"
+                        }
+                      },
+                      "open": "open_job",
+                      "query": "live",
+                      "rows": "jobs",
+                      "since": "since",
+                      "state": {
+                        "field": "state",
+                        "live": [
+                          "working",
+                          "starting"
+                        ],
+                        "starting": [
+                          "starting"
+                        ],
+                        "waiting": [
+                          "waiting"
+                        ]
+                      },
+                      "sub": "sub",
+                      "tile": {
+                        "engine": "engine",
+                        "icon": "icon"
+                      },
+                      "title": "agent",
+                      "until": "until"
+                    }
+                  },
+                  {
+                    "process": {
+                      "label": "title",
+                      "query": "job",
+                      "state": "title"
+                    }
+                  },
+                  {
+                    "list": {
+                      "group_label": "Watchers",
+                      "limit": 5,
+                      "online": "online",
+                      "query": "people",
+                      "search": "Find a watcher",
+                      "subtitle": "role",
+                      "title": "name"
+                    }
+                  },
+                  {
+                    "text": {
+                      "format": {
+                        "elapsed": {}
+                      },
+                      "style": "body",
+                      "text": {
+                        "data": {
+                          "field": "label",
+                          "query": "live"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "direction": "vertical",
+                "gap": "normal"
+              },
+              "visible": {
+                "not": {
+                  "empty": {
+                    "param": "job"
+                  }
+                }
+              }
+            },
+            "expand": {
+              "state": "wide"
+            },
+            "fill": true,
+            "list": {
+              "stack": {
+                "children": [
+                  {
+                    "header": {
+                      "buttons": [
+                        {
+                          "action": "assign",
+                          "label": "Assign",
+                          "visible": {
+                            "ne": [
+                              {
+                                "data": {
+                                  "field": "closed",
+                                  "query": "notes"
+                                }
+                              },
+                              {
+                                "lit": true
+                              }
+                            ]
+                          }
+                        }
+                      ],
+                      "faces": {
+                        "action": "assign",
+                        "label": "Watchers",
+                        "value": {
+                          "data": {
+                            "field": "people",
+                            "query": "notes"
+                          }
+                        }
+                      },
+                      "leading": {
+                        "size": 40,
+                        "tile": {
+                          "engine": {
+                            "lit": ""
+                          },
+                          "icon": {
+                            "lit": "package"
+                          }
+                        }
+                      },
+                      "menu": {
+                        "items": [
+                          {
+                            "action": "copy_link",
+                            "label": "Copy link"
+                          },
+                          {
+                            "action": "copy_title",
+                            "label": "Copy title"
+                          }
+                        ]
+                      },
+                      "phone": {
+                        "icons": [
+                          "assign"
+                        ],
+                        "menu_tabs": true,
+                        "sub": {
+                          "data": {
+                            "field": "status",
+                            "query": "notes"
+                          }
+                        }
+                      },
+                      "subtitle": [
+                        {
+                          "text": {
+                            "data": {
+                              "field": "status",
+                              "query": "notes"
+                            }
+                          }
+                        },
+                        {
+                          "dot": "live",
+                          "visible": {
+                            "eq": [
+                              {
+                                "data": {
+                                  "field": "can_stop",
+                                  "query": "live"
+                                }
+                              },
+                              {
+                                "lit": true
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "format": {
+                            "countdown": {}
+                          },
+                          "prefix": "closes in ",
+                          "value": {
+                            "data": {
+                              "field": "ends",
+                              "query": "notes"
+                            }
+                          }
+                        }
+                      ],
+                      "subtitle_action": "jump",
+                      "tabs": {
+                        "bind": {
+                          "state": "tab"
+                        },
+                        "items": [
+                          {
+                            "id": "notes",
+                            "title": "Notes"
+                          },
+                          {
+                            "badge": {
+                              "data": {
+                                "field": "pinned",
+                                "query": "notes"
+                              }
+                            },
+                            "id": "pinned",
+                            "title": "Pinned"
+                          }
+                        ]
+                      },
+                      "title": {
+                        "data": {
+                          "field": "title",
+                          "query": "notes"
+                        }
+                      },
+                      "title_icon": {
+                        "lit": "package"
+                      }
+                    }
+                  },
+                  {
+                    "stream": {
+                      "days": "time",
+                      "empty": "No notes yet.",
+                      "id": "notes",
+                      "item": {
+                        "post": {
+                          "actions_when": {
+                            "ne": [
+                              {
+                                "data": {
+                                  "field": "closed",
+                                  "query": "notes"
+                                }
+                              },
+                              {
+                                "lit": true
+                              }
+                            ]
+                          },
+                          "author": "who.name",
+                          "avatar": {
+                            "tile": {
+                              "engine": "who.engine",
+                              "icon": "who.icon"
+                            },
+                            "url": "who.avatar"
+                          },
+                          "badge": {
+                            "text": "AGENT",
+                            "when": {
+                              "eq": [
+                                {
+                                  "row": "who.agent"
+                                },
+                                {
+                                  "lit": true
+                                }
+                              ]
+                            }
+                          },
+                          "card": {
+                            "action": "mention",
+                            "agent": "agent",
+                            "avatar": "avatar",
+                            "detail": "role",
+                            "engine": "engine",
+                            "icon": "icon",
+                            "name": "name",
+                            "query": "people",
+                            "unknown": "Not a watcher"
+                          },
+                          "edit": {
+                            "action": "edit",
+                            "when": {
+                              "eq": [
+                                {
+                                  "row": "mine"
+                                },
+                                {
+                                  "lit": true
+                                }
+                              ]
+                            }
+                          },
+                          "edited": "edited",
+                          "hover": [
+                            {
+                              "builtin": "react"
+                            },
+                            {
+                              "builtin": "reply"
+                            },
+                            {
+                              "action": "quote",
+                              "label": "Quote",
+                              "style": "text"
+                            },
+                            {
+                              "builtin": "more"
+                            }
+                          ],
+                          "menu": [
+                            {
+                              "builtin": "copy_text"
+                            },
+                            {
+                              "builtin": "copy_link"
+                            },
+                            {
+                              "builtin": "edit"
+                            },
+                            {
+                              "builtin": "separator"
+                            },
+                            {
+                              "action": "answer",
+                              "danger": true,
+                              "icon": "reply",
+                              "label": "Answer"
+                            }
+                          ],
+                          "mine": "mine",
+                          "pinned": {
+                            "field": "pinned",
+                            "mark": {
+                              "lit": true
+                            }
+                          },
+                          "process": {
+                            "fetch_call": {
+                              "args": [
+                                {
+                                  "field": "id",
+                                  "value": {
+                                    "row": "job_id"
+                                  }
+                                }
+                              ],
+                              "call": "call",
+                              "field": "call",
+                              "query": "job"
+                            },
+                            "label": "job.label",
+                            "log": {
+                              "action": "open_job"
+                            },
+                            "meta": "job.meta",
+                            "retry": {
+                              "action": "retry",
+                              "label": "job.retry_label",
+                              "when": {
+                                "eq": [
+                                  {
+                                    "row": "mine"
+                                  },
+                                  {
+                                    "lit": true
+                                  }
+                                ]
+                              }
+                            },
+                            "rows": "job.rows",
+                            "started": "job.started",
+                            "state": "job.state",
+                            "steps": "job.steps"
+                          },
+                          "reactions": {
+                            "action": "react",
+                            "count": "count",
+                            "emoji": "emoji",
+                            "field": "reactions",
+                            "mine": "mine",
+                            "quick": [
+                              "👍",
+                              "✅"
+                            ]
+                          },
+                          "receipt": {
+                            "text": "receipt",
+                            "tone": {
+                              "field": "receipt_tone",
+                              "tones": {
+                                "done": "ok"
+                              }
+                            }
+                          },
+                          "sheet": [
+                            {
+                              "builtin": "reply"
+                            },
+                            {
+                              "builtin": "copy_text"
+                            }
+                          ],
+                          "summary": {
+                            "action": "open_job",
+                            "count": "replies.count",
+                            "label": {
+                              "args": {
+                                "n": {
+                                  "row": "replies.count"
+                                }
+                              },
+                              "key": "activity.replies"
+                            }
+                          },
+                          "text": {
+                            "field": "text"
+                          },
+                          "time": "time"
+                        }
+                      },
+                      "jump_working": {
+                        "data": {
+                          "field": "label",
+                          "query": "live"
+                        }
+                      },
+                      "key": "id",
+                      "kinds": {
+                        "field": "kind",
+                        "line": {
+                          "author": "who.name",
+                          "text": "text",
+                          "time": "time",
+                          "when": "event"
+                        }
+                      },
+                      "label": "Notes",
+                      "on_seen": {
+                        "action": "seen",
+                        "when": {
+                          "ne": [
+                            {
+                              "row": "mine"
+                            },
+                            {
+                              "lit": true
+                            }
+                          ]
+                        }
+                      },
+                      "phone_intro": {
+                        "data": {
+                          "field": "status",
+                          "query": "notes"
+                        }
+                      },
+                      "query": "notes",
+                      "tail": {
+                        "hold": true,
+                        "query": "live"
+                      }
+                    },
+                    "visible": {
+                      "eq": [
+                        {
+                          "state": "tab"
+                        },
+                        {
+                          "lit": "notes"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "stream": {
+                      "anchor": "top",
+                      "empty": "Nothing pinned.",
+                      "item": {
+                        "post": {
+                          "actions_when": {
+                            "ne": [
+                              {
+                                "data": {
+                                  "field": "closed",
+                                  "query": "notes"
+                                }
+                              },
+                              {
+                                "lit": true
+                              }
+                            ]
+                          },
+                          "author": "who.name",
+                          "avatar": {
+                            "tile": {
+                              "engine": "who.engine",
+                              "icon": "who.icon"
+                            },
+                            "url": "who.avatar"
+                          },
+                          "badge": {
+                            "text": "AGENT",
+                            "when": {
+                              "eq": [
+                                {
+                                  "row": "who.agent"
+                                },
+                                {
+                                  "lit": true
+                                }
+                              ]
+                            }
+                          },
+                          "card": {
+                            "action": "mention",
+                            "agent": "agent",
+                            "avatar": "avatar",
+                            "detail": "role",
+                            "engine": "engine",
+                            "icon": "icon",
+                            "name": "name",
+                            "query": "people",
+                            "unknown": "Not a watcher"
+                          },
+                          "edit": {
+                            "action": "edit",
+                            "when": {
+                              "eq": [
+                                {
+                                  "row": "mine"
+                                },
+                                {
+                                  "lit": true
+                                }
+                              ]
+                            }
+                          },
+                          "edited": "edited",
+                          "hover": [
+                            {
+                              "builtin": "react"
+                            },
+                            {
+                              "builtin": "reply"
+                            },
+                            {
+                              "action": "quote",
+                              "label": "Quote",
+                              "style": "text"
+                            },
+                            {
+                              "builtin": "more"
+                            }
+                          ],
+                          "menu": [
+                            {
+                              "builtin": "copy_text"
+                            },
+                            {
+                              "builtin": "copy_link"
+                            },
+                            {
+                              "builtin": "edit"
+                            },
+                            {
+                              "builtin": "separator"
+                            },
+                            {
+                              "action": "answer",
+                              "danger": true,
+                              "icon": "reply",
+                              "label": "Answer"
+                            }
+                          ],
+                          "mine": "mine",
+                          "pinned": {
+                            "field": "pinned",
+                            "mark": {
+                              "lit": true
+                            }
+                          },
+                          "process": {
+                            "fetch_call": {
+                              "args": [
+                                {
+                                  "field": "id",
+                                  "value": {
+                                    "row": "job_id"
+                                  }
+                                }
+                              ],
+                              "call": "call",
+                              "field": "call",
+                              "query": "job"
+                            },
+                            "label": "job.label",
+                            "log": {
+                              "action": "open_job"
+                            },
+                            "meta": "job.meta",
+                            "retry": {
+                              "action": "retry",
+                              "label": "job.retry_label",
+                              "when": {
+                                "eq": [
+                                  {
+                                    "row": "mine"
+                                  },
+                                  {
+                                    "lit": true
+                                  }
+                                ]
+                              }
+                            },
+                            "rows": "job.rows",
+                            "started": "job.started",
+                            "state": "job.state",
+                            "steps": "job.steps"
+                          },
+                          "reactions": {
+                            "action": "react",
+                            "count": "count",
+                            "emoji": "emoji",
+                            "field": "reactions",
+                            "mine": "mine",
+                            "quick": [
+                              "👍",
+                              "✅"
+                            ]
+                          },
+                          "receipt": {
+                            "text": "receipt",
+                            "tone": {
+                              "field": "receipt_tone",
+                              "tones": {
+                                "done": "ok"
+                              }
+                            }
+                          },
+                          "sheet": [
+                            {
+                              "builtin": "reply"
+                            },
+                            {
+                              "builtin": "copy_text"
+                            }
+                          ],
+                          "text": {
+                            "field": "text"
+                          },
+                          "time": "time"
+                        }
+                      },
+                      "key": "id",
+                      "older_label": "Show more pinned notes",
+                      "older_load": "button",
+                      "query": "notes"
+                    },
+                    "visible": {
+                      "eq": [
+                        {
+                          "state": "tab"
+                        },
+                        {
+                          "lit": "pinned"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "composer": {
+                      "caption": [
+                        {
+                          "icon": "corner-down-right",
+                          "style": "route",
+                          "value": {
+                            "data": {
+                              "field": "hint",
+                              "query": "hint"
+                            }
+                          }
+                        },
+                        {
+                          "style": "dot",
+                          "value": {
+                            "data": {
+                              "field": "hint",
+                              "query": "live"
+                            }
+                          }
+                        }
+                      ],
+                      "dictation": {
+                        "vocabulary": "DPD"
+                      },
+                      "draft_state": "draft",
+                      "for": "notes",
+                      "mentions": {
+                        "agent": "agent",
+                        "avatar": "avatar",
+                        "detail": "role",
+                        "engine": "engine",
+                        "icon": "icon",
+                        "name": "name",
+                        "note": "A mention tells them",
+                        "query": "people"
+                      },
+                      "options": [
+                        {
+                          "label": "Mark urgent",
+                          "name": "urgent",
+                          "visible": {
+                            "ne": [
+                              {
+                                "data": {
+                                  "field": "closed",
+                                  "query": "notes"
+                                }
+                              },
+                              {
+                                "lit": true
+                              }
+                            ]
+                          }
+                        }
+                      ],
+                      "placeholder": {
+                        "data": {
+                          "field": "placeholder",
+                          "query": "notes"
+                        }
+                      },
+                      "primary": true,
+                      "readonly": {
+                        "reason": "This order is closed.",
+                        "when": {
+                          "eq": [
+                            {
+                              "data": {
+                                "field": "closed",
+                                "query": "notes"
+                              }
+                            },
+                            {
+                              "lit": true
+                            }
+                          ]
+                        }
+                      },
+                      "reply": true,
+                      "send": "add",
+                      "stop": {
+                        "action": "stop",
+                        "label": "Stop",
+                        "when": {
+                          "eq": [
+                            {
+                              "data": {
+                                "field": "can_stop",
+                                "query": "live"
+                              }
+                            },
+                            {
+                              "lit": true
+                            }
+                          ]
+                        }
+                      },
+                      "tags": true,
+                      "tools": [
+                        "emoji"
+                      ]
+                    }
+                  }
+                ],
+                "direction": "vertical",
+                "gap": "normal"
+              }
+            },
+            "resize": {
+              "default": 420,
+              "keep": 400,
+              "max": 820,
+              "min": 340
+            }
+          }
+        },
+        "params": [
+          {
+            "name": "order",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "job",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "queries": [
+          {
+            "args": [
+              {
+                "field": "order",
+                "value": {
+                  "param": "order"
+                }
+              }
+            ],
+            "endpoint": "GetActivity",
+            "follow": [
+              {
+                "topic": "orders"
+              }
+            ],
+            "join": [
+              {
+                "as": "who",
+                "by": "by",
+                "key": "id",
+                "rows": "people"
+              }
+            ],
+            "name": "notes",
+            "older": {
+              "arg": "page_token",
+              "token": "older_page_token"
+            },
+            "rows": "notes"
+          },
+          {
+            "args": [
+              {
+                "field": "order",
+                "value": {
+                  "param": "order"
+                }
+              }
+            ],
+            "endpoint": "GetLive",
+            "join": [
+              {
+                "as": "who",
+                "by": "by",
+                "key": "id",
+                "rows": "people"
+              }
+            ],
+            "name": "live",
+            "rows": "notes"
+          },
+          {
+            "args": [
+              {
+                "field": "order",
+                "value": {
+                  "param": "order"
+                }
+              }
+            ],
+            "endpoint": "GetWatchers",
+            "name": "people",
+            "rows": "people"
+          },
+          {
+            "args": [
+              {
+                "field": "order",
+                "value": {
+                  "param": "order"
+                }
+              },
+              {
+                "field": "text",
+                "value": {
+                  "state": "draft"
+                }
+              }
+            ],
+            "debounce_ms": 300,
+            "endpoint": "PreviewNote",
+            "name": "hint",
+            "when": {
+              "not": {
+                "empty": {
+                  "state": "draft"
+                }
+              }
+            }
+          },
+          {
+            "args": [
+              {
+                "field": "id",
+                "value": {
+                  "param": "job"
+                }
+              }
+            ],
+            "endpoint": "GetJob",
+            "name": "job",
+            "when": {
+              "not": {
+                "empty": {
+                  "param": "job"
+                }
+              }
+            }
+          }
+        ],
+        "state": [
+          {
+            "default": "notes",
+            "name": "tab",
+            "reset": [
+              "order"
+            ],
+            "type": "string"
+          },
+          {
+            "default": false,
+            "name": "wide",
+            "reset": [
+              "order"
+            ],
+            "type": "bool"
+          },
+          {
+            "default": "",
+            "name": "draft",
+            "type": "string"
+          }
+        ],
+        "title": {
+          "data": {
+            "field": "title",
+            "query": "notes"
+          }
+        }
+      }
+    ],
+    "search": [
+      {
+        "actions": [
+          {
+            "icon": "x-circle",
+            "target": {
+              "args": [
+                {
+                  "field": "id",
+                  "value": {
+                    "row": "id"
+                  }
+                }
+              ],
+              "overlay": "cancel_form"
+            },
+            "title": "Cancel order"
+          }
+        ],
+        "endpoint": "ListOrders",
+        "item": {
+          "subtitle": {
+            "row": "customer"
+          },
+          "title": {
+            "row": "number"
+          }
+        },
+        "open": {
+          "args": [
+            {
+              "field": "id",
+              "value": {
+                "row": "id"
+              }
+            }
+          ],
+          "screen": "order"
+        },
+        "rows": "orders",
+        "text": "text",
+        "title": "Orders"
+      }
+    ],
+    "texts": {
+      "en": {
+        "activity.mention": "Write to {to}",
+        "activity.quote": "About {who}'s note: ",
+        "activity.replies": "{n, plural, one {# reply} other {# replies}}",
+        "assign.submit": "Assign {first}",
+        "nav.all": "All orders",
+        "orders.cancelled": "Order cancelled",
+        "orders.count": "{total} orders · newest first",
+        "orders.title": "Orders",
+        "report.month": "30 days",
+        "report.retail": "Retail",
+        "report.revenue": "Revenue",
+        "report.week": "7 days"
+      }
+    }
+  },
+  "version": "1.0.0"
+}

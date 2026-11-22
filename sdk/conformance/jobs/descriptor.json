@@ -1,0 +1,385 @@
+{
+  "agents": [],
+  "capabilities": [],
+  "dependencies": [],
+  "description": "The SDK conformance plugin of background jobs.",
+  "endpoints": [
+    {
+      "auth": "user",
+      "description": "Creates a task and enqueues its processing.",
+      "idempotency": "off",
+      "input": "CreateTaskRequest",
+      "name": "CreateTask",
+      "output": "CreateTaskReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Enqueues the day's report once.",
+      "idempotency": "off",
+      "input": "EnqueueReportRequest",
+      "name": "EnqueueReport",
+      "output": "EnqueueReportReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Cancels a run.",
+      "idempotency": "off",
+      "input": "CancelRunRequest",
+      "name": "CancelRun",
+      "output": "CancelRunReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    }
+  ],
+  "entities": [
+    {
+      "access": {
+        "admin": true,
+        "create": {
+          "role": "member"
+        },
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [],
+        "permits": [],
+        "read": {
+          "role": "member"
+        },
+        "relations": [],
+        "update": {
+          "role": "member"
+        }
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.task"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "status",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "key": "uuid",
+      "label": "title",
+      "message": "Task",
+      "name": "task",
+      "soft_delete": false,
+      "version": false
+    }
+  ],
+  "enums": [],
+  "id": "jobsdemo",
+  "jobs": [
+    {
+      "description": "Marks a task processed",
+      "name": "process_task",
+      "payload": "ProcessTask"
+    },
+    {
+      "description": "Writes the day's report",
+      "name": "daily_report",
+      "payload": "DailyReport"
+    },
+    {
+      "as_system": true,
+      "cron": "* * * * *",
+      "description": "Logs a heartbeat every minute",
+      "name": "heartbeat",
+      "payload": "Heartbeat",
+      "retry": {
+        "backoff": "fixed",
+        "delay_ms": 0,
+        "retries": 0
+      }
+    },
+    {
+      "description": "Fails its first attempt",
+      "name": "flaky",
+      "payload": "Flaky",
+      "retry": {
+        "backoff": "fixed",
+        "delay_ms": 5000,
+        "retries": 2
+      }
+    },
+    {
+      "description": "Fails for good",
+      "name": "doomed",
+      "payload": "Doomed",
+      "retry": {
+        "backoff": "exponential",
+        "delay_ms": 10000,
+        "retries": 3
+      }
+    },
+    {
+      "concurrency": 2,
+      "description": "Works in steps until it is stopped",
+      "name": "slow",
+      "payload": "Slow",
+      "timeout_ms": 10000
+    }
+  ],
+  "messages": [
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "title",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "fail",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "CreateTaskRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "task",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.task"
+        },
+        {
+          "description": "",
+          "name": "run_id",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "CreateTaskReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "day",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "EnqueueReportRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "run_id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "existing",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "EnqueueReportReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "run_id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "CancelRunRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "cancelled",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "CancelRunReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.task"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "status",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Task"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "task",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.task"
+        }
+      ],
+      "kind": "job",
+      "name": "ProcessTask"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "day",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "job",
+      "name": "DailyReport"
+    },
+    {
+      "description": "",
+      "fields": [],
+      "kind": "job",
+      "name": "Heartbeat"
+    },
+    {
+      "description": "",
+      "fields": [],
+      "kind": "job",
+      "name": "Flaky"
+    },
+    {
+      "description": "",
+      "fields": [],
+      "kind": "job",
+      "name": "Doomed"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "seconds",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        }
+      ],
+      "kind": "job",
+      "name": "Slow"
+    }
+  ],
+  "permissions": [],
+  "roles": [
+    {
+      "default_for": "member",
+      "description": "",
+      "name": "member",
+      "strict": false,
+      "title": "Member"
+    }
+  ],
+  "schema": 1,
+  "scopes": [],
+  "title": "Jobs demo",
+  "version": "0.1.0"
+}

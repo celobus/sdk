@@ -1,0 +1,716 @@
+{
+  "agents": [],
+  "capabilities": [
+    {
+      "name": "push:send",
+      "reason": "Greets people."
+    },
+    {
+      "name": "authz:bypass",
+      "on": [
+        {
+          "entity": "note",
+          "ops": [
+            "read"
+          ]
+        }
+      ],
+      "reason": "Counts every note."
+    }
+  ],
+  "dependencies": [
+    {
+      "calls": [
+        "Greet"
+      ],
+      "plugin": "greeter"
+    }
+  ],
+  "description": "The SDK conformance plugin.",
+  "endpoints": [
+    {
+      "auth": "user",
+      "description": "Greets.",
+      "idempotency": "off",
+      "input": "HelloRequest",
+      "name": "Hello",
+      "output": "HelloReply",
+      "roles": [
+        "clerk",
+        "manager"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Reads a note.",
+      "idempotency": "off",
+      "input": "GetNoteRequest",
+      "name": "GetNote",
+      "output": "Note",
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Creates or changes a note.",
+      "idempotency": "off",
+      "input": "SaveNoteRequest",
+      "name": "SaveNote",
+      "output": "Note",
+      "roles": [],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Deletes a note.",
+      "idempotency": "off",
+      "input": "DeleteNoteRequest",
+      "name": "DeleteNote",
+      "output": "Note",
+      "roles": [],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Lists the notes the caller may read.",
+      "idempotency": "off",
+      "input": "ListNotesRequest",
+      "name": "ListNotes",
+      "output": "ListNotesReply",
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Counts every note, as the system.",
+      "idempotency": "off",
+      "input": "CountAllNotesRequest",
+      "name": "CountAllNotes",
+      "output": "NoteCount",
+      "roles": [
+        "manager"
+      ],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Counts the notes of each owner the caller may read, with SQL.",
+      "idempotency": "off",
+      "input": "NotesByOwnerRequest",
+      "name": "NotesByOwner",
+      "output": "NotesByOwnerReply",
+      "roles": [],
+      "scopes": [
+        "read"
+      ],
+      "timeout_ms": 30000
+    }
+  ],
+  "entities": [
+    {
+      "access": {
+        "admin": true,
+        "create": {
+          "rel": "owner"
+        },
+        "delete": {
+          "any": [
+            {
+              "rel": "owner"
+            },
+            {
+              "role": "manager"
+            }
+          ]
+        },
+        "export": [],
+        "guards": [],
+        "masks": [
+          {
+            "field": "secret",
+            "roles": [
+              "manager"
+            ]
+          }
+        ],
+        "permits": [],
+        "read": {
+          "any": [
+            {
+              "rel": "owner"
+            },
+            {
+              "rel": "greeted"
+            },
+            {
+              "role": "manager"
+            }
+          ]
+        },
+        "relations": [
+          {
+            "field": "owner_id",
+            "kind": "column",
+            "name": "owner"
+          },
+          {
+            "field": "greeter_id",
+            "kind": "rows",
+            "name": "greeted",
+            "rows": {
+              "entity": "greeting",
+              "filter": [
+                {
+                  "field": "name",
+                  "op": "ne",
+                  "value": ""
+                }
+              ],
+              "target": "note_id"
+            }
+          }
+        ],
+        "update": {
+          "rel": "owner"
+        }
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:hello.note"
+        },
+        {
+          "description": "",
+          "index": true,
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "searchable": "simple",
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "body",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "searchable": "english",
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "owner_id",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:platform.user"
+        },
+        {
+          "description": "",
+          "name": "secret",
+          "number": 5,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            {
+              "name": "owner_id"
+            },
+            {
+              "desc": true,
+              "name": "created_at"
+            }
+          ]
+        },
+        {
+          "columns": [
+            {
+              "name": "owner_id"
+            },
+            {
+              "name": "title"
+            }
+          ],
+          "unique": true
+        }
+      ],
+      "key": "i64",
+      "label": "title",
+      "message": "Note",
+      "name": "note",
+      "soft_delete": false,
+      "version": true
+    },
+    {
+      "access": {
+        "admin": true,
+        "create": {
+          "any": [
+            {
+              "role": "clerk"
+            },
+            {
+              "role": "manager"
+            }
+          ]
+        },
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [],
+        "permits": [],
+        "read": {
+          "any": [
+            {
+              "role": "clerk"
+            },
+            {
+              "role": "manager"
+            }
+          ]
+        },
+        "relations": [],
+        "update": null
+      },
+      "append_only": true,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:hello.greeting"
+        },
+        {
+          "description": "",
+          "index": true,
+          "name": "name",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "encrypted": true,
+          "name": "email",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "inverse": "greetings",
+          "name": "note_id",
+          "nav": "note",
+          "number": 4,
+          "on_delete": "cascade",
+          "optional": true,
+          "repeated": false,
+          "type": "ref:hello.note"
+        },
+        {
+          "description": "",
+          "name": "greeter_id",
+          "number": 5,
+          "on_delete": "keep",
+          "optional": true,
+          "repeated": false,
+          "type": "ref:platform.user"
+        }
+      ],
+      "key": "i64",
+      "label": "name",
+      "message": "Greeting",
+      "name": "greeting",
+      "soft_delete": false,
+      "version": false
+    }
+  ],
+  "enums": [
+    {
+      "name": "Mood",
+      "values": [
+        "happy",
+        "sad"
+      ]
+    }
+  ],
+  "id": "hello",
+  "messages": [
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "name",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "mood",
+          "number": 2,
+          "optional": true,
+          "repeated": false,
+          "type": "enum:Mood"
+        }
+      ],
+      "kind": "message",
+      "name": "HelloRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "text",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "count",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "HelloReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:hello.note"
+        }
+      ],
+      "kind": "message",
+      "name": "GetNoteRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:hello.note"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "body",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "owner_id",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:platform.user"
+        },
+        {
+          "description": "",
+          "name": "secret",
+          "number": 5,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Note"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": true,
+          "repeated": false,
+          "type": "ref:hello.note"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "body",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "owner_id",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:platform.user"
+        }
+      ],
+      "kind": "message",
+      "name": "SaveNoteRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:hello.note"
+        }
+      ],
+      "kind": "message",
+      "name": "DeleteNoteRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "limit",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        }
+      ],
+      "kind": "message",
+      "name": "ListNotesRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "titles",
+          "number": 1,
+          "optional": false,
+          "repeated": true,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "ListNotesReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "owner_id",
+          "number": 1,
+          "optional": true,
+          "repeated": false,
+          "type": "ref:platform.user"
+        }
+      ],
+      "kind": "message",
+      "name": "CountAllNotesRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "count",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "NoteCount"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "min_notes",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "NotesByOwnerRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "owners",
+          "number": 1,
+          "optional": false,
+          "repeated": true,
+          "type": "message:NoteTally"
+        }
+      ],
+      "kind": "message",
+      "name": "NotesByOwnerReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "owner_id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:platform.user"
+        },
+        {
+          "description": "",
+          "name": "notes",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "NoteTally"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:hello.greeting"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "email",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "note_id",
+          "number": 4,
+          "optional": true,
+          "repeated": false,
+          "type": "ref:hello.note"
+        },
+        {
+          "description": "",
+          "name": "greeter_id",
+          "number": 5,
+          "optional": true,
+          "repeated": false,
+          "type": "ref:platform.user"
+        }
+      ],
+      "kind": "message",
+      "name": "Greeting"
+    }
+  ],
+  "permissions": [],
+  "roles": [
+    {
+      "default_for": "none",
+      "description": "",
+      "name": "clerk",
+      "strict": false,
+      "title": "Clerk"
+    },
+    {
+      "default_for": "none",
+      "description": "",
+      "name": "manager",
+      "strict": true,
+      "title": "Manager"
+    }
+  ],
+  "schema": 1,
+  "scopes": [],
+  "title": "Hello",
+  "version": "0.1.0"
+}

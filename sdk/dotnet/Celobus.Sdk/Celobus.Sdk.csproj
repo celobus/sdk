@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The celobus plugin SDK for .NET: declarations, the JSON codec, the describe mode and the session with the platform. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PackageId>Celobus.Sdk</PackageId>
+    <Version>0.1.0</Version>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Authors>Celobus</Authors>
+    <Company>Celobus</Company>
+    <Copyright>Copyright Celobus</Copyright>
+    <Description>The Celobus plugin SDK for .NET: declarations, the JSON codec, the describe mode and the session with the platform.</Description>
+    <PackageTags>celobus;plugin;sdk</PackageTags>
+    <PackageProjectUrl>https://celobus.com</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/celobus/sdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <!-- PolyForm Shield 1.0.0 has no SPDX identifier: the license travels as a file -->
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="" />
+    <None Include="LICENSE" Pack="true" PackagePath="" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The analyzers ship inside this package (analyzers/dotnet/cs): a plugin references Celobus.Sdk alone. -->
+    <ProjectReference Include="../Celobus.Sdk.Analyzers/Celobus.Sdk.Analyzers.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <None Include="../Celobus.Sdk.Analyzers/bin/$(Configuration)/netstandard2.0/Celobus.Sdk.Analyzers.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.85.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.85.0" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Celobus.Sdk.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Internal: the session messages are not part of the SDK's surface. The server stub is for the tests' fake platform. -->
+    <Protobuf Include="../../../proto/plugin.proto" GrpcServices="Both" Access="Internal" Link="plugin.proto" />
+  </ItemGroup>
+</Project>

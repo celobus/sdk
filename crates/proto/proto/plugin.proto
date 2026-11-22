@@ -1,0 +1,994 @@
+syntax = "proto3";
+
+package celobus.v1;
+
+option csharp_namespace = "Celobus.V1";
+
+// The plugin contract: the session a plugin keeps with the platform, the calls it makes over it and what it declares
+// about itself. Every SDK speaks it; a plugin never uses it directly.
+
+
+// A plugin opens one session: the platform sends client requests, the plugin sends responses and syscalls.
+service Celld {
+  rpc Session(stream PluginMessage) returns (stream CelldMessage);
+}
+
+message Header {
+  string name = 1;
+  string value = 2;
+}
+
+// plugin -> platform
+message PluginMessage {
+  oneof kind {
+    Register register = 1;   // first message of the session
+    Response response = 2;
+    Syscall syscall = 3;
+    Invalidate invalidate = 4;
+    JobDone job_done = 5;     // the outcome of a run's attempt (JobRun)
+    PluginLog plugin_log = 6; // a log line of a run
+  }
+}
+
+// Plugin UI: a change to what a topic's followers read, sent by plugin code (`ctx.invalidate`)
+// for keys an endpoint's `invalidates` cannot name. It carries no data: followers re-read as themselves.
+message Invalidate {
+  string topic = 1;
+  string key = 2;      // the canonical key: the key message's fields, sorted, values as strings; "" = every key
+}
+
+message Register {
+  string plugin = 1;   // plugin name: /w/{workspace}/p/{plugin}/...
+  string version = 2;
+  string runtime = 3;  // rust | node | dotnet
+  // plugins this plugin calls (from its dependency contracts); the plugin is ready only when they are attached
+  repeated string depends = 4;
+  // digest of the plugin's manifest (roles, scopes, method requirements); the platform refuses a mismatch
+  // with the installed manifest
+  string manifest_digest = 5;
+  // the token the platform handed this process (`CELOBUS_PLUGIN_TOKEN` in its environment): a session is
+  // accepted only for the plugin and the process it was issued for
+  string token = 6;
+  // how many runs of its jobs the process starts at once (its job pool); 0 = it runs no jobs. The platform never
+  // hands it more runs at once than this, so a run's timeout starts when its handler starts.
+  uint32 job_slots = 7;
+}
+
+message Response {
+  uint64 id = 1;       // request id from Request
+  uint32 status = 2;
+  repeated Header headers = 3;
+  bytes body = 4;
+}
+
+message Syscall {
+  uint64 id = 1;       // chosen by the plugin; echoed in SyscallResult
+  reserved 2, 3, 4, 6, 7, 8, 29, 38;  // removed
+  reserved "kv_get", "kv_set", "kv_delete", "authz_check", "sql_read";
+  oneof call {
+    Invoke invoke = 5;
+    MembersList members_list = 9;
+    MemberGet member_get = 10;
+    GroupsList groups_list = 11;
+    AgentRunStart agent_run = 12;
+    AgentRunGet agent_get = 13;
+    AgentRunEvents agent_events = 14;
+    AgentRunList agent_runs = 15;
+    AgentRunSend agent_send = 16;
+    AgentRunCancel agent_cancel = 17;
+    AgentRunClose agent_close = 18;
+    DbGet db_get = 19;
+    DbFind db_find = 20;
+    DbCount db_count = 21;
+    DbCreate db_create = 22;
+    DbUpdate db_update = 23;
+    DbDelete db_delete = 24;
+    DbRestore db_restore = 25;
+    TxBegin tx_begin = 26;
+    TxCommit tx_commit = 27;
+    TxRollback tx_rollback = 28;
+    NotifySend notify_send = 30;
+    NotifyFollow notify_follow = 31;
+    NotifyResolve notify_resolve = 32;
+    AgentsAvailable agents_available = 33;
+    DbAggregate db_aggregate = 34;
+    DbUpdateWhere db_update_where = 35;
+    DbUpsert db_upsert = 36;
+    QueryRead query = 37;
+    SqlRun sql = 39;
+    JobEnqueue job_enqueue = 40;
+    JobCancel job_cancel = 41;
+  }
+}
+
+// The repository of the calling plugin's own entities: the platform stores the
+// entities its descriptor declares in the workspace's database: a plugin sends typed requests and never sees a
+// credential. A plugin reaches only its own entities (another plugin's data only through that plugin's endpoints).
+// `entity` is the entity's name in the calling plugin's descriptor (`order_line`); a plugin without a descriptor has
+// no entities (`unavailable`).
+//
+// A row crosses the session as the entity's message in the protobuf JSON mapping (UTF-8 JSON object: lowerCamelCase
+// names, int64 and decimals as strings, absent fields omitted), the encoding every SDK's message codec speaks. Rows
+// the platform returns also carry the system columns `createdAt`, `updatedAt` (always), `deletedAt` (soft-delete
+// entities, when set) and `version` (versioned entities); in the entity's protobuf contract they are the fields
+// 1001-1004.
+//
+// Every call carries `request_id`, the id of the Request the plugin is handling (as Invoke does; 0 outside one), and
+// `tx`, a transaction from TxBegin (0: the call is a statement of its own). Errors are `<code>: <message>` in
+// SyscallResult.error, with `error_details` for the codes that have some: `not_found` (404), `version_conflict` (409,
+// `current_version`), `unique_conflict` (409, `column`), `append_only` (400), `invalid` (400: a row, a filter or a
+// field the descriptor does not have; a call of another request than the one its transaction was begun in),
+// `query_rows_limit` and `bulk_limit` (422), `row_locked` (409: a lock read with `NOWAIT` met a row another
+// transaction holds), `transaction_timeout` (504: the transaction outlived its request's 5 s,
+// or the request ended), `transaction_conflict` (409: a serialization failure or a deadlock), `unavailable` (503: no
+// database, no connection within 1 s, a statement past its 2 s), and the refusals of the entity's access rules (403):
+// `permission_denied` (a write the rules do not grant, or one that would leave the row unreadable to the writer; a
+// row the caller cannot read is `not_found`), `guard_denied` (a change of a guarded column no guard rule admits),
+// `capability_missing` (`as_system` on an entity or an operation outside the plugin's `authz:bypass`).
+//
+// Reads answer as the caller: rows the caller's rules grant, masked columns left out. `as_system` runs the call with
+// the system context instead (every row of the entity, no masks), within the scope the plugin's `authz:bypass`
+// capability declares, and each such call is recorded in the workspace's audit.
+//
+// A read of a dependency's entity (`ctx.query()`): DbGet, DbFind and DbCount with `dependency`, the provider's plugin
+// id, and `entity` the provider's entity. The calling plugin's descriptor must declare that it reads the entity
+// (`dependencies[].reads`), and the provider must export its `read`; the platform reads it as the caller, so the
+// provider's read rules and masks apply, with only the fields the reader declared. Never with
+// `as_system` (`capability_missing`): a system context does not reach another plugin's rows. `permission_denied`
+// when the read is not declared or the provider does not export it; `unavailable` when the provider is not installed
+// in the workspace or its installed contract lacks a field the reader declared.
+message DbGet {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  string id = 4;             // the key as protobuf JSON writes it: a UUID, an int64 in decimal, a string key
+  bool with_deleted = 5;     // a soft-deleted row too
+  string as_system = 6;      // the reason of a system context (`ctx.as_system`); empty: the caller's
+  string dependency = 7;     // the provider whose exported entity is read; empty: the plugin's own entity
+  // navigations to bring with the row (`.include(..)`): a forward nav (or its ref column's name) or an inverse nav
+  // of the entity, each read under its target's own read rules; the answer's DbRows.included. Not with `dependency`.
+  repeated string include = 8;
+  DbLock lock = 9;           // a row lock: only inside a transaction (`tx` set), only on the plugin's own entity
+}
+
+// A row lock of a read inside a declared transaction (`tx.db::<E>().get(id).for_update()`): the rows the read answers
+// are locked until the transaction ends. Waiting for a lock counts against the transaction's 5 s (past them,
+// `transaction_timeout`); `NOWAIT` fails at once with `row_locked` (409); `SKIP_LOCKED` leaves out the rows another
+// transaction holds (a work queue). Refused (`invalid`) outside a transaction, on a dependency's entity, and with
+// `with_deleted` or `all`.
+message DbLock {
+  enum Strength { LOCK_NONE = 0; FOR_UPDATE = 1; FOR_SHARE = 2; }
+  Strength strength = 1;
+  enum Wait { WAIT = 0; NOWAIT = 1; SKIP_LOCKED = 2; }
+  Wait wait = 2;
+}
+
+// One page of rows matching `filter` (unset: every row), in `order` then by id; keyset paging by `page_token`.
+message DbFind {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  DbFilter filter = 4;
+  repeated DbOrder order = 5;
+  uint32 limit = 6;          // 0 = 100; at most 100
+  string page_token = 7;     // from DbRows.next_page_token; opaque
+  bool with_deleted = 8;
+  // every matching row at once (`.all()`): limit and page_token are ignored, and more than 1,000 rows is
+  // `query_rows_limit` (nothing is returned)
+  bool all = 9;
+  string as_system = 10;
+  string dependency = 11;    // as in DbGet
+  // as in DbGet; the rows they bring count toward the 1,000 rows of a read (`query_rows_limit`)
+  repeated string include = 12;
+  DbLock lock = 13;          // as in DbGet (not with `all`)
+}
+
+// Groups of the rows matching `filter` (unset: every row; soft-deleted rows only `with_deleted`), read as the
+// caller as any read is: by the values of `group_by` (empty: one group of every row), each with the
+// count of its rows (`COUNT`) or the sum of `field` (`SUM`: an int32, int64, double or decimal field; null values
+// count as nothing, a group of none sums to 0). At most 1,000 groups (`query_rows_limit`, nothing answered), in the
+// order of their keys (nulls last). The answer is DbGroups.
+message DbAggregate {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  DbFilter filter = 4;
+  bool with_deleted = 5;
+  string as_system = 6;
+  string dependency = 7;     // as in DbGet
+  string group_by = 8;       // a comparable field or system column; empty: no groups
+  enum Measure { COUNT = 0; SUM = 1; }
+  Measure measure = 9;
+  string field = 10;         // SUM: the field summed
+}
+
+// Changes the fields `patch` names (as DbUpdate) on every row matching `filter` (unset: every row) that the caller
+// may read, in one statement: each row must pass the entity's `update` grant and its guards, as DbUpdate's does
+// (one that does not refuses the whole statement: `permission_denied`, `guard_denied`); more than 1,000 rows is
+// `bulk_limit` and nothing is written. `version` and `updated_at` move on each row changed; soft-deleted rows are
+// not changed. The answer is DbCountResult: the rows changed.
+message DbUpdateWhere {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  DbFilter filter = 4;
+  bytes patch = 5;
+  string as_system = 6;
+}
+
+// Creates `row`, or, when a row with the same value of the unique column `on` exists (on a soft-delete entity: a
+// row that is not deleted), changes that row to it (every field of `row`; `version` and `updated_at` move). `on`
+// is a single-column unique field, or `id` on a `string`-key entity. The new row passes the `create` grant, the
+// changed one the `update` grant and the guards (else `permission_denied` / `guard_denied`). The answer is DbRows
+// with the row.
+message DbUpsert {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  string on = 4;
+  bytes row = 5;
+  string as_system = 6;
+}
+
+message DbCount {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  DbFilter filter = 4;
+  bool with_deleted = 5;
+  string as_system = 6;
+  string dependency = 7;     // as in DbGet
+}
+
+// New rows, in one statement: the key is made by the platform for `uuid` (a UUIDv7) and `i64` (an identity) entities
+// and taken from the row for `string` ones; system columns in a row are ignored. At most 1,000 rows (`bulk_limit`).
+message DbCreate {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  repeated bytes rows = 4;
+  string as_system = 5;
+}
+
+// Changes the fields `patch` names (a JSON object: a field set to `null` becomes null, a field not in it stays);
+// `version` moves by one and `updated_at` to now. With `expected_version`, a row at another version is
+// `version_conflict` (the current version in the details).
+message DbUpdate {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  string id = 4;
+  bytes patch = 5;
+  optional int64 expected_version = 6;
+  string as_system = 7;
+}
+
+// Deletes a row: a soft-delete entity's row is marked (`deleted_at`) unless `force`, any other is removed.
+message DbDelete {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  string id = 4;
+  optional int64 expected_version = 5;
+  bool force = 6;
+  string as_system = 7;
+}
+
+// Clears `deleted_at` of a soft-deleted row.
+message DbRestore {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string entity = 3;
+  string id = 4;
+  string as_system = 5;
+}
+
+// A condition tree over the entity's fields and system columns, by their canonical (snake_case) names. Never SQL.
+message DbFilter {
+  oneof node {
+    DbFilters and = 1;
+    DbFilters or = 2;
+    DbFilter not = 3;
+    DbCondition condition = 4;
+  }
+}
+message DbFilters { repeated DbFilter items = 1; }
+message DbCondition {
+  string field = 1;
+  enum Op {
+    OP_UNSPECIFIED = 0;
+    EQ = 1;
+    NE = 2;
+    LT = 3;
+    LE = 4;
+    GT = 5;
+    GE = 6;
+    IN = 7;        // any of `values`
+    IS_NULL = 8;   // no values
+    IS_NOT_NULL = 9;
+    // full-text search of a `searchable` field: `values` is one string of words, read as `websearch_to_tsquery` in
+    // the field's language (`"quoted phrase"`, `or`, `-word`); refused (`invalid`) on a field that is not searchable
+    SEARCH = 10;
+    // a case-insensitive substring of a string field: `values` is one string, taken literally (no wildcards)
+    CONTAINS = 11;
+  }
+  Op op = 2;
+  repeated DbValue values = 3;   // one for a comparison
+}
+// A parameter, converted by the platform to the field's type (a decimal, a UUID, a timestamp or a date is a string as
+// in protobuf JSON, bytes are bytes).
+message DbValue {
+  oneof kind {
+    string string_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    bool bool_value = 4;
+    bytes bytes_value = 5;
+  }
+}
+message DbOrder { string field = 1; bool desc = 2; }
+
+message DbRows {
+  repeated bytes rows = 1;        // as in DbCreate, with the system columns
+  string next_page_token = 2;     // empty: the last page
+  // with `include`: one JSON object per row, in the order of `rows`, from each included name to the row a forward
+  // nav names (left out when there is none or the caller may not read it) or the list of rows of an inverse nav
+  // (in id order; `[]` when none)
+  repeated bytes included = 3;
+}
+message DbCountResult { uint64 count = 1; }
+message DbGroups { repeated DbGroup groups = 1; }
+// A group's key (the group_by field's value as protobuf JSON: `null` for rows without one; `null` without groups)
+// and its measure (a count as an int64, a sum as the field's type: an int64 for int32 and int64 fields), each the
+// UTF-8 JSON of the value.
+message DbGroup { bytes key = 1; bytes value = 2; }
+
+// A declared transaction (`ctx.transaction`): open until TxCommit or TxRollback; the platform rolls it back when the
+// request it was begun in ends, when its 5 s pass or when the session closes. A TxBegin with `tx` set is a nested
+// transaction inside that one, which rolls back alone; ending one ends the transactions nested in it.
+message TxBegin {
+  uint64 request_id = 1;
+  uint64 tx = 2;                  // the enclosing transaction: a nested one
+  enum Isolation { READ_COMMITTED = 0; REPEATABLE_READ = 1; SERIALIZABLE = 2; }
+  Isolation isolation = 3;        // not on a nested transaction
+  bool read_only = 4;
+  string as_system = 5;            // a transaction of a system context: its calls carry the same reason
+}
+message TxBegun { uint64 tx = 1; }
+
+// SQL the plugin sends as text (`ctx.sql`, `ctx.unsafe_sql`), with `params` a JSON array:
+// `$1` is its first value (a string, a number, `true`, `false`, `null`, an object or array as its JSON), typed where
+// it stands in the query; a value never becomes SQL. The SQL is PostgreSQL's. The answer is DbRows: one JSON object
+// per row (its columns by name), at most 1,000 (`query_rows_limit`), within the statement timeout (2 s).
+//  * `unsafe` false (`ctx.sql`): one query that reads (`select`, `with`, `values`, `table`) the entities of every
+//    installed plugin and the directory (`chat_post`, `platform_user`) as the caller: every entity's own rules and
+//    masks apply, and a system context lifts only its own plugin's. Part of the transaction inside one, read-only
+//    outside. Catalogs (`pg_*`, `information_schema`) and other workspaces are refused.
+//  * `unsafe` true (`ctx.unsafe_sql`, the capability `sql:unsafe`): the tables of every plugin of the workspace
+//    (`chat_post`, `crm_customer`) past their rules; a read, or with the capability `sql:write` also `insert`,
+//    `update` or `delete` (the rows of `returning` come back). Every relation it reads or writes must be a plugin's
+//    entity, never the platform's own data, the directory (`platform_user`) or a catalog (`permission_denied`
+//    otherwise). It runs in a system context of its own (guards and versions still hold) outside a transaction, and
+//    each run is recorded in the workspace's audit.
+message SqlRun {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string query = 3;
+  bytes params = 4;
+  bool unsafe = 5;
+}
+// A typed read across entities (`ctx.query()`): the SDK sends the query
+// as a tree of entities and columns by their canonical names, operators and values as typed parameters, never SQL.
+// The platform checks the tree against the installed descriptors and runs it as one read as the caller (read-only
+// outside a declared transaction, part of the transaction inside one), within the statement timeout (2 s). Every
+// entity of the tree is read through its own rules: the plugin's own entities by theirs, a dependency's exported
+// entity (one the plugin declares it reads, with the fields it declares) by the provider's, the workspace directory
+// (`platform.*`) by the reader's base role. A system context (`as_system`) reads the plugin's own entities within its
+// `authz:bypass` (`read`) scope and the directory as a member does; a dependency's entity or one outside the scope
+// is `capability_missing`.
+//
+// The answer: ALL, FIRST and PAGE are DbRows, one row per result row: a JSON array of the select items' values as
+// protobuf JSON (`null` for none; a `label` is `{"id", "text", "avatarUrl"}` or `null`), or, without select, the root
+// entity's row as DbFind answers it; COUNT is DbCountResult (the rows, or the groups of a grouped query).
+//
+// Errors besides the Db* calls': `query_invalid` (500: the tree names an entity, a column, a type or an operator the
+// installed descriptors refuse, or breaks a rule of the tree; the message names the entity or the column),
+// `query_size_limit` (422: the encoded tree is over 64 KiB, has more than 500 nodes or nests deeper than 16),
+// `query_join_limit` (422: more than 8 entities, joined and in `exists`), `query_rows_limit` (422: ALL past 1,000
+// rows or groups), `query_response_limit` (422: rows over 4 MiB).
+message QueryRead {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  Query query = 3;
+  enum Mode {
+    ALL = 0;     // every row, at most 1,000 (or `limit`)
+    FIRST = 1;   // the first row, or none
+    COUNT = 2;   // how many rows (or groups)
+    PAGE = 3;    // a page of `limit` rows (0 = 100, at most 100) after `page_token`: keyset over the order and the keys
+  }
+  Mode mode = 4;
+  string page_token = 5;     // PAGE: from DbRows.next_page_token; opaque, bound to the query's shape
+  string as_system = 6;
+  // where the query was composed (`src/jobs/remind.rs:52`): the platform logs it with a slow or refused query
+  string source = 7;
+}
+
+// The query tree. Names are canonical: an entity is `order` (the plugin's own), `crm.customer` (a dependency's) or
+// `platform.user` (the directory: `platform.user`, `platform.group`, `platform.group_member`,
+// `platform.role_assignment`); a column is a field's snake_case name, `id` or a system column (`created_at`, ...).
+message Query {
+  repeated QuerySource sources = 1;   // the first is the root (ROOT), each other joined to one before it
+  QueryExpr filter = 2;               // unset: every row
+  repeated QueryColumn group_by = 3;
+  QueryExpr having = 4;               // conditions on aggregates and grouped columns
+  repeated QuerySelect select = 5;    // empty: the root's rows
+  repeated QueryOrder order = 6;      // then the keys (each source's `id`, or the grouped columns)
+  uint32 limit = 7;                   // 0: none
+}
+
+// An entity of the query under its alias (`[a-z][a-z0-9_]{0,63}`, unique in the query; the SDKs default it to the
+// canonical name with `_` for `.`: `crm_customer`). A join's `left` is a column of a source before it, `right` one of
+// this source, both of one key: a ref and the `id` it names (either direction), or two refs to the same entity. A
+// left-joined source's columns are null where no row (or no row the caller may read) matches.
+message QuerySource {
+  string entity = 1;
+  string alias = 2;
+  enum Join { ROOT = 0; INNER = 1; LEFT = 2; }
+  Join join = 3;
+  QueryColumn left = 4;
+  QueryColumn right = 5;
+}
+
+message QueryColumn {
+  string source = 1;   // a source's alias
+  string field = 2;
+}
+
+message QueryExpr {
+  oneof node {
+    QueryExprs and = 1;
+    QueryExprs or = 2;
+    QueryExpr not = 3;
+    QueryCompare compare = 4;
+    QueryExists exists = 5;
+  }
+}
+message QueryExprs { repeated QueryExpr items = 1; }
+
+// `left op values` (EQ ... GE with one value, IN with any, IS_NULL and IS_NOT_NULL with none, SEARCH and CONTAINS with
+// one string, as in DbCondition) or `left op right` (EQ ... GE: two columns of one type, or an aggregate and a column).
+message QueryCompare {
+  QueryTerm left = 1;
+  DbCondition.Op op = 2;
+  repeated DbValue values = 3;
+  QueryTerm right = 4;
+}
+
+message QueryTerm {
+  oneof kind {
+    QueryColumn column = 1;
+    QueryAggregate aggregate = 2;
+  }
+}
+
+// COUNT counts rows (`column` unset); COUNT_DISTINCT the distinct values of a column; SUM (0 for none) and AVG of a
+// number; MIN and MAX of a comparable column (null for none).
+message QueryAggregate {
+  enum Fn { COUNT = 0; COUNT_DISTINCT = 1; SUM = 2; AVG = 3; MIN = 4; MAX = 5; }
+  Fn fn = 1;
+  QueryColumn column = 2;
+}
+
+// A correlated `EXISTS`: a row of `source` (an entity and its alias; the join fields are not used) for which `filter`
+// holds; the filter may name the query's sources. NOT EXISTS is `not` around it.
+message QueryExists {
+  QuerySource source = 1;
+  QueryExpr filter = 2;
+}
+
+// A select item: a row's values come back in the order of the items (an SDK names them by position).
+message QuerySelect {
+  oneof kind {
+    QueryColumn column = 1;
+    QueryAggregate aggregate = 2;
+    // the label of the row a ref names (or of the source's own row, field `id`): a person's or a group's name (and
+    // avatar) from the directory, which every reader may read; another row's label column through its
+    // entity's rules (null when the caller may not read it)
+    QueryColumn label = 3;
+  }
+}
+
+message QueryOrder {
+  QueryTerm term = 1;
+  bool desc = 2;      // ascending: nulls last; descending: nulls first
+}
+
+message TxCommit { uint64 request_id = 1; uint64 tx = 2; }
+message TxRollback { uint64 request_id = 1; uint64 tx = 2; }
+
+// Notifications: the calling plugin sends, the platform stores them, tracks read and done,
+// follows and preferences, checks access and delivers (the inbox, live, and a daily email digest). A plugin never
+// reads a notification, a follow or a member's settings, its own included; the one read it has is whether the
+// caller of its request follows one of its own keys (NotifyFollow with op GET).
+//
+// NotifySend and NotifyFollow need the plugin's capability `push:send` (`capability_missing`, 403). Every call
+// carries `request_id` (0 outside a request) and `tx` (0: written alone and emitted at once; a transaction of TxBegin:
+// written in it and emitted when it commits, nothing when it rolls back). Errors are `<code>: <message>` in
+// SyscallResult.error: `invalid` (400: an undeclared kind, a link, button, subject or actor the rules refuse, a
+// field over its limit, an unspecified enum), `follow_limit` (409: a MANUAL follow outside a transaction would give a
+// key more than 2,000 active followers), `unavailable` (503: no database, a statement past its 2 s; outside a
+// transaction), and the transaction's own (`transaction_timeout`). In a transaction a call the database or a limit
+// refuses is let go alone (logged) and answers `ok`, so a notification never undoes the plugin's write. Sends over
+// 50 a second per plugin instance (bursts of 200) are let go too, in a transaction or not (the SDKs still map
+// `rate_limited` to 429).
+// NotifySend and NotifyResolve answer `ok`, and say nothing about who received what: a member's settings are not
+// the plugin's to learn.
+message NotifySend {
+  uint64 request_id = 1;           // the request being handled: its caller is the default actor; 0 outside one
+  uint64 tx = 2;                   // written in that transaction; emitted when it commits
+  string kind = 3;                 // a kind of the plugin's descriptor; must be empty when `ask` is set
+  repeated string to = 4;          // user ids, at most 100
+  bool followers = 5;              // also the active followers of `key`
+  repeated string except = 6;      // user ids left out (those already told in this request)
+  string key = 7;                  // <= 200 bytes; groups unread rows; required with followers and with ask
+  string subject = 8;              // "<entity>/<id>" of the plugin's own entity: hidden from who cannot read the row
+  NotifyActor actor = 9;
+  string title = 10;               // <= 140 characters, plain text
+  string body = 11;                // <= 500 characters, plain text
+  NotifySource source = 12;
+  NotifyLink link = 13;
+  NotifyAsk ask = 14;              // set: an approval or a decision; the only discriminator of an ask
+  string once = 15;                // <= 120 bytes: a member gets at most one notification of this plugin per value
+                                   // (within retention); not with `ask`, whose key is its identity
+}
+message NotifyActor {
+  oneof who {
+    bool caller = 1;               // the caller of request_id (the default when unset)
+    string agent = 2;              // one of the plugin's own agents, by name: its service account
+    bool none = 3;                 // nobody: the plugin's mark is shown
+  }
+}
+message NotifySource {
+  string label = 1;                // "#fulfilment", <= 80 characters
+  string icon = 2;                 // an icon of the kit by name ("hash")
+}
+message NotifyLink {
+  string screen = 1;               // a screen of the plugin's UI document
+  string overlay = 2;              // or a document-level overlay (a side panel: shown beside the inbox list)
+  string args = 3;                 // JSON object of the target's params, <= 1 KiB
+  // the plugin whose UI it opens: empty (the sending plugin; the starting plugin of AgentRunStart.notify_link) or
+  // that plugin's own id (`invalid` otherwise). The inbox's item names it as `link.plugin` when the row's plugin is
+  // another one (an agent run's end, a row of `platform`)
+  string plugin = 4;
+}
+message NotifyAsk {
+  enum Kind { KIND_UNSPECIFIED = 0; APPROVAL = 1; DECISION = 2; }   // unspecified: `invalid`
+  Kind kind = 1;
+  repeated NotifyButton buttons = 2;   // 1 to 3
+  string review = 3;                   // the link's label ("Review 5 changes"); the link is NotifySend.link
+}
+message NotifyButton {
+  string label = 1;                // <= 32 characters
+  string endpoint = 2;             // a declared `ui` endpoint of the plugin, by name ("ApproveRun")
+  string body = 3;                 // its request, a JSON object, <= 2 KiB
+  bool primary = 4;
+  string icon = 5;
+}
+// Follow, stop following, or ask whether the caller follows a key of the plugin.
+message NotifyFollow {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string key = 3;                  // <= 200 bytes
+  string subject = 4;              // "<entity>/<id>": inherited by followers sends that name none
+  string noun = 5;                 // <= 24 characters: "thread" (the inbox's "Stop following this thread")
+  repeated string users = 6;       // empty: the caller of request_id; at most 100; others than the caller only in a
+                                   // FOLLOW with REPLIED or EDITED (a manual follow and a stop are the member's own)
+  enum Reason { REASON_UNSPECIFIED = 0; MANUAL = 1; REPLIED = 2; EDITED = 3; }   // unspecified: `invalid` (FOLLOW)
+  Reason reason = 7;               // REPLIED / EDITED follow only members whose setting says so and who never stopped
+  enum Op { OP_UNSPECIFIED = 0; FOLLOW = 1; UNFOLLOW = 2; GET = 3; }            // unspecified: `invalid`
+  Op op = 8;                       // GET: the caller's state (`users` empty); FOLLOW beyond 2,000: `follow_limit`
+}
+message NotifyFollowState { bool following = 1; }
+// Every open ask of the plugin with this key is resolved (read and done, with its outcome), for every member.
+message NotifyResolve {
+  uint64 request_id = 1;
+  uint64 tx = 2;
+  string key = 3;
+  string outcome = 4;              // <= 80 characters: "Approved by Sarah Bennett"
+}
+
+// Member directory of the workspace, answered by the platform.
+// `Member.email` is filled only for plugins whose manifest declares the permission `members.email`.
+message MembersList { string page_token = 1; uint32 limit = 2; }   // limit <= 500
+message MemberGet   { string user_id = 1; }
+message GroupsList  { string page_token = 1; uint32 limit = 2; }
+message MembersPage { repeated Member members = 1; string next_page_token = 2; }
+message GroupsPage  { repeated Group groups = 1; string next_page_token = 2; }
+
+// Agent runs from a plugin's code. A plugin starts the runs of its own
+// agents (`agent` is a name it declares) and of the agents of the workspace's other plugins that the caller of the
+// request it handles reaches (`<plugin>.<name>`; never for a caller that is an agent's account: `forbidden`). It reads and acts on the runs of its own agents and on the runs
+// its code started; any other run answers `not_found`. Errors are `<code>: <message>` in SyscallResult.error:
+// `unknown_agent`, `not_found` (404), `run_ended` (409), `bad_request` (400), `forbidden` and the admission refusals
+// (403).
+message AgentRunStart {
+  // the agent: its name in the calling plugin (`assistant`), or `<plugin>.<name>` of an agent of another installed
+  // plugin, which the caller of the request (`request_id`) must reach as for `POST /sys/agent-runs` (`forbidden`)
+  string agent = 1;
+  string input = 2;            // the task
+  // What a start leaves out is what the agent's declaration says, then the platform's default.
+  string engine = 3;           // claude | codex | pi; empty = unset
+  string model = 4;            // empty = unset
+  optional bool session = 5;
+  uint32 timeout_s = 6;        // 0 = unset
+  // the id of the Request this plugin is handling: its caller is who started the run (`started_by`). A start
+  // without a request in progress is refused (`forbidden`)
+  uint64 request_id = 7;
+  // The group the run joins: the id of a group this plugin's code founded, that is, of
+  // a run its code started without one. Empty: the run founds a new group. `unknown_group` (404) when the platform no
+  // longer remembers the group's first run or another plugin founded it, `agent_in_group` (409) when the agent has
+  // a live run in the group already, `group_full` (409) when the group has its eight live runs.
+  string group = 8;
+  // Tell the person the run works for when it finishes; a failure always notifies.
+  bool notify = 9;
+  // Where the notification of its end opens (a screen or overlay of the calling plugin's UI).
+  NotifyLink notify_link = 10;
+  // A topic of the calling plugin (one its descriptor declares; `bad_request` otherwise), invalidated whenever this
+  // run changes, as the topic its agent declares is. Empty: none.
+  string topic = 11;
+  // The key of `topic` to invalidate: the canonical key, as Invalidate.key (the key message's fields, sorted, values
+  // as strings). Empty: every key. A key without a topic is `bad_request`.
+  string topic_key = 12;
+}
+message AgentRunGet { string run_id = 1; }
+// The events after `after` (a sequence number; 0 = from the first), oldest first, at most `limit` (0 = all the run
+// keeps), with the run and its unfinished text. Answered at once: a follower re-reads when the agent's topic is
+// invalidated (`Agent.topic` in the descriptor).
+message AgentRunEvents { string run_id = 1; uint64 after = 2; uint32 limit = 3; }
+// The recent runs the calling plugin sees (of its own agents, and the runs its code started), newest first; `agent`
+// narrows them to one agent: a name of its own, or `<plugin>.<name>`. limit: 0 = 50, at most 200. `group` narrows
+// them to the runs of one group (AgentRun.group).
+message AgentRunList { string agent = 1; uint32 limit = 2; string group = 3; }
+// A follow-up input of a run that has not ended, recorded as sent by the caller of the request in progress
+// (`request_id`, as in AgentRunStart).
+message AgentRunSend { string run_id = 1; string text = 2; uint64 request_id = 3; }
+message AgentRunCancel { string run_id = 1; }   // stop now
+message AgentRunClose { string run_id = 1; }    // end a session after its turn
+
+// A run as its plugin sees it.
+message AgentRun {
+  string id = 1;
+  string agent = 2;                 // the agent's name in its plugin
+  string plugin = 3;
+  string engine = 4;
+  string model = 5;                 // empty: the engine's own
+  string status = 6;                // starting | running | idle | succeeded | failed | cancelled | timed_out
+  bool session = 7;
+  string input = 8;
+  string result = 9;                // of the last finished turn; empty: none yet
+  AgentRunError error = 10;         // unset unless the run failed or timed out
+  AgentRunActor started_by = 11;    // the caller of the request the run was started in, or of the HTTP call
+  string started_by_plugin = 12;    // the plugin whose code started it; empty: started over HTTP
+  int64 created_at = 13;            // unix milliseconds, like the two below
+  int64 updated_at = 14;
+  int64 deadline_at = 15;
+  uint32 turn = 16;
+  uint64 last_seq = 17;             // the sequence number of its last event
+  string pod = 18;                  // where the run executes, as last reported; for diagnostics
+  // The group the run belongs to: the id of the group's first run (its own id for a run that founded one). The
+  // agents of a group message each other by name; an agent never leaves its group.
+  string group = 19;
+  string parent = 20;               // the agent run that started this one; empty: a person or a plugin's code did
+  string parent_agent = 21;         // that run's agent, `<plugin>.<name>`; empty with `parent`
+  AgentRunActor on_behalf_of = 22;  // the person at the root: who started the run, or the run that started it
+}
+message AgentRunError { string code = 1; string message = 2; }
+message AgentRunActor { string user_id = 1; string display_name = 2; }
+// One event of a run. `json` is the whole event as the HTTP route returns it (a JSON object: `seq`, `at`, `type`
+// and the fields of its type).
+message AgentRunEvent { uint64 seq = 1; int64 at = 2; string type = 3; bytes json = 4; }
+// The messages being written right now: text, not events. `rev` counts the changes (0: none yet).
+message AgentRunPartial {
+  uint64 rev = 1;
+  repeated AgentRunPartialMessage messages = 2;
+}
+message AgentRunPartialMessage { string message_id = 1; string text = 2; }
+message AgentRunEventsPage {
+  AgentRun run = 1;
+  repeated AgentRunEvent events = 2;
+  AgentRunPartial partial = 3;
+}
+message AgentRunsPage { repeated AgentRun runs = 1; }
+message AgentRunInput { uint64 seq = 1; }   // the sequence number of the input a send recorded
+
+// The agents of the workspace's installed plugins that the caller of the request in progress (`request_id`) may
+// start a run of: those of the plugins they reach, the calling plugin's own among them. Refused (`forbidden`) without
+// a request of a signed-in caller.
+message AgentsAvailable { uint64 request_id = 1; }
+// An agent as its installed package describes it.
+message AvailableAgent {
+  string agent = 1;            // `<plugin>.<name>`: what AgentRunStart.agent takes
+  string plugin = 2;
+  string name = 3;
+  string title = 4;            // its display name: the declared title, else its name
+  string description = 5;
+  string icon = 6;             // its glyph, a lucide icon name; empty: none
+  // the engine its runs get in this workspace when a start names none: an owner's or admin's choice, else the
+  // declared one, else its connection's protocol's (AgentEngines); empty: none can be resolved (no connection)
+  string engine = 7;
+  bool session = 8;            // its runs are sessions by its declaration
+  string plugin_title = 9;     // its plugin's title, else the plugin's id
+}
+// Sorted by plugin, then name.
+message AvailableAgents { repeated AvailableAgent agents = 1; }
+
+// Call another plugin of the workspace (through the platform).
+message Invoke {
+  string plugin = 1;
+  Request request = 2; // id is ignored; principal is set by the platform
+  // the id of the Request this plugin is handling: the call runs as that request's caller and must pass
+  // the same admission test for the target. 0 = no caller (refused by methods that need a member)
+  uint64 request_id = 3;
+}
+
+// Background jobs. A job is a payload message and a handler, declared in the plugin's descriptor
+// (`jobs`) with its retries, timeout, concurrency, schedule and who it runs as. A run is one execution of a job, with
+// a stable id across its attempts; the platform delivers it at least once (JobRun), and the plugin answers each
+// attempt (JobDone). A plugin reaches only its own jobs and runs.
+
+// Starts a run of one of the calling plugin's jobs, as the caller of the request or run in progress (a job declared
+// to run as the system always does). With `tx`, the run is written in that transaction and exists only if it
+// commits; without, it is recorded when the call returns. Errors: `invalid` (job not declared, payload not the
+// job's message, `at` more than a year ahead), `payload_too_large` (over 64 KiB: put larger input in an entity and
+// pass its id), `queue_full` (429: 10,000 pending runs of the plugin), `cancelled` (the run making the call was
+// aborted). A singleton enqueue inside a transaction may wait for a concurrent transaction enqueuing the same key.
+message JobEnqueue {
+  string job = 1;                // the job's key in the plugin (`remind_unpaid`)
+  string payload = 2;            // the job's message, protobuf JSON mapping
+  oneof when {
+    uint64 delay_ms = 3;
+    int64 at_unix_ms = 4;        // unset: now
+  }
+  // non-empty: one run per key and job while that run is kept (7 days after it ends, 30 if it failed); past
+  // 100,000 kept runs of a job, the oldest keys may be reused earlier
+  string singleton = 5;
+  uint64 request_id = 6;         // as on every call
+  uint64 tx = 7;                 // 0: not in a transaction
+}
+// existing: the key was taken by an earlier run, whose id and state are returned (its payload is kept, not replaced)
+message JobEnqueued {
+  string run_id = 1;
+  bool existing = 2;
+  RunState state = 3;
+}
+// The state of a run. `failed` means failed for good: its retries used up, or it failed as permanent.
+enum RunState {
+  RUN_STATE_UNSPECIFIED = 0;
+  RUN_STATE_PENDING = 1;
+  RUN_STATE_RUNNING = 2;
+  RUN_STATE_DONE = 3;
+  RUN_STATE_FAILED = 4;
+  RUN_STATE_CANCELLED = 5;
+}
+
+// Cancels one of the plugin's own runs: a pending run never starts, a running one is aborted (JobAbort, CANCELLED).
+// `not_found` when the plugin has no such run.
+message JobCancel {
+  string run_id = 1;
+  uint64 request_id = 2;
+}
+message JobCancelled { bool cancelled = 1; }   // false: it had already ended
+
+// A run to execute now. The handler's calls carry `request_id`, as a request's do, and run as the run's principal.
+message JobRun {
+  string run_id = 1;
+  string job = 2;                // the job's key
+  uint32 attempt = 3;            // 1 on the first delivery
+  // retries + 1; after an admin's retry: the attempts so far + retries + 1 (`attempt` never restarts, so
+  // `attempt == max_attempts` is always the last try)
+  uint32 max_attempts = 4;
+  string payload = 5;            // protobuf JSON mapping
+  Principal principal = 6;       // unset: the plugin's system principal
+  // the occurrence (or due time) the run stands for; the same in every attempt
+  int64 scheduled_at_unix_ms = 7;
+  uint32 timeout_ms = 8;
+  uint64 request_id = 9;
+}
+// Stop the run's handler; answer its JobDone when it has stopped. From this moment every call carrying the
+// attempt's `request_id` is answered `cancelled`, and its open transactions roll back.
+message JobAbort {
+  string run_id = 1;
+  // An open set: an SDK treats a reason it does not know as CANCELLED.
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    TIMEOUT = 1;                 // past the job's timeout
+    CANCELLED = 2;               // by the plugin (JobCancel) or a workspace admin
+    SHUTDOWN = 3;                // the platform stops; the attempt is not charged
+    LEASE_LOST = 4;              // the platform lost track of the attempt and will deliver the run again
+    AUTH_CHANGED = 5;            // the principal it runs as left the workspace
+    REMOVED = 6;                 // the job or the plugin was removed
+  }
+  Reason reason = 2;
+}
+
+// The outcome of one attempt of a run (`attempt` as in its JobRun). A late answer to an attempt that already ended
+// is ignored.
+message JobDone {
+  string run_id = 1;
+  uint32 attempt = 2;
+  oneof outcome {
+    JobOk ok = 3;
+    JobError error = 4;
+  }
+}
+message JobOk {}
+message JobError {
+  // For the admin screen and logs. Codes the platform itself records for an attempt: `timeout`, `cancelled`,
+  // `shutdown`, `lease_lost`, `process_exited`, `auth_changed`, `job_removed`, `plugin_removed`,
+  // `payload_invalid`; the SDKs send their error classes (`unavailable`, `internal`, `invalid`, `not_found`,
+  // `permission_denied`); a plugin's own codes are free-form.
+  string code = 1;
+  string message = 2;            // at most 2 KiB is kept
+  bool permanent = 3;            // the only signal: true = not retried
+}
+
+// One log line of the run whose `request_id` it carries; kept with the run, by attempt. Lines of a request are not
+// kept this way.
+message PluginLog {
+  uint64 request_id = 1;
+  enum Level {
+    LEVEL_UNSPECIFIED = 0;
+    DEBUG = 1;
+    INFO = 2;
+    WARN = 3;
+    ERROR = 4;
+  }
+  Level level = 2;
+  string message = 3;            // cut at 2 KiB
+  int64 at_unix_ms = 4;
+}
+
+// platform -> plugin
+message CelldMessage {
+  oneof kind {
+    Registered registered = 1;
+    Request request = 2;
+    SyscallResult syscall_result = 3;
+    JobRun job_run = 4;
+    JobAbort job_abort = 5;
+  }
+}
+
+message Registered {
+  string instance_id = 1;
+}
+
+message Request {
+  uint64 id = 1;
+  string method = 2;
+  string path = 3;     // path after /w/{workspace}/p/{plugin}
+  string query = 4;
+  repeated Header headers = 5;
+  bytes body = 6;
+  // who calls: set by the platform (never by a plugin); unset for system calls
+  Principal principal = 7;
+}
+
+// The caller of a plugin request, resolved by the platform. An invoke between plugins carries the original caller.
+message Principal {
+  string user_id = 1;
+  enum Kind { KIND_UNSPECIFIED = 0; PERSON = 1; SERVICE = 2; }
+  Kind kind = 2;
+  string display_name = 3;
+  // effective roles: workspace.owner|admin|member (expanded) and plugin roles <plugin>.<role>
+  repeated string roles = 4;
+  repeated string groups = 5;   // group ids
+  // the token's scopes for the target plugin, expanded: plugin:* / plugin:<name> -> every scope the
+  // plugin declares, as <plugin>:<scope>
+  repeated string scopes = 6;
+}
+
+// A workspace member as plugins see it (directory).
+message Member {
+  string user_id = 1;
+  Principal.Kind kind = 2;
+  string display_name = 3;
+  repeated string roles = 4;
+  repeated string groups = 5;
+  string email = 6;          // only for plugins with members.email
+  string avatar_url = 7;
+  int64 last_active = 8;     // unix seconds, hour resolution
+  string locale = 9;
+}
+
+message Group {
+  string id = 1;
+  string name = 2;
+  repeated string members = 3;  // user ids
+}
+
+message SyscallResult {
+  uint64 id = 1;
+  string error = 2;    // empty = success
+  reserved 3, 6, 21;   // removed
+  reserved "kv_value", "authz";
+  oneof result {
+    Response invoke_response = 4;
+    Empty ok = 5;
+    MembersPage members_page = 7;
+    Member member = 8;             // MemberGet; error "not found" when absent
+    GroupsPage groups_page = 9;
+    AgentRun agent_run = 10;                // AgentRunStart/Get/Cancel/Close
+    AgentRunEventsPage agent_events = 11;
+    AgentRunsPage agent_runs = 12;
+    AgentRunInput agent_input = 13;         // AgentRunSend
+    DbRows db_rows = 14;                    // DbGet (one row), DbFind, DbCreate, DbUpdate, DbRestore (one row), SqlRun, QueryRead
+    DbCountResult db_count = 15;            // DbCount, DbUpdateWhere, QueryRead (COUNT)
+    TxBegun tx_begun = 16;
+    NotifyFollowState notify_follow_state = 18;   // NotifyFollow; NotifySend and NotifyResolve answer ok
+    AvailableAgents agents_available = 19;
+    DbGroups db_groups = 20;                // DbAggregate
+    JobEnqueued job_enqueued = 22;          // JobEnqueue
+    JobCancelled job_cancelled = 23;        // JobCancel
+  }
+  DbErrorDetails error_details = 17;        // with some `error` codes of the Db* calls
+}
+
+message DbErrorDetails {
+  int64 current_version = 1;   // version_conflict
+  string column = 2;           // unique_conflict
+}
+
+message Empty {}
+
+
+// What a plugin declares about itself (installed with the plugin; part of the manifest digest).
+message PluginManifest {
+  repeated RoleDecl roles = 1;
+  repeated ScopeDecl scopes = 2;
+  repeated AgentDecl agents = 3;
+  repeated string depends = 4;
+  repeated string permissions = 5;          // e.g. members.email
+  repeated MethodRequirement requires = 6;
+  // The dependency endpoints the plugin calls (`/<dep>.v1.<Service>/<Method>`); an invoke of another endpoint of a
+  // dependency that has entries here is refused (`call_undeclared`).
+  repeated string calls = 7;
+  // The connections the plugin declares: installing it creates them, not set up, in the
+  // workspace; an owner or admin fills them in; uninstalling removes them.
+  repeated ConnectionDecl connections = 8;
+}
+message ConnectionDecl {
+  string name = 1;           // snake_case, unique in the plugin
+  string kind = 2;           // llm | stt
+  string title = 3;
+  string description = 4;
+}
+message RoleDecl {
+  string name = 1;           // without the plugin prefix
+  string title = 2;
+  string description = 3;
+  enum Default { NONE = 0; MEMBER = 1; ADMIN = 2; }
+  Default default_for = 4;
+}
+message ScopeDecl { string name = 1; string title = 2; string description = 3; }  // becomes <plugin>:<name>
+message AgentDecl {
+  string name = 1;
+  repeated string roles = 2;
+  // the workspace permissions the agent asks for: with
+  // one, it does the workspace operations that take it as an admin would
+  repeated string workspace = 3;
+  // The agents this one may bring into its group when they are not there: an agent of
+  // the same plugin by its name, or `<dependency>.<agent>`. Messaging an agent that is in the group already needs
+  // no entry here.
+  repeated string delegates = 4;
+  // The `llm` connection its runs use: `<name>` of a connection of this plugin, or `<dependency>.<name>`. Empty: none
+  // (a run fails `unconfigured` until an owner or admin chooses one in the agent's settings).
+  string connection = 5;
+  // The agent has an SSH key of its own (ed25519, one pair per workspace), given to its runs in `~/.ssh`.
+  bool ssh_key = 6;
+  // The agent's service account asks for base role admin instead of member:
+  // only an owner installs or upgrades to a version that asks for it. Never owner.
+  bool admin = 7;
+}
+// method = "/<package>.<Service>/<Method>"; empty any_role and scope = the default (an active member)
+message MethodRequirement { string method = 1; string scope = 2; repeated string any_role = 3; }

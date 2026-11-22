@@ -1,0 +1,616 @@
+{
+  "agents": [],
+  "capabilities": [
+    {
+      "name": "push:send",
+      "reason": "Tells people when they are mentioned or written to."
+    }
+  ],
+  "dependencies": [],
+  "description": "The SDK conformance plugin of notifications.",
+  "endpoints": [
+    {
+      "auth": "user",
+      "description": "Posts a reply in a thread.",
+      "idempotency": "off",
+      "input": "PostReplyRequest",
+      "name": "PostReply",
+      "output": "PostView",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Follows a thread, or stops.",
+      "idempotency": "off",
+      "input": "FollowThreadRequest",
+      "name": "FollowThread",
+      "output": "FollowState",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "Asks a member to approve an order's changes.",
+      "idempotency": "off",
+      "input": "RequestApprovalRequest",
+      "name": "RequestApproval",
+      "output": "Approval",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Approves.",
+      "idempotency": "off",
+      "input": "ApproveRequest",
+      "name": "Approve",
+      "output": "Approval",
+      "roles": [],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "Declines.",
+      "idempotency": "off",
+      "input": "DeclineRequest",
+      "name": "Decline",
+      "output": "Approval",
+      "roles": [],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    }
+  ],
+  "entities": [
+    {
+      "access": {
+        "admin": true,
+        "create": null,
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [],
+        "permits": [],
+        "read": {
+          "role": "member"
+        },
+        "relations": [],
+        "update": null
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.channel"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "key": "uuid",
+      "label": "name",
+      "message": "Channel",
+      "name": "channel",
+      "soft_delete": false,
+      "version": false
+    },
+    {
+      "access": {
+        "admin": true,
+        "create": {
+          "role": "member"
+        },
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [],
+        "permits": [],
+        "read": {
+          "role": "member"
+        },
+        "relations": [],
+        "update": null
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.post"
+        },
+        {
+          "description": "",
+          "name": "channel",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.channel"
+        },
+        {
+          "description": "",
+          "name": "thread",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "ref:notify.post"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "key": "uuid",
+      "label": "id",
+      "message": "Post",
+      "name": "post",
+      "soft_delete": false,
+      "version": false
+    },
+    {
+      "access": {
+        "admin": true,
+        "create": {
+          "role": "member"
+        },
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [],
+        "permits": [],
+        "read": {
+          "rel": "owner"
+        },
+        "relations": [
+          {
+            "field": "owner",
+            "kind": "column",
+            "name": "owner"
+          }
+        ],
+        "update": {
+          "rel": "owner"
+        }
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.approval"
+        },
+        {
+          "description": "",
+          "name": "owner",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:platform.user"
+        },
+        {
+          "description": "",
+          "name": "order",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "summary",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "status",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "key": "uuid",
+      "label": "id",
+      "message": "Approval",
+      "name": "approval",
+      "soft_delete": false,
+      "version": false
+    }
+  ],
+  "enums": [],
+  "id": "notify",
+  "messages": [
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "channel",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.channel"
+        },
+        {
+          "description": "",
+          "name": "thread",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.post"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "mentioned",
+          "number": 4,
+          "optional": false,
+          "repeated": true,
+          "type": "ref:platform.user"
+        }
+      ],
+      "kind": "message",
+      "name": "PostReplyRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.post"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "PostView"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "thread",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.post"
+        },
+        {
+          "description": "",
+          "name": "follow",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "FollowThreadRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "following",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "FollowState"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "owner",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:platform.user"
+        },
+        {
+          "description": "",
+          "name": "order",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "summary",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "RequestApprovalRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.approval"
+        },
+        {
+          "description": "",
+          "name": "owner",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:platform.user"
+        },
+        {
+          "description": "",
+          "name": "order",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "summary",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "status",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Approval"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.approval"
+        }
+      ],
+      "kind": "message",
+      "name": "ApproveRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.approval"
+        }
+      ],
+      "kind": "message",
+      "name": "DeclineRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.channel"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Channel"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.post"
+        },
+        {
+          "description": "",
+          "name": "channel",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:notify.channel"
+        },
+        {
+          "description": "",
+          "name": "thread",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "ref:notify.post"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Post"
+    }
+  ],
+  "notifications": [
+    {
+      "description": "Someone wrote @you in a channel or a thread",
+      "digest": true,
+      "name": "mention",
+      "tab": "for_you",
+      "title": "Mentions"
+    },
+    {
+      "description": "Arrives in Watching",
+      "digest": false,
+      "name": "thread_reply",
+      "tab": "watching",
+      "title": "Replies in threads you follow"
+    }
+  ],
+  "permissions": [],
+  "roles": [
+    {
+      "default_for": "none",
+      "description": "",
+      "name": "member",
+      "strict": false,
+      "title": "Member"
+    }
+  ],
+  "schema": 1,
+  "scopes": [],
+  "title": "Notify",
+  "ui": {
+    "catalog": 3,
+    "overlays": [
+      {
+        "id": "order_panel",
+        "kind": "side_panel",
+        "layout": {
+          "text": {
+            "style": "body",
+            "text": "The order and its changes."
+          }
+        },
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "size": "medium",
+        "title": "Order"
+      }
+    ],
+    "screens": [
+      {
+        "id": "channel",
+        "layout": {
+          "text": {
+            "style": "body",
+            "text": "The channel and its threads."
+          }
+        },
+        "params": [
+          {
+            "name": "c",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "thread",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "title": "Channel"
+      }
+    ]
+  },
+  "version": "0.1.0"
+}

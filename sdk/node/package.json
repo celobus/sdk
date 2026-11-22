@@ -1,0 +1,35 @@
+{
+  "name": "@celobus/sdk",
+  "version": "0.1.0",
+  "description": "The Celobus plugin SDK for Node.js (TypeScript): declarations, the descriptor and the plugin session",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Celobus",
+  "homepage": "https://celobus.com",
+  "repository": { "type": "git", "url": "git+https://github.com/celobus/sdk.git", "directory": "sdk/node" },
+  "bugs": "https://github.com/celobus/sdk/issues",
+  "keywords": ["celobus", "plugin", "sdk"],
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./platform": { "types": "./dist/platform.d.ts", "default": "./dist/platform.js" },
+    "./query": { "types": "./dist/query.d.ts", "default": "./dist/query.js" }
+  },
+  "files": ["dist", "proto/plugin.proto", "README.md", "LICENSE"],
+  "scripts": {
+    "prebuild": "node -e \"const fs=require('node:fs');fs.rmSync('dist',{recursive:true,force:true});fs.mkdirSync('proto',{recursive:true});fs.copyFileSync('../../proto/plugin.proto','proto/plugin.proto')\"",
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "test": "tsc -p test/tsconfig.json && node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.0",
+    "@grpc/proto-loader": "^0.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.3"
+  }
+}

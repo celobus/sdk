@@ -1,0 +1,21 @@
+{
+  "name": "notify",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The SDK conformance plugin of notifications, TypeScript",
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "describe": "node dist/main.js --describe"
+  },
+  "dependencies": {
+    "@celobus/sdk": "file:../../../node"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.3"
+  }
+}

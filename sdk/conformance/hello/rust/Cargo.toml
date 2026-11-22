@@ -1,0 +1,16 @@
+[package]
+name = "celobus-conformance-hello"
+description = "The SDK conformance plugin `hello` in Rust: its --describe must equal ../descriptor.json"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "hello"
+path = "src/main.rs"
+
+[dependencies]
+celobus-sdk.workspace = true

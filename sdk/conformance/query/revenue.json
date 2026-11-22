@@ -1,0 +1,42 @@
+{
+  "sources": [
+    { "entity": "order_line", "alias": "order_line" },
+    { "entity": "order", "alias": "order", "join": "INNER",
+      "left": { "source": "order_line", "field": "order_id" }, "right": { "source": "order", "field": "id" } },
+    { "entity": "crm.customer", "alias": "crm_customer", "join": "LEFT",
+      "left": { "source": "order", "field": "customer_id" }, "right": { "source": "crm_customer", "field": "id" } }
+  ],
+  "filter": { "and": { "items": [
+    { "and": { "items": [
+      { "compare": { "left": { "column": { "source": "order", "field": "status" } }, "op": "EQ",
+                     "values": [{ "stringValue": "paid" }] } },
+      { "compare": { "left": { "column": { "source": "order", "field": "total" } }, "op": "GE",
+                     "values": [{ "stringValue": "10.50" }] } }
+    ] } },
+    { "exists": {
+      "source": { "entity": "platform.role_assignment", "alias": "platform_role_assignment" },
+      "filter": { "and": { "items": [
+        { "compare": { "left": { "column": { "source": "platform_role_assignment", "field": "user_id" } }, "op": "EQ",
+                       "right": { "column": { "source": "order", "field": "created_by" } } } },
+        { "compare": { "left": { "column": { "source": "platform_role_assignment", "field": "role" } }, "op": "EQ",
+                       "values": [{ "stringValue": "shop.clerk" }] } }
+      ] } }
+    } }
+  ] } },
+  "groupBy": [
+    { "source": "order", "field": "created_by" },
+    { "source": "crm_customer", "field": "id" },
+    { "source": "crm_customer", "field": "name" }
+  ],
+  "having": { "compare": { "left": { "aggregate": {} }, "op": "GT", "values": [{ "stringValue": "1" }] } },
+  "select": [
+    { "label": { "source": "order", "field": "created_by" } },
+    { "column": { "source": "crm_customer", "field": "name" } },
+    { "aggregate": { "fn": "SUM", "column": { "source": "order_line", "field": "amount" } } },
+    { "aggregate": {} }
+  ],
+  "order": [
+    { "term": { "aggregate": { "fn": "SUM", "column": { "source": "order_line", "field": "amount" } } }, "desc": true }
+  ],
+  "limit": 20
+}

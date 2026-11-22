@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Unit tests of Celobus.Sdk: the JSON mapping, the descriptor (of the conformance plugins too), the UI builders, error mapping, jobs, and
+       serving against a fake platform. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Grpc.AspNetCore.Server" Version="2.85.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="All" />
+    <!-- the analyzer's tests compile snippets against the SDK -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Celobus.Sdk/Celobus.Sdk.csproj" />
+    <ProjectReference Include="../Celobus.Sdk.Analyzers/Celobus.Sdk.Analyzers.csproj" />
+    <ProjectReference Include="../../conformance/hello/csharp/Hello.csproj" />
+    <ProjectReference Include="../../conformance/shop/csharp/Shop.csproj" />
+    <ProjectReference Include="../../conformance/notify/csharp/Notify.csproj" />
+    <ProjectReference Include="../../conformance/jobs/csharp/Jobsdemo.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../conformance/hello/csharp/expected.json" Link="conformance/expected.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../conformance/shop/descriptor.json" Link="conformance/shop.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../conformance/notify/descriptor.json" Link="conformance/notify.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../conformance/jobs/descriptor.json" Link="conformance/jobs.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../conformance/query/revenue.json" Link="conformance/revenue.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+</Project>

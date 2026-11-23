@@ -1,7 +1,7 @@
 [package]
 name = "celobus-sdk"
 description = "The Celobus plugin SDK for Rust: declarations, the JSON codec, the platform session and --describe"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 authors = ["Celobus"]
 license-file = "LICENSE"

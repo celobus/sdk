@@ -4,7 +4,7 @@
 # (strict: a missing toolchain fails), then the packages (the five crates, @celobus/sdk, Celobus.Sdk) uploaded as the
 # artifact `packages`.
 #
-# A release tag (v0.1.1; not a candidate such as v0.1.1-rc.1) then publishes, once approved through the environment
+# A release tag (v0.1.1; not a candidate such as v0.1.1-rc.1) then publishes, in the environment
 # `release`: the crates in dependency order, the npm package and the NuGet package of the tagged commit (the version
 # written in the packages). A manual run on a tag with the input `publish` set to true repeats a publication that
 # failed; versions already in a registry are left as they are. All three

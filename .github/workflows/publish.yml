@@ -1,12 +1,13 @@
-# Build, test and pack the SDKs; publish them only when asked.
+# Build, test and pack the SDKs; publish them on a release tag.
 #
 # A tag v* or a manual run builds: the Rust tests, the TypeScript and C# tests, the conformance of the three SDKs
 # (strict: a missing toolchain fails), then the packages (the five crates, @celobus/sdk, Celobus.Sdk) uploaded as the
-# artifact `packages`. Nothing is published on this path.
+# artifact `packages`.
 #
-# Publishing is a manual run with the input `publish` set to true, in a repository whose variable PUBLISH_ENABLED is
-# 'true', approved through the environment `release`. It publishes the crates in dependency order, the npm package and
-# the NuGet package of the commit it runs on (version 0.1.0 and so on, as written in the packages). All three
+# A release tag (v0.1.1; not a candidate such as v0.1.1-rc.1) then publishes, once approved through the environment
+# `release`: the crates in dependency order, the npm package and the NuGet package of the tagged commit (the version
+# written in the packages). A manual run on a tag with the input `publish` set to true repeats a publication that
+# failed; versions already in a registry are left as they are. All three
 # registries trust this workflow and the environment `release` (trusted publishing): the run trades its OIDC token
 # for a short-lived one, and the repository holds no registry token.
 name: publish
@@ -17,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish to crates.io, npm and NuGet (also needs vars.PUBLISH_ENABLED == 'true')"
+        description: "Publish to crates.io, npm and NuGet (run it on a release tag)"
         type: boolean
         default: false
 
@@ -87,7 +88,9 @@ jobs:
 
   publish:
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish == true && vars.PUBLISH_ENABLED == 'true'
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') &&
+      (github.event_name == 'push' || inputs.publish == true)
     runs-on: ubuntu-24.04
     environment: release
     permissions:

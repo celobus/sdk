@@ -1,10 +1,11 @@
 // The plugin session (`Celld.Session` of proto/plugin.proto) and request dispatch.
 //
 // The plugin connects to the platform at $CELOBUS_ADDR, sends `Register`, then serves `Request`s concurrently
-// (at most `maxConcurrency` handlers at once, the rest wait in order) and sends `Syscall`s for its context. When
+// (at most `maxConcurrency` handlers at once, up to 256 more wait in order, past them 503 `unavailable` with
+// `retry-after: 1`) and sends `Syscall`s for its context. When
 // the session drops, pending syscalls fail with `unavailable`, in-flight handlers are aborted (their answers
 // could not be delivered), and the plugin reconnects with backoff. SIGTERM (and SIGINT) drain: new requests get
-// 503 `unavailable`, in-flight ones finish (up to `drainMs`), then the session closes and the process exits.
+// 503 `unavailable` (with `retry-after: 1`), in-flight ones finish (up to `drainMs`), then the session closes and the process exits.
 //
 // Background jobs: the plugin announces its job pool (`jobSlots`) when it registers, and runs each `JobRun` on that
 // pool, apart from the requests; the platform never hands it more runs than it has slots. A run's handler gets a
@@ -50,7 +51,7 @@ export interface ServeOptions {
   argv?: readonly string[];
   /** Default `$CELOBUS_ADDR`, which the platform sets. */
   addr?: string;
-  /** Handlers running at once; default 64 (the platform admits 64 per process). */
+  /** Handlers running at once; default 64. Up to 256 more requests wait in order; past them 503 `unavailable`. */
   maxConcurrency?: number;
   /** Drain SIGTERM/SIGINT and exit; default true. */
   signals?: boolean;
@@ -103,6 +104,16 @@ function json(status: number, body: unknown): WireResponse {
 
 function errorResponse(e: RpcError): WireResponse {
   return json(e.status, e.toJSON());
+}
+
+/** Requests that wait for a handler at most; past them the answer is 503 `unavailable`. */
+const MAX_QUEUED = 256;
+
+/** 503 `unavailable` with `retry-after: 1`: the plugin cannot take the request now. */
+function refused(why: string): WireResponse {
+  const resp = errorResponse(unavailable(why));
+  resp.headers.push({ name: "retry-after", value: "1" });
+  return resp;
 }
 
 function header(req: WireRequest, name: string): string | undefined {
@@ -170,7 +181,7 @@ export async function dispatch(
   const ctx = new Ctx(
     session,
     new Caller(req.principal, model.id, model.resolved.roleName),
-    { id: String(req.id), deadline, signal: controller.signal },
+    { id: String(req.id), deadline, signal: controller.signal, idempotencyKey: header(req, "idempotency-key") },
     { id: model.id, version: model.version },
     log,
   );
@@ -309,8 +320,10 @@ export function runSession(model: ServeModel, options: ServeOptions = {}): Promi
 
   const onRequest = async (current: Link, req: WireRequest) => {
     let resp: WireResponse;
-    if (stopping) {
-      resp = errorResponse(unavailable("the plugin is stopping"));
+    if (waiting.length >= MAX_QUEUED) {
+      resp = refused("the plugin is busy");
+    } else if (stopping) {
+      resp = refused("the plugin is stopping");
     } else {
       await acquire();
       try {

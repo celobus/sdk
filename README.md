@@ -94,7 +94,7 @@ await Plugin.Create("hello").Title("Hello").Role(Roles.Clerk).Endpoint<Hello>().
 - `sdk/node`, `sdk/dotnet`: the TypeScript and C# SDKs. The C# package carries its analyzers.
 - `sdk/conformance`: the same plugins written with each SDK; each must describe itself identically.
   `scripts/sdk-conformance.sh` builds them and compares their descriptors (it needs `jq`, and skips a language
-  whose toolchain is missing).
+  whose toolchain is missing; with `--strict`, as the publish workflow runs it, that fails instead).
 
 Tests: `cargo test --workspace`, `(cd sdk/node && npm ci && npm run build && npm test)`, `dotnet test sdk/dotnet`.
 

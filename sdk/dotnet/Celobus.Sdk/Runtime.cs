@@ -1,8 +1,9 @@
 // Serving: one session with the platform ($CELOBUS_ADDR). The plugin registers, the platform sends requests, the plugin
 // answers each one (concurrently) and sends syscalls (entities, directory, calls to dependencies) whose results come
 // back on the same stream. The runs of the plugin's jobs come on the same stream and run on a pool of their own
-// (Jobs.cs). A lost session is reopened with backoff (its runs' handlers are stopped); on SIGTERM the plugin stops
-// taking requests and runs, finishes the ones in flight and closes the session.
+// (Jobs.cs). At most MaxAdmitted requests are handled at once and MaxQueued more wait; past them a request is answered
+// 503 with retry-after. A lost session is reopened with backoff (its runs' handlers are stopped); on SIGTERM the plugin
+// stops taking requests and runs, finishes the ones in flight and closes the session.
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Text;
@@ -19,7 +20,12 @@ namespace Celobus.Sdk;
 internal sealed class Runtime
 {
     private const string JsonType = "application/json";
-    private static readonly TimeSpan DrainGrace = TimeSpan.FromSeconds(25);
+    /// <summary>How long in-flight requests and runs may finish after SIGTERM.</summary>
+    private static readonly TimeSpan DrainGrace = TimeSpan.FromSeconds(10);
+
+    /// <summary>Requests handled at once; more wait in a queue of <see cref="MaxQueued"/>, past it the answer is 503.</summary>
+    internal const int MaxAdmitted = 64;
+    internal const int MaxQueued = 256;
 
     /// <summary>The reserved method of the run-change hook (a leading <c>_</c>: the platform's own requests).</summary>
     internal const string RunChangeMethod = "_RunChange";
@@ -31,6 +37,13 @@ internal sealed class Runtime
     private readonly JsonLogger _log;
     private readonly PluginInfo _info;
     private readonly Dictionary<string, JobRegistration> _jobs;
+    /// <summary>The handlers' slots, shared by the sessions.</summary>
+    private readonly SemaphoreSlim _permits = new(MaxAdmitted);
+    /// <summary>The requests taken and not answered yet: running or waiting for a slot.</summary>
+    private int _taken;
+
+    /// <summary>The requests taken and not answered yet (tests).</summary>
+    internal int Taken => Volatile.Read(ref _taken);
 
     public Runtime(PluginDefinition def)
     {
@@ -110,7 +123,8 @@ internal sealed class Runtime
     private async Task<bool> Session(Celld.CelldClient client, CancellationToken stop)
     {
         using var sessionCts = new CancellationTokenSource();
-        using var call = client.Session(cancellationToken: sessionCts.Token);
+        var sessionToken = sessionCts.Token;
+        using var call = client.Session(cancellationToken: sessionToken);
         var outbox = Channel.CreateUnbounded<PluginMessage>(new UnboundedChannelOptions { SingleReader = true });
         var session = new Session(outbox.Writer);
         var pool = Pool(session, outbox.Writer.TryWrite);
@@ -150,26 +164,38 @@ internal sealed class Runtime
                         break;
                     case CelldMessage.KindOneofCase.Request:
                         var req = msg.Request;
-                        if (Volatile.Read(ref draining))
+                        var busy = Interlocked.Increment(ref _taken) > MaxAdmitted + MaxQueued;
+                        if (busy || Volatile.Read(ref draining))
                         {
-                            var refused = Error(PluginError.Unavailable("the plugin is stopping"));
+                            Interlocked.Decrement(ref _taken);
+                            var refused = Error(PluginError.Unavailable(busy ? "the plugin is busy" : "the plugin is stopping"));
                             refused.Id = req.Id;
+                            refused.Headers.Add(new Header { Name = "retry-after", Value = "1" });
                             outbox.Writer.TryWrite(new PluginMessage { Response = refused });
                             break;
                         }
-                        // in flight before its handler starts: a stop that comes at once still waits for it
+                        // in flight before its handler starts (or waits for a slot): a stop that comes at once still waits for it
                         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                         inflight[req.Id] = done.Task;
                         _ = Task.Run(async () =>
                         {
+                            var admitted = false;
                             try
                             {
-                                var resp = await Dispatch(req, session, sessionCts.Token);
+                                await _permits.WaitAsync(sessionToken);
+                                admitted = true;
+                                var resp = await Dispatch(req, session, sessionToken);
                                 resp.Id = req.Id;
                                 outbox.Writer.TryWrite(new PluginMessage { Response = resp });
                             }
+                            catch (OperationCanceledException) when (!admitted)
+                            {
+                                // the session ended while it waited for a slot: there is no one to answer
+                            }
                             finally
                             {
+                                if (admitted) _permits.Release();
+                                Interlocked.Decrement(ref _taken);
                                 inflight.TryRemove(req.Id, out _);
                                 done.TrySetResult();
                             }

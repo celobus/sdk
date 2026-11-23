@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import * as grpc from "@grpc/grpc-js";
+import { endpoint, plugin, t } from "../dist/index.js";
 import { celldDefinition } from "../dist/serve.js";
 import { sink } from "../dist/log.js";
 import hello from "./fixtures/hello.mjs";
@@ -480,4 +481,83 @@ test("refusals of an agent call keep the platform's code and status", async () =
   assert.deepEqual(of("agent_in_group: the agent helper has a run in the group"), [409, "agent_in_group", "the agent helper has a run in the group"]);
   assert.deepEqual(of("group_full: the group has its 8 runs"), [409, "group_full", "the group has its 8 runs"]);
   assert.equal(of("store: the store is away")[0], 503);
+});
+
+/** A plugin whose `Wait` holds every request until `open()`; `started` counts the handlers that began. */
+function gated() {
+  let open;
+  const gate = new Promise((resolve) => (open = resolve));
+  const state = { started: 0, open: () => open() };
+  state.plugin = plugin({
+    id: "gate",
+    version: "1.0.0",
+    endpoints: {
+      wait: endpoint({
+        input: {},
+        output: { ok: t.bool() },
+        async handler() {
+          state.started++;
+          await gate;
+          return { ok: true };
+        },
+      }),
+    },
+  });
+  return state;
+}
+
+async function until(check) {
+  while (!check()) await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+// crates/sdk/src/session.rs: 64 requests at once, 256 more wait, past them 503 `unavailable` with `retry-after: 1`.
+test("64 requests run at once, 256 wait and the next is refused as busy", async () => {
+  const fake = await fakePlatform();
+  const g = gated();
+  const stop = new AbortController();
+  const serving = g.plugin.serve({ argv: ["node", "main.js"], addr: fake.addr, signals: false, stop: stop.signal });
+  await fake.sessionOpened;
+
+  const admitted = [];
+  for (let id = 1; id <= 320; id++) admitted.push(fake.request(id, "/gate.v1.Gate/Wait", {}));
+  await until(() => g.started === 64);
+  const busy = await fake.request(321, "/gate.v1.Gate/Wait", {});
+  assert.equal(busy.status, 503);
+  assert.deepEqual(JSON.parse(busy.body.toString()), { code: "unavailable", message: "the plugin is busy", details: {} });
+  assert.deepEqual(
+    busy.headers.map((h) => ({ name: h.name, value: h.value })),
+    [{ name: "content-type", value: "application/json" }, { name: "retry-after", value: "1" }],
+  );
+  assert.equal(g.started, 64);
+
+  g.open();
+  const answers = await Promise.all(admitted);
+  assert.deepEqual(new Set(answers.map((r) => r.status)), new Set([200]));
+  assert.equal(g.started, 320);
+  assert.equal((await fake.request(322, "/gate.v1.Gate/Wait", {})).status, 200);
+
+  stop.abort();
+  await serving;
+  await fake.close();
+});
+
+test("while draining, new requests are refused with retry-after and those in flight finish", async () => {
+  const fake = await fakePlatform();
+  const g = gated();
+  const stop = new AbortController();
+  const serving = g.plugin.serve({ argv: ["node", "main.js"], addr: fake.addr, signals: false, stop: stop.signal });
+  await fake.sessionOpened;
+
+  const inFlight = fake.request(1, "/gate.v1.Gate/Wait", {});
+  await until(() => g.started === 1);
+  stop.abort();
+  const refused = await fake.request(2, "/gate.v1.Gate/Wait", {});
+  assert.equal(refused.status, 503);
+  assert.deepEqual(JSON.parse(refused.body.toString()), { code: "unavailable", message: "the plugin is stopping", details: {} });
+  assert.equal(refused.headers.find((h) => h.name === "retry-after")?.value, "1");
+
+  g.open();
+  assert.equal((await inFlight).status, 200);
+  await serving;
+  await fake.close();
 });

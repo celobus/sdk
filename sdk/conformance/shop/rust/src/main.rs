@@ -1,6 +1,6 @@
-//! The SDK conformance plugin `shop`: a UI with a list screen (a compact row view, a count), a record screen (a
-//! record header, a titled card), a report screen of charts and figures on a `board` (`viz`: every bind source, a
-//! selection, a link, a fallback) under a range switch (a `segmented` over a param with a default), a document-level
+//! The SDK conformance plugin `shop`: a UI with a list screen (a compact row view, a count), a record screen
+//! (breadcrumbs, a record header, a titled card), a report screen of charts and figures on a `board` (`viz`: every
+//! bind source, a selection, a link, a fallback) under a range switch (a `segmented` over a param with a default), a document-level
 //! dialog form (a note, an alternate button), a sidebar group with a live alert badge, two commands (one opens the
 //! report with args), a palette search source with an action and topics; an activity screen of catalog 3 (a fill
 //! split with a header, a stream of note posts with a packing job's process, a strip of live jobs, a composer, a
@@ -465,6 +465,13 @@ fn order_screen() -> Screen {
         let remind = s.action("remind", |a| a.toast("Reminder sent"));
         s.title(order.field(Order::number));
         stack([
+            breadcrumbs([
+                crumb_to("Orders", ORDERS_SCREEN, |a| a),
+                crumb_to(t("order.same_status", "Same status"), ORDERS_SCREEN, |a| {
+                    a.arg(OrdersParams::status, order.field(Order::status))
+                }),
+                crumb(order.field(Order::number)),
+            ]),
             record_header(order.field(Order::number))
                 .subtitle(order.field(Order::customer))
                 .tags([status(

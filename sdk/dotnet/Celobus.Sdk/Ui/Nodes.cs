@@ -1269,6 +1269,20 @@ public sealed class MenuItem : IUiJson
     JsonNode IUiJson.ToJson(UiWriter w) => _o.ToJson(w);
 }
 
+/// <summary>A crumb of a breadcrumb trail: a text, and the screen it links to.</summary>
+public sealed class Crumb : IUiJson
+{
+    private readonly UiObj _o = new();
+
+    internal Crumb(Txt text, JsonObject? target)
+    {
+        _o["text"] = text;
+        if (target is not null) _o["target"] = target;
+    }
+
+    JsonNode IUiJson.ToJson(UiWriter w) => _o.ToJson(w);
+}
+
 /// <summary>
 /// The head of a record (a panel or a page): <c>Ui.RecordHeader(title).Short(..).Subtitle(..).Tags(..).Actions(..).Menu(..)</c>;
 /// on a phone the title moves to the top bar, the actions to the bottom bar and the menu to an action sheet.
@@ -1624,6 +1638,26 @@ public static partial class Ui
         n.Body["target"] = Target.Of(screen.Id, null, Args<TParams>.Build(args));
         return n;
     }
+
+    /// <summary>
+    /// A trail of where a screen sits, separated by <c>/</c>, when the sidebar and the screen's title do not say it
+    /// (a record reached through another record, a step of a drill-down):
+    /// <c>Ui.Breadcrumbs(Ui.Crumb("Orders", Screens.Orders), Ui.Crumb(order.Field(o =&gt; o.Number)))</c>. Each crumb but
+    /// the last links to a screen.
+    /// </summary>
+    public static Node Breadcrumbs(params Crumb[] items)
+    {
+        var n = new Node("breadcrumbs");
+        n.Body.List("items").AddRange(items);
+        return n;
+    }
+
+    /// <summary>A crumb that is only a text: the screen itself, at the end of the trail.</summary>
+    public static Crumb Crumb(Txt text) => new(text, null);
+
+    /// <summary>A crumb that links to a screen, with its params like <c>Ui.Link</c>.</summary>
+    public static Crumb Crumb<TParams>(Txt text, ScreenKey<TParams> screen, Action<Args<TParams>>? args = null) where TParams : class =>
+        new(text, Target.Of(screen.Id, null, Args<TParams>.Build(args)));
 
     // ------------------------------------------------------------------------------------------ data
 

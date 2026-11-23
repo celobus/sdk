@@ -85,6 +85,10 @@ ui.screen(ORDERS_SCREEN, (s) => {
   ui.segmented(st, [[undefined, 'Any']]);
   // @ts-expect-error not a value of the state's type
   ui.segmented(view, [['grid', 'Grid']]);
+  // a crumb's args are the params of its screen, like a link's
+  ui.breadcrumbs([ui.crumb('Orders', ORDERS_SCREEN, { status: 'paid' }), ui.crumb('Order')]);
+  // @ts-expect-error not a value of the param's enum
+  ui.crumb('Orders', ORDERS_SCREEN, { status: 'refunded' });
   // a param with a default always has a value: its handle is of the plain type
   const paid = s.paramOr(params.f.status, 'paid');
   s.action('y', (a) => a.setParam(paid, 'placed').navigate(ORDERS_SCREEN, { status: paid }));

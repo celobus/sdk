@@ -3,10 +3,21 @@
 # sdk/conformance/jobs) are declared the same way in every SDK (sdk/conformance/<plugin>/<lang>/); each is built, run
 # with --describe, and its output, canonicalized (object keys sorted by `jq -S .`, arrays as printed), must equal
 # sdk/conformance/<plugin>/descriptor.json.
-#   ./scripts/sdk-conformance.sh [rust] [ts] [csharp]     (default: all three; a language whose toolchain is
-#                                                          missing is skipped with a note)
+#   ./scripts/sdk-conformance.sh [--strict] [rust] [ts] [csharp]
+# Default: all three languages; a language whose toolchain is missing is skipped with a note. With --strict (or
+# CONFORMANCE_REQUIRE_ALL=1), as in CI, a missing toolchain or conformance plugin fails the run instead.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+STRICT=${CONFORMANCE_REQUIRE_ALL:-0}
+[[ "$STRICT" == 1 || "$STRICT" == true ]] && STRICT=1 || STRICT=0
+args=()
+for a in "$@"; do
+  case "$a" in
+    --strict) STRICT=1 ;;
+    *) args+=("$a") ;;
+  esac
+done
+set -- ${args[@]+"${args[@]}"}
 FIXTURE=sdk/conformance/hello/descriptor.json
 SHOP=sdk/conformance/shop/descriptor.json
 NOTIFY=sdk/conformance/notify/descriptor.json
@@ -17,6 +28,10 @@ command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 fail=0
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+skip() { # why: a skip, or a failure in strict mode
+  if [[ $STRICT == 1 ]]; then echo "FAIL $1 (strict)"; fail=1; else echo "skip $1"; fi
+}
 
 compare() { # lang, command... (FIXTURE: the expected descriptor)
   local lang=$1; shift
@@ -60,6 +75,8 @@ for lang in "${LANGS[@]}"; do
         if [[ -d sdk/conformance/shop/ts ]]; then
           (cd sdk/conformance/shop/ts && npm ci --silent && npm run --silent build) >/dev/null
           FIXTURE=$SHOP compare ts-shop node sdk/conformance/shop/ts/dist/main.js
+        else
+          skip "ts-shop: sdk/conformance/shop/ts is missing"
         fi
         (cd sdk/conformance/notify/ts && npm ci --silent && npm run --silent build) >/dev/null
         FIXTURE=$NOTIFY compare ts-notify node sdk/conformance/notify/ts/dist/main.js
@@ -67,7 +84,7 @@ for lang in "${LANGS[@]}"; do
         FIXTURE=$JOBS compare ts-jobs node sdk/conformance/jobs/ts/dist/main.js
         query ts node --test --test-name-pattern "the conformance query" sdk/node/test/query.test.mjs
       else
-        echo "skip ts: node and npm are not installed"
+        skip "ts: node and npm are not installed"
       fi
       ;;
     csharp)
@@ -77,6 +94,8 @@ for lang in "${LANGS[@]}"; do
         if [[ -d sdk/conformance/shop/csharp ]]; then
           dotnet build -c Release --nologo -v q sdk/conformance/shop/csharp >/dev/null
           FIXTURE=$SHOP compare csharp-shop dotnet sdk/conformance/shop/csharp/bin/Release/net10.0/Shop.dll
+        else
+          skip "csharp-shop: sdk/conformance/shop/csharp is missing"
         fi
         dotnet build -c Release --nologo -v q sdk/conformance/notify/csharp >/dev/null
         FIXTURE=$NOTIFY compare csharp-notify dotnet sdk/conformance/notify/csharp/bin/Release/net10.0/Notify.dll
@@ -84,7 +103,7 @@ for lang in "${LANGS[@]}"; do
         FIXTURE=$JOBS compare csharp-jobs dotnet sdk/conformance/jobs/csharp/bin/Release/net10.0/Jobsdemo.dll
         query csharp dotnet test --nologo -v q sdk/dotnet/Celobus.Sdk.Tests --filter TheConformanceQueryIsTheSharedTree
       else
-        echo "skip csharp: dotnet is not installed"
+        skip "csharp: dotnet is not installed"
       fi
       ;;
     *) echo "unknown language $lang (rust, ts, csharp)" >&2; exit 1 ;;

@@ -226,6 +226,122 @@ public sealed class SessionTests : IAsyncLifetime
         await serving.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
+    private static Request HoldRequest(ulong id)
+    {
+        var r = new Request
+        {
+            Id = id,
+            Method = "POST",
+            Path = "/crowd.v1.Crowd/Hold",
+            Body = ByteString.CopyFromUtf8($$"""{"n":{{id}}}"""),
+        };
+        r.Headers.Add(new Header { Name = "content-type", Value = "application/json" });
+        return r;
+    }
+
+    [Fact]
+    public async Task RunsAtMost64RequestsQueues256AndRefusesTheRest()
+    {
+        using var stop = new CancellationTokenSource();
+        var serving = new Runtime(TestPlugin.Crowd().Definition).Run($"unix:{_socket}", stop.Token);
+        await _celld.Next(PluginMessage.KindOneofCase.Register);
+
+        const int taken = Runtime.MaxAdmitted + Runtime.MaxQueued;
+        Assert.Equal((64, 256), (Runtime.MaxAdmitted, Runtime.MaxQueued));
+        for (ulong id = 1; id <= taken + 1; id++)
+            await _celld.ToPlugin.Writer.WriteAsync(new CelldMessage { Request = HoldRequest(id) });
+
+        // the one past the queue is refused at once, with a hint when to come back
+        var refused = await Answer(taken + 1);
+        Assert.Equal(503u, refused.Status);
+        var error = JsonNode.Parse(refused.Body.ToStringUtf8())!;
+        Assert.Equal(("unavailable", "the plugin is busy"), (error["code"]!.GetValue<string>(), error["message"]!.GetValue<string>()));
+        Assert.Contains(refused.Headers, h => h is { Name: "retry-after", Value: "1" });
+
+        using (var wait = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            while (Volatile.Read(ref Hold.Running) < Runtime.MaxAdmitted) await Task.Delay(10, wait.Token);
+        await Task.Delay(200); // no more start while the slots are taken
+        Assert.Equal(Runtime.MaxAdmitted, Volatile.Read(ref Hold.Running));
+
+        Hold.Release.TrySetResult();
+        var answered = new HashSet<ulong>();
+        while (answered.Count < taken)
+        {
+            var r = (await _celld.Next(PluginMessage.KindOneofCase.Response)).Response;
+            Assert.Equal(200u, r.Status);
+            answered.Add(r.Id);
+        }
+        Assert.Equal(Runtime.MaxAdmitted, Hold.MaxRunning);
+
+        // the slots and the queue are free again
+        await _celld.ToPlugin.Writer.WriteAsync(new CelldMessage { Request = HoldRequest(1000) });
+        Assert.Equal(200u, (await Answer(1000)).Status);
+
+        await stop.CancelAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task ALostSessionFreesTheSlotsAndTheQueue()
+    {
+        using var stop = new CancellationTokenSource();
+        var runtime = new Runtime(TestPlugin.Define().Version("1.0.0").Definition);
+        var serving = runtime.Run($"unix:{_socket}", stop.Token);
+        await _celld.Next(PluginMessage.KindOneofCase.Register);
+
+        const int taken = Runtime.MaxAdmitted + Runtime.MaxQueued;
+        for (var n = 0; n < taken; n++)
+        {
+            var gate = TestPlugin.Post("Gate", $$"""{"n":{{100 + n}}}""");
+            gate.Id = (ulong)(100 + n);
+            await _celld.ToPlugin.Writer.WriteAsync(new CelldMessage { Request = gate });
+        }
+        using (var wait = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            while (runtime.Taken < taken) await Task.Delay(10, wait.Token);
+
+        _celld.Drop(); // the handlers are stopped, the queued requests dropped
+        await _celld.Next(PluginMessage.KindOneofCase.Register);
+        using (var wait = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            while (runtime.Taken > 0) await Task.Delay(10, wait.Token);
+
+        var next = TestPlugin.Post("Gate", """{"n":99}""");
+        next.Id = 99;
+        Gate.Of(Gate.Open, 99).TrySetResult();
+        await _celld.ToPlugin.Writer.WriteAsync(new CelldMessage { Request = next });
+        Assert.Equal(200u, (await Answer(99)).Status);
+
+        await stop.CancelAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task StopRefusesNewRequestsWithRetryAfter()
+    {
+        using var stop = new CancellationTokenSource();
+        var serving = new Runtime(TestPlugin.Define().Version("1.0.0").Definition).Run($"unix:{_socket}", stop.Token);
+        await _celld.Next(PluginMessage.KindOneofCase.Register);
+
+        var gate = TestPlugin.Post("Gate", """{"n":21}""");
+        gate.Id = 21;
+        await _celld.ToPlugin.Writer.WriteAsync(new CelldMessage { Request = gate });
+        await Gate.Of(Gate.Started, 21).Task.WaitAsync(TimeSpan.FromSeconds(10)); // keeps the session draining
+        await stop.CancelAsync();
+        await Task.Delay(500); // the plugin is draining
+
+        var late = TestPlugin.Post("Gate", """{"n":22}""");
+        late.Id = 22;
+        await _celld.ToPlugin.Writer.WriteAsync(new CelldMessage { Request = late });
+        var refused = await Answer(22);
+        Assert.Equal(503u, refused.Status);
+        var error = JsonNode.Parse(refused.Body.ToStringUtf8())!;
+        Assert.Equal(("unavailable", "the plugin is stopping"), (error["code"]!.GetValue<string>(), error["message"]!.GetValue<string>()));
+        Assert.Contains(refused.Headers, h => h is { Name: "retry-after", Value: "1" });
+
+        Gate.Of(Gate.Open, 21).TrySetResult();
+        Assert.Equal(200u, (await Answer(21)).Status);
+        await serving.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     [Fact]
     public async Task InvalidateSendsTheCanonicalKeyOnTheSession()
     {

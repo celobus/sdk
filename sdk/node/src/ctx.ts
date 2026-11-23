@@ -205,6 +205,8 @@ export interface RequestInfo {
   readonly deadline: Date;
   /** Aborted at the deadline, or when the session to the platform ends: pass it to your own I/O. */
   readonly signal: AbortSignal;
+  /** The `Idempotency-Key` header, when the caller sent one. */
+  readonly idempotencyKey?: string;
 }
 
 export interface PluginInfo {
@@ -894,6 +896,11 @@ export class Ctx {
   /** Aborted at the deadline or when the session ends (the same as `ctx.request.signal`); in a job's run, when it must stop. */
   get signal(): AbortSignal {
     return this.request.signal;
+  }
+
+  /** The `Idempotency-Key` header, when the caller sent one (the same as `ctx.request.idempotencyKey`). */
+  get idempotencyKey(): string | undefined {
+    return this.request.idempotencyKey;
   }
 
   /**

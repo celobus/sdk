@@ -1,6 +1,6 @@
 // Static types: handlers get typed input and must return typed output. Compiled (not run) by `npm test`;
 // each `@ts-expect-error` must be an error.
-import { Decimal, endpoint, entity, job, plugin, remote, t, type Dependency, type Enqueued, type Row, type SqlRow, type ValueOf } from '@celobus/sdk';
+import { Decimal, endpoint, entity, job, plugin, remote, role, t, testCtx, type Ctx, type Dependency, type Enqueued, type Row, type SqlRow, type ValueOf } from '@celobus/sdk';
 import * as platform from '@celobus/sdk/platform';
 import { alias, avg, count, exists, label, max, sum, type Label } from '@celobus/sdk/query';
 
@@ -279,3 +279,15 @@ const remind = job({
 });
 const reindex = job({ payload: t.message('Reindex', { full: t.bool() }), handler: (_ctx, p) => void (p.full satisfies boolean) });
 plugin({ id: 'typed', jobs: { remind, reindex }, jobSlots: 8 });
+
+// testCtx: a context of the plugin without the platform
+const auditor = role({ title: 'Auditor' });
+const tested = plugin({ id: 'tested', roles: { auditor } });
+const asAuditor: Ctx = testCtx(tested, { caller: { userId: 'u1', roles: [auditor, 'workspace.member'], scopes: ['read'] } });
+const inRun: Ctx = testCtx(tested, { run: { runId: 'run-1', attempt: 1, maxAttempts: 4 }, idempotencyKey: 'k1' });
+const key: string | undefined = inRun.idempotencyKey;
+// @ts-expect-error a test caller is a person or a service account
+testCtx(tested, { caller: { userId: 'u1', kind: 'system' } });
+// @ts-expect-error a run needs its attempts
+testCtx(tested, { run: { runId: 'run-1' } });
+void [asAuditor, key];

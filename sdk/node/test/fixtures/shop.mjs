@@ -302,6 +302,11 @@ export const orderScreen = ui.screen(ORDER_SCREEN, (s) => {
   const remind = s.action('remind', (a) => a.toast('Reminder sent'));
   s.title(record.field(order.f.number));
   return ui.stack([
+    ui.breadcrumbs([
+      ui.crumb('Orders', ORDERS_SCREEN),
+      ui.crumb(ui.text('order.same_status', 'Same status'), ORDERS_SCREEN, { status: record.field(order.f.status) }),
+      ui.crumb(record.field(order.f.number)),
+    ]),
     ui
       .recordHeader(record.field(order.f.number))
       .subtitle(record.field(order.f.customer))

@@ -1,5 +1,5 @@
-// The SDK conformance plugin `shop`: a UI with a list screen (a compact row view, a count), a record screen (a record
-// header, a titled card), a report screen of charts and figures on a `board` (`viz`: every bind source, a selection, a
+// The SDK conformance plugin `shop`: a UI with a list screen (a compact row view, a count), a record screen
+// (breadcrumbs, a record header, a titled card), a report screen of charts and figures on a `board` (`viz`: every bind source, a selection, a
 // link, a fallback) under a range switch (a `Segmented` over a param with a default), a document-level dialog form (a
 // note, an alternate button), a sidebar group with a live alert badge, two commands (one opens the report with args), a
 // palette search source with an action and topics; an activity screen of catalog 3 (a fill split with a header, a
@@ -219,6 +219,11 @@ public static class ShopPlugin
         var remind = s.Action("remind", a => a.Toast("Reminder sent"));
         s.Title(order.Field(o => o.Number));
         return Ui.Stack(
+            Ui.Breadcrumbs(
+                Ui.Crumb("Orders", Screens.Orders),
+                Ui.Crumb(Ui.Text("order.same_status", "Same status"), Screens.Orders,
+                    a => a.Arg(p => p.Status, order.Field(o => o.Status))),
+                Ui.Crumb(order.Field(o => o.Number))),
             Ui.RecordHeader(order.Field(o => o.Number))
                 .Subtitle(order.Field(o => o.Customer))
                 .Tags(Ui.Status(order.Field(o => o.Status), (OrderStatus.Paid, Tone.Ok)))

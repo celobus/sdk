@@ -1,8 +1,8 @@
 # Build, test and pack the SDKs; publish them only when asked.
 #
-# A tag v* or a manual run builds: the Rust tests, the TypeScript and C# tests, the conformance of the three SDKs,
-# then the packages (the five crates, @celobus/sdk, Celobus.Sdk) uploaded as the artifact `packages`. Nothing is
-# published on this path.
+# A tag v* or a manual run builds: the Rust tests, the TypeScript and C# tests, the conformance of the three SDKs
+# (strict: a missing toolchain fails), then the packages (the five crates, @celobus/sdk, Celobus.Sdk) uploaded as the
+# artifact `packages`. Nothing is published on this path.
 #
 # Publishing is a manual run with the input `publish` set to true, in a repository whose variable PUBLISH_ENABLED is
 # 'true', approved through the environment `release`. It publishes the crates in dependency order, the npm package and
@@ -63,7 +63,7 @@ jobs:
       - name: Rust tests
         run: cargo test --workspace --locked
       - name: Conformance (Rust, TypeScript, C#)
-        run: ./scripts/sdk-conformance.sh
+        run: ./scripts/sdk-conformance.sh --strict
       - name: TypeScript tests
         working-directory: sdk/node
         run: npm ci && npm run build && npm test

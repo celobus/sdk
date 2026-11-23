@@ -1698,6 +1698,41 @@ pub fn link<P>(
     }))
 }
 
+/// A trail of where a screen sits, separated by `/`, when the sidebar and the screen's title do not say it
+/// (a record reached through another record, a step of a drill-down): `breadcrumbs([crumb_to("Orders", ORDERS,
+/// |a| a), crumb(order.field(Order::number))])`. Each crumb but the last links to a screen.
+pub fn breadcrumbs(items: impl IntoIterator<Item = doc::Crumb>) -> N {
+    N::of(Kind::Breadcrumbs(doc::Breadcrumbs {
+        items: items.into_iter().collect(),
+    }))
+}
+
+/// A crumb that is only a text: the screen itself, at the end of the trail.
+pub fn crumb(text: impl Into<Txt>) -> doc::Crumb {
+    doc::Crumb {
+        text: txt(text),
+        target: None,
+    }
+}
+
+/// A crumb that links to a screen, with its params like [`link`].
+pub fn crumb_to<P>(
+    text: impl Into<Txt>,
+    screen: ScreenKey<P>,
+    args: impl FnOnce(&mut Args<P>) -> &mut Args<P>,
+) -> doc::Crumb {
+    let mut a = Args::new();
+    args(&mut a);
+    doc::Crumb {
+        text: txt(text),
+        target: Some(doc::Target {
+            screen: Some(screen.id.into()),
+            overlay: None,
+            args: a.args,
+        }),
+    }
+}
+
 /// A table over a query's rows; columns and row values are handles of the row message.
 pub struct TableB<R> {
     t: doc::Table,

@@ -186,6 +186,7 @@ export {
 export { DescribeErrors, formatError, type DescribeError, type Descriptor } from "./descriptor.js";
 export { type LogFields, type Logger, type LogLevel } from "./log.js";
 export { Plugin, plugin } from "./plugin.js";
+export { testCtx, type TestCaller, type TestCtxOptions, type TestRun } from "./testing.js";
 export {
   ActionRef,
   AgentRunB,

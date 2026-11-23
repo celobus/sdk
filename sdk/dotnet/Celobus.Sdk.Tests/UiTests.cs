@@ -214,7 +214,7 @@ public class UiTests
     }
 
     [Fact]
-    public void ReportScreensDefaultsSwitchesAndCommandsWithArgs()
+    public void ReportScreensDefaultsSwitchesBreadcrumbsAndCommandsWithArgs()
     {
         var trend = new ScreenKey<TrendParams>("trend");
         var j = J(Screen.Build(trend, s =>
@@ -235,7 +235,11 @@ public class UiTests
                 U.Segmented(view, ("chart", "Chart"), ("table", "Table")),
                 Viz.Bar.Bar().Labels(invoices, i => i.Number)
                     .Open(trend, a => a.Arg(p => p.Range, "7").Arg(p => p.State, Status.OnHold).Arg(p => p.Grain, grain)),
-                U.Link("On hold", trend, a => a.Arg(p => p.State, Status.OnHold).Arg(p => p.Range, range)));
+                U.Link("On hold", trend, a => a.Arg(p => p.State, Status.OnHold).Arg(p => p.Range, range)),
+                U.Breadcrumbs(
+                    U.Crumb("Trend", trend),
+                    U.Crumb(U.Text("trend.hold", "On hold"), trend, a => a.Arg(p => p.State, Status.OnHold).Arg(p => p.Grain, grain)),
+                    U.Crumb("Week")));
         }).Obj);
         // a default makes a param optional, whatever its field is
         Same("""
@@ -260,6 +264,13 @@ public class UiTests
             """, nodes[5]!["viz"]!["open"]);
         Same("""{"screen":"trend","args":[{"field":"state","value":{"lit":"on_hold"}},{"field":"range","value":{"param":"range"}}]}""",
             nodes[6]!["link"]!["target"]);
+        // a breadcrumb trail: crumbs that link to screens, with args like a link, and the last one a text
+        Same("""
+            {"items":[{"text":"Trend","target":{"screen":"trend"}},
+                     {"text":{"key":"trend.hold"},"target":{"screen":"trend","args":[
+                        {"field":"state","value":{"lit":"on_hold"}},{"field":"grain","value":{"param":"grain"}}]}},
+                     {"text":"Week"}]}
+            """, nodes[7]!["breadcrumbs"]);
 
         var ui = new PluginUi()
             .Command(Command.Navigate("trend", "Trend", trend))

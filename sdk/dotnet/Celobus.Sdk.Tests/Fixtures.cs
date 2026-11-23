@@ -109,6 +109,34 @@ public sealed class Gate : Endpoint<GateRequest, FailReply>
     }
 }
 
+[Message] public sealed record HoldRequest(int N);
+
+/// <summary>Counts the handlers running at once and holds each one until <see cref="Release"/> fires.</summary>
+public sealed class Hold : Endpoint<HoldRequest, FailReply>
+{
+    public override void Configure(EndpointOptions e) => e.Timeout(TimeSpan.FromSeconds(60));
+
+    public static int Running;
+    public static int MaxRunning;
+    public static readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public override async Task<FailReply> Handle(Ctx ctx, HoldRequest req)
+    {
+        var now = Interlocked.Increment(ref Running);
+        for (var max = Volatile.Read(ref MaxRunning); now > max; max = Volatile.Read(ref MaxRunning))
+            Interlocked.CompareExchange(ref MaxRunning, now, max);
+        try
+        {
+            await Release.Task.WaitAsync(ctx.Cancelled);
+            return new FailReply("done");
+        }
+        finally
+        {
+            Interlocked.Decrement(ref Running);
+        }
+    }
+}
+
 [Message] public sealed record LineKey(string OrderId, long Line);
 [Message] public sealed record AllLines();
 [Message] public sealed record TouchRequest(string OrderId, long Line);
@@ -146,6 +174,9 @@ public static class TestPlugin
 
     /// <summary>A plugin with only <see cref="Touch"/>.</summary>
     public static Plugin Lines() => Plugin.Create("lines").Version("1.0.0").Endpoint<Touch>();
+
+    /// <summary>A plugin with only <see cref="Hold"/>.</summary>
+    public static Plugin Crowd() => Plugin.Create("crowd").Version("1.0.0").Endpoint<Hold>();
 
     internal static Request Post(string endpoint, string json, Principal? principal = null)
     {

@@ -2178,6 +2178,45 @@
           "stack": {
             "children": [
               {
+                "breadcrumbs": {
+                  "items": [
+                    {
+                      "target": {
+                        "screen": "orders"
+                      },
+                      "text": "Orders"
+                    },
+                    {
+                      "target": {
+                        "args": [
+                          {
+                            "field": "status",
+                            "value": {
+                              "data": {
+                                "field": "status",
+                                "query": "order"
+                              }
+                            }
+                          }
+                        ],
+                        "screen": "orders"
+                      },
+                      "text": {
+                        "key": "order.same_status"
+                      }
+                    },
+                    {
+                      "text": {
+                        "data": {
+                          "field": "number",
+                          "query": "order"
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
                 "record_header": {
                   "actions": [
                     {
@@ -4094,6 +4133,7 @@
         "activity.replies": "{n, plural, one {# reply} other {# replies}}",
         "assign.submit": "Assign {first}",
         "nav.all": "All orders",
+        "order.same_status": "Same status",
         "orders.cancelled": "Order cancelled",
         "orders.count": "{total} orders · newest first",
         "orders.title": "Orders",

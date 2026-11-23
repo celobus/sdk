@@ -141,7 +141,7 @@ test("screens: params from the message, state, queries and their options", () =>
   assert.deepEqual(d.topics, [{ name: "items", key: "ItemsKey", description: "" }]);
 });
 
-test("report screens: a param with a default, a segmented over a param, a command and a viz link with args", () => {
+test("report screens: a param with a default, a segmented over a param, a command, a viz link with args and breadcrumbs", () => {
   const grain = t.enum("Grain", ["day", "week"]);
   const trendParams = t.message("TrendParams", { range: t.text().optional(), grain: grain.optional(), top: t.int(), status: status.optional() });
   const TREND = ui.screenKey("trend", trendParams);
@@ -172,6 +172,11 @@ test("report screens: a param with a default, a segmented over a param, a comman
             ui.segmented(s.param(trendParams.f.status), [["open", "Open"], ["done", "Done"]]),
             ui.viz.bar.bar().labels(items, item.f.title).open(TREND, { range: "7", status: "done", grain: by }),
             ui.link("Done", TREND, { status: "done", range }),
+            ui.breadcrumbs([
+              ui.crumb("Trend", TREND),
+              ui.crumb(ui.text("trend.done", "Done"), TREND, { status: "done", grain: by }),
+              ui.crumb("Week"),
+            ]),
           ]);
         }),
       ],
@@ -197,6 +202,14 @@ test("report screens: a param with a default, a segmented over a param, a comman
     args: [{ field: "range", value: { lit: "7" } }, { field: "status", value: { lit: "done" } }, { field: "grain", value: { param: "grain" } }],
   });
   assert.deepEqual(nodes[6].link.target, { screen: "trend", args: [{ field: "status", value: { lit: "done" } }, { field: "range", value: { param: "range" } }] });
+  // a breadcrumb trail: crumbs that link to screens, with args like a link, and the last one a text
+  assert.deepEqual(nodes[7].breadcrumbs, {
+    items: [
+      { text: "Trend", target: { screen: "trend" } },
+      { text: { key: "trend.done" }, target: { screen: "trend", args: [{ field: "status", value: { lit: "done" } }, { field: "grain", value: { param: "grain" } }] } },
+      { text: "Week" },
+    ],
+  });
   assert.deepEqual(d.ui.commands, [
     { id: "trend", title: "Trend", target: { screen: "trend" } },
     { id: "trend_week", title: "Trend: last 7 days", icon: "chart-line", target: { screen: "trend", args: [{ field: "range", value: { lit: "7" } }, { field: "grain", value: { lit: "week" } }] } },

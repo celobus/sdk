@@ -1409,6 +1409,38 @@ function link<P>(text: Txt, screen: ScreenKey<P>, a?: ArgsOf<P>): N {
   return n("link", { text: txt(text), target: { screen: screen.id, args: some(args(a)) } });
 }
 
+/** A crumb of a breadcrumb trail: a text, and the screen it links to with its params like `ui.link`. */
+export class CrumbB extends Built {
+  private readonly c: Record<string, unknown>;
+
+  constructor(text: Txt, target?: Record<string, unknown>) {
+    super();
+    this.c = { text: txt(text), target };
+  }
+
+  /** @internal */
+  json(): unknown {
+    return this.c;
+  }
+}
+
+/**
+ * A crumb: `ui.crumb('Orders', ORDERS)` links to a screen (with params like `ui.link`); `ui.crumb(record.field(..))`
+ * without a screen is the screen itself, at the end of the trail.
+ */
+function crumb<P>(text: Txt, screen?: ScreenKey<P>, a?: ArgsOf<P>): CrumbB {
+  return new CrumbB(text, screen === undefined ? undefined : { screen: screen.id, args: some(args(a)) });
+}
+
+/**
+ * A trail of where a screen sits, separated by `/`, when the sidebar and the screen's title do not say it (a record
+ * reached through another record, a step of a drill-down): `ui.breadcrumbs([ui.crumb('Orders', ORDERS),
+ * ui.crumb(record.field(order.f.number))])`. Each crumb but the last links to a screen.
+ */
+function breadcrumbs(items: readonly CrumbB[]): N {
+  return n("breadcrumbs", { items: [...items] });
+}
+
 // --- data
 
 /** A table over a query's rows; columns and row values are handles of the row message. */
@@ -4700,6 +4732,8 @@ export const ui = {
   // navigation
   segmented,
   link,
+  breadcrumbs,
+  crumb,
   // data
   table,
   list,

@@ -707,6 +707,14 @@ fn trend_screen() -> Screen {
             link("Paid orders", TREND, |a| {
                 a.arg(TrendParams::status, OrderStatus::Paid)
             }),
+            breadcrumbs([
+                crumb_to("Trend", TREND, |a| a),
+                crumb_to(t("trend.paid", "Paid"), TREND, |a| {
+                    a.arg(TrendParams::status, OrderStatus::Paid)
+                        .arg(TrendParams::grain, grain)
+                }),
+                crumb("Week"),
+            ]),
         ])
     })
 }
@@ -734,7 +742,7 @@ fn trend_plugin() -> Plugin {
 }
 
 #[test]
-fn a_report_head_has_defaults_a_range_switch_and_commands_with_args() {
+fn a_report_head_has_defaults_a_range_switch_breadcrumbs_and_commands_with_args() {
     use serde_json::json;
     let text = trend_plugin().describe_json().expect("describes");
     let d = celobus_descriptor::parse(text.as_bytes()).expect("parses");
@@ -783,6 +791,16 @@ fn a_report_head_has_defaults_a_range_switch_and_commands_with_args() {
             { "field": "range", "value": { "lit": "7" } },
             { "field": "status", "value": { "lit": "paid" } },
             { "field": "grain", "value": { "param": "grain" } }] })
+    );
+    // a breadcrumb trail: crumbs that link to screens, with args like a link, and the last one a text
+    assert_eq!(
+        screen["layout"]["stack"]["children"][3]["breadcrumbs"],
+        json!({ "items": [
+            { "text": "Trend", "target": { "screen": "trend" } },
+            { "text": { "key": "trend.paid" }, "target": { "screen": "trend", "args": [
+                { "field": "status", "value": { "lit": "paid" } },
+                { "field": "grain", "value": { "param": "grain" } }] } },
+            { "text": "Week" }] })
     );
     assert_eq!(
         v["ui"]["commands"],

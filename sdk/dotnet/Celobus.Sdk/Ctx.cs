@@ -41,6 +41,41 @@ public sealed class Ctx
         System = system;
     }
 
+    /// <summary>
+    /// A context without the platform, for unit tests of handlers: the caller is the system (see
+    /// <see cref="WithCaller"/>) and every call to the platform answers 503 <c>unavailable</c>.
+    /// </summary>
+    public static Ctx Test(string plugin, string version) => new(
+        Detached.Instance,
+        new PluginInfo(plugin, version),
+        new RequestInfo(0, "", DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30), null),
+        new Caller(plugin, null),
+        new JsonLogger("celobus.sdk", [new("plugin", plugin)]),
+        CancellationToken.None);
+
+    /// <summary>The same context with another caller (unit tests): <c>ctx.WithCaller(Caller.TestUser("u1"))</c>.</summary>
+    public Ctx WithCaller(Caller caller) =>
+        new(_syscalls, Plugin, Request, caller.For(Plugin.Id), Log, Cancelled, Tx, System, Job);
+
+    /// <summary>
+    /// The same context as a job's run (unit tests of job handlers): <c>ctx.Job</c> answers this run id and attempt,
+    /// scheduled now.
+    /// </summary>
+    public Ctx WithRun(string runId, int attempt, int maxAttempts) =>
+        new(_syscalls, Plugin, Request, Caller, Log, Cancelled, Tx, System,
+            new JobInfo("", runId, attempt, maxAttempts, DateTimeOffset.UtcNow));
+
+    /// <summary>No session: every syscall answers <c>unavailable</c> (<see cref="Test"/>).</summary>
+    private sealed class Detached : ISyscalls
+    {
+        public static readonly Detached Instance = new();
+
+        public Task<SyscallResult> Call(Syscall call, CancellationToken ct) =>
+            Task.FromException<SyscallResult>(PluginError.Unavailable("the session with the platform is closed"));
+
+        public void Invalidate(string topic, string key) { }
+    }
+
     /// <summary>The declared transaction this context's repository calls are part of (0: none).</summary>
     internal ulong Tx { get; }
 
@@ -447,6 +482,33 @@ public enum CallerKind
 public sealed class Caller
 {
     private readonly string _plugin;
+
+    private Caller(string plugin, Id<Platform.User>? userId, CallerKind kind, string displayName,
+        IReadOnlyList<string> roles, IReadOnlyList<Id<Platform.Group>> groups, IReadOnlyList<string> scopes)
+    {
+        _plugin = plugin;
+        UserId = userId;
+        Kind = kind;
+        DisplayName = displayName;
+        Roles = roles;
+        Groups = groups;
+        Scopes = scopes;
+    }
+
+    /// <summary>A caller for unit tests of handlers: a person with this id and no roles.</summary>
+    public static Caller TestUser(string userId) =>
+        new("", new Id<Platform.User>(userId), CallerKind.Person, "Test User", [], [], []);
+
+    /// <summary>The same caller with these full role names added (<c>workspace.admin</c>, <c>&lt;plugin&gt;.&lt;role&gt;</c>); for tests.</summary>
+    public Caller WithRoles(params string[] roles) =>
+        new(_plugin, UserId, Kind, DisplayName, [.. Roles, .. roles], Groups, Scopes);
+
+    /// <summary>The same caller with these full scope names added (<c>&lt;plugin&gt;:&lt;scope&gt;</c>); for tests.</summary>
+    public Caller WithScopes(params string[] scopes) =>
+        new(_plugin, UserId, Kind, DisplayName, Roles, Groups, [.. Scopes, .. scopes]);
+
+    /// <summary>The same caller of this plugin (its roles and scopes read against it).</summary>
+    internal Caller For(string plugin) => new(plugin, UserId, Kind, DisplayName, Roles, Groups, Scopes);
 
     internal Caller(string plugin, Principal? p)
     {

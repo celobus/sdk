@@ -133,6 +133,35 @@ test("ctx.call invokes the dependency with the current request id and raw JSON",
   assert.equal(invoke.request.body.toString(), '{"id":"5"}');
 });
 
+test("ctx.idempotencyKey is the request's Idempotency-Key header", async () => {
+  const keys = plugin({
+    id: "keys",
+    version: "1.0.0",
+    endpoints: {
+      key: endpoint({
+        input: {},
+        output: { key: t.text(), given: t.bool(), same: t.bool() },
+        async handler(ctx) {
+          const key = ctx.idempotencyKey;
+          return { key: key ?? "", given: key !== undefined, same: key === ctx.request.idempotencyKey && key === ctx.asSystem("t").idempotencyKey };
+        },
+      }),
+    },
+  });
+  const keysModel = { id: "keys", version: "1.0.0", depends: [], resolved: keys.model(), log: createLogger({ plugin: "keys" }) };
+  const keyRoutes = new Map(keysModel.resolved.endpoints.map((ep) => [`/keys.v1.Keys/${ep.name}`, ep]));
+  const send = async (headers) => {
+    const resp = await dispatch(keysModel, keyRoutes, session, {
+      id: "7", method: "POST", path: "/keys.v1.Keys/Key", query: "", headers, body: Buffer.from("{}"), principal,
+    });
+    assert.equal(resp.status, 200);
+    return JSON.parse(resp.body.toString());
+  };
+  assert.deepEqual(await send([{ name: "Idempotency-Key", value: "order-7" }]), { key: "order-7", given: true, same: true });
+  assert.deepEqual(await send([{ name: "idempotency-key", value: "" }]), { key: "", given: true, same: true });
+  assert.deepEqual(await send([]), { key: "", given: false, same: true });
+});
+
 // The run-change hook (crates/sdk/src/session_tests.rs, the_run_change_hook_is_a_system_request): a request of the
 // platform, with no caller; one from a caller is refused as unknown.
 test("the run-change hook is a system request", async () => {

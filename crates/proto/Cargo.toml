@@ -1,7 +1,7 @@
 [package]
 name = "celobus-proto"
 description = "The Celobus plugin contract: protobuf messages and gRPC services of plugin.proto, generated with tonic"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 authors = ["Celobus"]
 license-file = "LICENSE"

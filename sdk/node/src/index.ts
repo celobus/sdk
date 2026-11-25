@@ -18,6 +18,21 @@
 // A background job: `export const remindUnpaid = job({ payload: { olderThanDays: t.int() }, cron: '0 9 * * 1-5',
 // async handler(ctx, p) { .. } })`, listed in `plugin({ jobs: { remindUnpaid } })`, started with
 // `ctx.jobs.enqueue(remindUnpaid, { olderThanDays: 7 })`.
+//
+// An analytic view: `export const sales = view({ columns: { day: t.date(), amount: t.decimal() }, query: (q) =>
+// q.from(orderLine).join(order, orderLine.f.orderId).where(order.f.paidAt.geCol(daysAgo(365)))
+// .columns({ day: order.f.paidAt.day(), amount: orderLine.f.amount }) })`, listed in `plugin({ views: { sales } })`,
+// read with `ctx.query(sales)` or `ctx.analytics().query(sales)`.
+//
+// The Data Lake: `export const stock = lakeTable({ layer: core, columns: { day: t.date(), sku: t.text() },
+// partition: ['day'], key: ['day', 'sku'], read: [analyst] })`, listed in `plugin({ layers: { core }, lakeTables:
+// { stock } })`, written with `ctx.lake().table(stock).replace(..)`, `.append(rows, { key })` or `.merge(rows)`, read
+// with `ctx.lake().query(stock)`; a table computed by the platform declares its `model: (m) => m.from(stockFile)
+// ..columns({..})` and is refreshed with `ctx.lake().refresh(stock)`. An entity keeps its history with
+// `entity({ history: { layer: audit, read: [analyst] }, columns: { status: t.text().history() } })`, read with
+// `ctx.lake().history(ticket)` (`historyOf(ticket).f.validFrom`, `.eachDay()`). An entity stored in OLAP
+// (`entity({ storage: 'olap', olapKey: [..], load: (l) => l.from(mart)..columns({..}) })`) is filled when the plugin
+// asks (`ctx.analytics().snapshot().load(e).request()` → a `Ticket`) and read with `ctx.analytics().query(e)`.
 export { Decimal, type DecimalLike } from "./decimal.js";
 export {
   EntityDef,
@@ -32,7 +47,13 @@ export {
   or,
   PlatformEntity,
   ColCmp,
+  Bucket,
+  DaysAgo,
+  Parsed,
+  ViewDef,
+  daysAgo,
   entity,
+  view,
   t,
   type AnyField,
   type EntityOptions,
@@ -58,7 +79,22 @@ export {
   type PlatformRow,
   type TargetOf,
   type UntypedRef,
+  type BucketUnit,
+  type DayOf,
+  type ViewOptions,
+  type ViewRow,
+  type HistoryOptions,
+  type ParseKind,
+  type ParseValue,
 } from "./schema.js";
+export {
+  HistoryDef,
+  historyOf,
+  type ChangedByKind,
+  type HistoryChange,
+  type HistoryColumns,
+  type HistoryRow,
+} from "./history.js";
 export {
   Delete,
   Find,
@@ -82,20 +118,35 @@ export {
   Agg,
   Alias,
   AliasCol,
+  Analytics,
   LabelItem,
   QCond,
   QOrder,
   Query,
   Selected,
+  type AsOf,
   type CondLike,
   type ItemValue,
   type JoinRefOf,
   type Label,
   type Queryable,
+  type QueryEngine,
   type QueryPage,
   type RowOf,
   type SelectItem,
+  ViewDecl,
+  ViewQuery,
+  ViewStart,
+  type ViewItemFor,
+  ModelDecl,
+  ModelQuery,
+  ModelStart,
+  type ModelItemFor,
+  LoadDecl,
+  LoadQuery,
+  LoadStart,
 } from "./query.js";
+export { LoadTicket, Snapshot, ticketPending, type LoadTicketState, type LoadTicketStatus, type Loaded } from "./olap.js";
 export { AccessBuilder, Grant, Guard, Relation, RowsRel, WhenTest, type GrantLike, type Rel } from "./access.js";
 export {
   EndpointDef,
@@ -144,6 +195,7 @@ export {
 export {
   Caller,
   Ctx,
+  JobCtx,
   TxCtx,
   type AgentEvent,
   type AgentEvents,
@@ -183,6 +235,21 @@ export {
   type NotificationTab,
   type NotifySource,
 } from "./notify.js";
+export {
+  Lake,
+  LakeTableDef,
+  LakeWriter,
+  LayerDef,
+  lakeTable,
+  layer,
+  type AppendOptions,
+  type LakeRow,
+  type LakeTableOptions,
+  type LayerOptions,
+  type Written,
+  type RefreshOptions,
+  type Refreshed,
+} from "./lake.js";
 export { DescribeErrors, formatError, type DescribeError, type Descriptor } from "./descriptor.js";
 export { type LogFields, type Logger, type LogLevel } from "./log.js";
 export { Plugin, plugin } from "./plugin.js";

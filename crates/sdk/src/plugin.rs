@@ -74,6 +74,13 @@ pub struct Plugin {
     /// the scope of `authz:bypass`: entity and operations
     bypass: Vec<serde_json::Value>,
     messages: Vec<Register>,
+    /// the analytic views: their row message, and their declaration (or the mistake made building it), with the
+    /// row message's name (whose description is the view's)
+    views: Vec<(
+        Register,
+        &'static str,
+        Result<celobus_descriptor::view::View, String>,
+    )>,
     pub(crate) endpoints: Vec<Endpoint>,
     topics: Vec<crate::ui::TopicDecl>,
     ui: Option<crate::ui::doc::Ui>,
@@ -82,6 +89,33 @@ pub struct Plugin {
     pub(crate) jobs: Vec<crate::jobs::JobDecl>,
     /// how many runs the process starts at once
     pub(crate) job_slots: u32,
+    /// the Data Lake: the layers, the tables (their row message, the message's name), who reads them, and other
+    /// plugins' tables read
+    layers: Vec<crate::lake::Layer>,
+    lake_tables: Vec<(Register, &'static str, LakeDecl)>,
+    lake_reads: Vec<(&'static str, Vec<String>)>,
+    lake_system: Vec<&'static str>,
+    lake_exports: Vec<&'static str>,
+    lake_model_exports: Vec<&'static str>,
+    lake_deps: Vec<(&'static str, &'static str)>,
+    /// the entities' histories: who reads each, which the system context reads, which are exported
+    history_reads: Vec<(&'static str, Vec<String>)>,
+    history_system: Vec<&'static str>,
+    history_exports: Vec<&'static str>,
+    /// mistakes of the lake declarations (reported by `descriptor`)
+    lake_errors: Vec<String>,
+    /// the models of lake tables (or the mistake made building one)
+    lake_models: Vec<Result<celobus_descriptor::lake_model::LakeModel, String>>,
+    /// the loads of entities stored in OLAP (or the mistake made building one)
+    loads: Vec<Result<celobus_descriptor::load::Load, String>>,
+}
+
+/// A lake table as `lake_table::<T>()` declared it.
+struct LakeDecl {
+    name: &'static str,
+    layer: &'static str,
+    partition: &'static [&'static str],
+    key: &'static [&'static str],
 }
 
 impl Plugin {
@@ -105,12 +139,26 @@ impl Plugin {
             accesses: Vec::new(),
             bypass: Vec::new(),
             messages: Vec::new(),
+            views: Vec::new(),
             endpoints: Vec::new(),
             topics: Vec::new(),
             ui: None,
             on_run_change: None,
             jobs: Vec::new(),
             job_slots: crate::jobs::DEFAULT_JOB_SLOTS,
+            layers: Vec::new(),
+            lake_tables: Vec::new(),
+            lake_reads: Vec::new(),
+            lake_system: Vec::new(),
+            lake_exports: Vec::new(),
+            lake_model_exports: Vec::new(),
+            lake_deps: Vec::new(),
+            history_reads: Vec::new(),
+            history_system: Vec::new(),
+            history_exports: Vec::new(),
+            lake_errors: Vec::new(),
+            lake_models: Vec::new(),
+            loads: Vec::new(),
         }
     }
 
@@ -205,6 +253,149 @@ impl Plugin {
     /// An entity (`#[derive(Entity)]`).
     pub fn entity<E: Message + crate::message::Entity>(mut self) -> Self {
         self.entities.push((E::NAME, E::register));
+        self
+    }
+
+    /// An analytic view (`crate::query::View`): a named query over the plugin's entities whose rows are `V`
+    /// (`#[derive(View)]`), created by the platform in both engines; read with `ctx.query::<V>()` or
+    /// `ctx.analytics().query::<V>()`.
+    pub fn view<V: Message + crate::query::Queryable>(
+        mut self,
+        view: crate::query::View<V>,
+    ) -> Self {
+        self.views
+            .push((V::register, <V as Message>::NAME, view.decl(String::new())));
+        self
+    }
+
+    /// A layer of the Data Lake its tables belong to (`Layer::new("raw").title("As it arrived")`).
+    pub fn layer(mut self, layer: crate::lake::Layer) -> Self {
+        self.layers.push(layer);
+        self
+    }
+
+    /// A lake table (`#[derive(LakeTable)]`), in a layer the plugin declares.
+    pub fn lake_table<T: crate::lake::LakeTable>(mut self) -> Self {
+        if T::OWNER.is_some() {
+            self.lake_errors.push(format!(
+                "{} is another plugin's lake table: declare its read with lake_dependency",
+                T::TABLE
+            ));
+            return self;
+        }
+        self.lake_tables.push((
+            T::register,
+            <T as Message>::NAME,
+            LakeDecl {
+                name: T::TABLE,
+                layer: T::LAYER.name(),
+                partition: T::PARTITION,
+                key: T::KEY,
+            },
+        ));
+        self
+    }
+
+    /// How the platform computes a lake table of the plugin (`crate::lake::Model`), when the plugin asks
+    /// (`ctx.lake().refresh::<T>()`): `.lake_table::<Stock>().model(stock())`.
+    pub fn model<T: crate::lake::LakeTable>(mut self, model: crate::lake::Model<T>) -> Self {
+        self.lake_models.push(model.decl());
+        self
+    }
+
+    /// How the platform fills an entity stored in OLAP (`#[entity(storage = olap, key(..))]`) from the lake when the
+    /// plugin asks for a snapshot that loads it (`ctx.analytics().snapshot().load::<E>().request()`):
+    /// `.entity::<StoreMetric>().load(store_metric_load())`.
+    pub fn load<E: crate::message::Entity + crate::query::Queryable + Message>(
+        mut self,
+        load: crate::lake::Load<E>,
+    ) -> Self {
+        self.loads.push(load.decl());
+        self
+    }
+
+    /// Who reads a lake table of the plugin: the holders of these roles, every row of it (`ctx.lake().query()`).
+    pub fn lake_read<T: crate::lake::LakeTable>(
+        mut self,
+        roles: impl IntoIterator<Item = Role>,
+    ) -> Self {
+        let roles: Vec<String> = roles.into_iter().map(|r| r.name().to_string()).collect();
+        match self.lake_reads.iter_mut().find(|(t, _)| *t == T::TABLE) {
+            Some((_, r)) => r.extend(roles),
+            None => self.lake_reads.push((T::TABLE, roles)),
+        }
+        self
+    }
+
+    /// The plugin's own system context (`ctx.as_system(..)`) reads the lake table too.
+    pub fn lake_read_as_system<T: crate::lake::LakeTable>(mut self) -> Self {
+        self.lake_system.push(T::TABLE);
+        self
+    }
+
+    /// Other plugins that declare it (`lake_dependency`) read the lake table, for callers holding one of its read
+    /// roles.
+    pub fn lake_export<T: crate::lake::LakeTable>(mut self) -> Self {
+        self.lake_exports.push(T::TABLE);
+        self
+    }
+
+    /// Other plugins that declare the read (`lake_dependency`) may copy the lake table into their own lake tables with a
+    /// model (`Plugin::model`): there their own roles decide who reads the copy, every row of it. Apart from
+    /// `lake_export`, which lets their callers read it by this table's own roles.
+    pub fn lake_export_to_models<T: crate::lake::LakeTable>(mut self) -> Self {
+        self.lake_model_exports.push(T::TABLE);
+        self
+    }
+
+    /// Another plugin's exported lake table this plugin reads (`#[lake(plugin = "retail", name = "stock")]`).
+    pub fn lake_dependency<T: crate::lake::LakeTable>(mut self) -> Self {
+        match T::OWNER {
+            Some(p) => self.lake_deps.push((p, T::TABLE)),
+            None => self.lake_errors.push(format!(
+                "{} is this plugin's own lake table: lake_dependency names another plugin's (#[lake(plugin = ..)])",
+                T::TABLE
+            )),
+        }
+        self
+    }
+
+    /// Who reads the history of an entity that keeps one (`#[entity(history(layer = ..))]`, `crate::lake::history`):
+    /// the holders of these roles, every row of it (`ctx.lake().history::<E>()`).
+    pub fn history_read<E: crate::message::Entity>(
+        mut self,
+        roles: impl IntoIterator<Item = Role>,
+    ) -> Self {
+        let roles: Vec<String> = roles.into_iter().map(|r| r.name().to_string()).collect();
+        match self.history_reads.iter_mut().find(|(e, _)| *e == E::ENTITY) {
+            Some((_, r)) => r.extend(roles),
+            None => self.history_reads.push((E::ENTITY, roles)),
+        }
+        self
+    }
+
+    /// The plugin's own system context (`ctx.as_system(..)`) reads the entity's history too.
+    pub fn history_read_as_system<E: crate::message::Entity>(mut self) -> Self {
+        self.history_system.push(E::ENTITY);
+        self
+    }
+
+    /// Other plugins that declare it (`history_dependency`) read the entity's history, for callers holding one of its
+    /// read roles.
+    pub fn history_export<E: crate::message::Entity>(mut self) -> Self {
+        self.history_exports.push(E::ENTITY);
+        self
+    }
+
+    /// Another plugin's exported history this plugin reads (`#[entity(plugin = "helpdesk")]` on its entity).
+    pub fn history_dependency<E: crate::message::Entity>(mut self) -> Self {
+        match E::PLUGIN {
+            Some(p) => self.lake_deps.push((p, E::ENTITY)),
+            None => self.lake_errors.push(format!(
+                "{} is this plugin's own entity: history_dependency names another plugin's (#[entity(plugin = ..)])",
+                E::ENTITY
+            )),
+        }
         self
     }
 
@@ -450,6 +641,14 @@ impl Plugin {
         for t in &self.topics {
             (t.register)(&mut reg);
         }
+        // then the views' rows
+        for (register, _, _) in &self.views {
+            register(&mut reg);
+        }
+        // then the lake tables' rows
+        for (register, _, _) in &self.lake_tables {
+            register(&mut reg);
+        }
         errors.append(&mut reg.errors);
 
         // `columns`: an entity's fields, with their column modifiers (its message's copy has none)
@@ -471,6 +670,7 @@ impl Plugin {
                     nav: if columns { f.nav } else { "" }.to_string(),
                     inverse: if columns { f.inverse } else { "" }.to_string(),
                     on_delete: if columns { f.on_delete } else { "" }.to_string(),
+                    history: columns && f.history,
                 })
                 .collect()
         };
@@ -570,7 +770,52 @@ impl Plugin {
                         unique: ix.unique,
                     })
                     .collect(),
+                history: e.history.as_ref().map(|h| {
+                    let read = roles_once(
+                        self.history_reads
+                            .iter()
+                            .filter(|(n, _)| *n == e.name)
+                            .flat_map(|(_, r)| r.iter().cloned()),
+                    );
+                    celobus_descriptor::history::EntityHistory {
+                        layer: h.layer.name().to_string(),
+                        all: h.all,
+                        unmasked: h.unmasked,
+                        read,
+                        system_read: self.history_system.contains(&e.name),
+                        export: self.history_exports.contains(&e.name),
+                    }
+                }),
+                storage: e.storage.to_string(),
+                olap_key: e.olap_key.iter().map(|k| k.to_string()).collect(),
             });
+        }
+        for (what, names) in [
+            (
+                "history_read",
+                self.history_reads
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .collect::<Vec<_>>(),
+            ),
+            ("history_read_as_system", self.history_system.clone()),
+            ("history_export", self.history_exports.clone()),
+        ] {
+            for n in names {
+                if !entities
+                    .iter()
+                    .any(|e: &EntityDecl| e.name == n && e.history.is_some())
+                {
+                    err(
+                        &mut errors,
+                        "E_HISTORY_DECLARE",
+                        format!("entities[{n}].history"),
+                        format!(
+                            "{what}::<{n}> names an entity that keeps no history: declare #[entity(history(layer = ..))]"
+                        ),
+                    );
+                }
+            }
         }
 
         for (i, (name, _)) in self.accesses.iter().enumerate() {
@@ -686,6 +931,7 @@ impl Plugin {
                 plugin: plugin.clone(),
                 calls: calls.clone(),
                 reads: vec![],
+                lake: vec![],
             })
             .collect();
         for (plugin, reads) in &self.reads {
@@ -696,6 +942,7 @@ impl Plugin {
                         plugin: plugin.clone(),
                         calls: vec![],
                         reads: vec![],
+                        lake: vec![],
                     });
                     dependencies.len() - 1
                 }
@@ -747,6 +994,165 @@ impl Plugin {
             }
         }
 
+        let mut views = vec![];
+        for (i, (_, message, decl)) in self.views.iter().enumerate() {
+            match decl {
+                Ok(v) => {
+                    let mut v = v.clone();
+                    let row = reg.messages.iter().find(|m| m.name == *message);
+                    v.description = row.map(|m| m.description.to_string()).unwrap_or_default();
+                    // the columns in the order of the row's fields, whatever the order of the `col` calls (as the
+                    // other SDKs write them)
+                    if let Some(row) = row {
+                        let at = |name: &str| {
+                            row.fields
+                                .iter()
+                                .position(|f| f.name == name)
+                                .unwrap_or(usize::MAX)
+                        };
+                        v.columns.sort_by_key(|c| at(&c.name));
+                    }
+                    views.push(v);
+                }
+                Err(e) => err(
+                    &mut errors,
+                    "E_VIEW_DEFINE",
+                    format!("views[{i}]"),
+                    e.clone(),
+                ),
+            }
+        }
+
+        // the lake: other plugins' tables read, the tables with their readers
+        for (plugin, table) in &self.lake_deps {
+            let at = match dependencies.iter().position(|d| d.plugin == *plugin) {
+                Some(i) => i,
+                None => {
+                    dependencies.push(DependencyDecl {
+                        plugin: plugin.to_string(),
+                        calls: vec![],
+                        reads: vec![],
+                        lake: vec![],
+                    });
+                    dependencies.len() - 1
+                }
+            };
+            if !dependencies[at].lake.iter().any(|t| t == table) {
+                dependencies[at].lake.push(table.to_string());
+            }
+        }
+        for (i, e) in self.lake_errors.iter().enumerate() {
+            err(
+                &mut errors,
+                "E_LAKE_DEFINE",
+                format!("lake_tables[{i}]"),
+                e.clone(),
+            );
+        }
+        let declared = |t: &str| self.lake_tables.iter().any(|(_, _, d)| d.name == t);
+        for t in self
+            .lake_reads
+            .iter()
+            .map(|(t, _)| *t)
+            .chain(self.lake_system.iter().copied())
+            .chain(self.lake_exports.iter().copied())
+            .chain(self.lake_model_exports.iter().copied())
+        {
+            if !declared(t) {
+                err(
+                    &mut errors,
+                    "E_LAKE_DEFINE",
+                    format!("lake_tables[{t}]"),
+                    format!(
+                        "{t} is not a lake table of the plugin: declare it with lake_table first"
+                    ),
+                );
+            }
+        }
+        let mut lake_models = vec![];
+        for (i, m) in self.lake_models.iter().enumerate() {
+            match m {
+                Ok(m) => {
+                    let mut m = m.clone();
+                    // the columns in the order of the row's fields, as a view's
+                    let message = self
+                        .lake_tables
+                        .iter()
+                        .find(|(_, _, d)| d.name == m.table)
+                        .map(|(_, message, _)| *message);
+                    if let Some(row) =
+                        message.and_then(|n| reg.messages.iter().find(|x| x.name == n))
+                    {
+                        let at = |name: &str| {
+                            row.fields
+                                .iter()
+                                .position(|f| f.name == name)
+                                .unwrap_or(usize::MAX)
+                        };
+                        m.columns.sort_by_key(|c| at(&c.name));
+                    }
+                    lake_models.push(m);
+                }
+                Err(e) => err(
+                    &mut errors,
+                    "E_LAKE_MODEL_DEFINE",
+                    format!("lake_models[{i}]"),
+                    e.clone(),
+                ),
+            }
+        }
+        let mut loads = vec![];
+        for (i, l) in self.loads.iter().enumerate() {
+            match l {
+                Ok(l) => {
+                    let mut l = l.clone();
+                    // the columns in the order of the entity's fields, as a view's
+                    if let Some(e) = reg.entities.iter().find(|e| e.name == l.entity) {
+                        let at = |name: &str| {
+                            e.fields
+                                .iter()
+                                .position(|f| f.name == name)
+                                .unwrap_or(usize::MAX)
+                        };
+                        l.columns.sort_by_key(|c| at(&c.name));
+                    }
+                    loads.push(l);
+                }
+                Err(e) => err(
+                    &mut errors,
+                    "E_LOAD_DEFINE",
+                    format!("loads[{i}]"),
+                    e.clone(),
+                ),
+            }
+        }
+        let lake_tables: Vec<celobus_descriptor::lake::LakeTable> = self
+            .lake_tables
+            .iter()
+            .map(|(_, message, d)| celobus_descriptor::lake::LakeTable {
+                name: d.name.to_string(),
+                layer: d.layer.to_string(),
+                message: message.to_string(),
+                description: reg
+                    .messages
+                    .iter()
+                    .find(|m| m.name == *message)
+                    .map(|m| m.description.to_string())
+                    .unwrap_or_default(),
+                partition: d.partition.iter().map(|c| c.to_string()).collect(),
+                key: d.key.iter().map(|c| c.to_string()).collect(),
+                read: roles_once(
+                    self.lake_reads
+                        .iter()
+                        .filter(|(t, _)| *t == d.name)
+                        .flat_map(|(_, r)| r.iter().cloned()),
+                ),
+                system_read: self.lake_system.contains(&d.name),
+                export: self.lake_exports.contains(&d.name),
+                export_models: self.lake_model_exports.contains(&d.name),
+            })
+            .collect();
+
         if self.job_slots == 0 || self.job_slots > crate::jobs::MAX_JOB_SLOTS {
             err(
                 &mut errors,
@@ -763,7 +1169,7 @@ impl Plugin {
         if !errors.is_empty() {
             return Err(DescribeErrors(errors));
         }
-        let d = Descriptor {
+        let mut d = Descriptor {
             schema: 1,
             id: self.id.clone(),
             version: self.version.clone(),
@@ -862,14 +1268,61 @@ impl Plugin {
                 .as_ref()
                 .map(|_| RunsDecl { on_change: true }),
             jobs: self.jobs.iter().map(|j| j.descriptor()).collect(),
+            views,
+            layers: self
+                .layers
+                .iter()
+                .map(|l| celobus_descriptor::lake::Layer {
+                    name: l.name().to_string(),
+                    title: l.get_title().to_string(),
+                })
+                .collect(),
+            lake_tables,
+            lake_models,
+            loads,
         };
-        // the jobs' rules are the package's own (E_JOB_*): the same check runs at build and at install
-        if !d.jobs.is_empty()
+        // `history(.., all)`: the flag on every column it covers (the descriptor carries one per column), worked out
+        // by the descriptor's own rule (the encrypted columns left out, and the masked ones without `unmasked`)
+        if d.entities
+            .iter()
+            .any(|e| e.history.as_ref().is_some_and(|h| h.all))
+            && let Ok(parsed) = celobus_descriptor::parse(d.to_canonical_json().as_bytes())
+        {
+            for e in d.entities.iter_mut() {
+                let Some(pe) = parsed.entities.iter().find(|x| x.name == e.name) else {
+                    continue;
+                };
+                let covered = celobus_descriptor::history::covered(&parsed, pe);
+                for f in e.fields.iter_mut() {
+                    if covered.contains(&f.name) {
+                        f.history = true;
+                    }
+                }
+            }
+        }
+        // the jobs', the views' and the lake's rules are the package's own (E_JOB_*, E_VIEW_*, E_LAKE_*, E_HISTORY_*):
+        // the same check runs at build and at install
+        if (!d.jobs.is_empty()
+            || !d.views.is_empty()
+            || !d.lake_tables.is_empty()
+            || !d.lake_models.is_empty()
+            || !d.layers.is_empty()
+            || !d.loads.is_empty()
+            || d.entities
+                .iter()
+                .any(|e| e.history.is_some() || !e.storage.is_empty()))
             && let Err(errors) = celobus_descriptor::check(d.to_canonical_json().as_bytes())
         {
             let jobs: Vec<DescribeError> = errors
                 .into_iter()
-                .filter(|e| e.code.starts_with("E_JOB_"))
+                .filter(|e| {
+                    e.code.starts_with("E_JOB_")
+                        || e.code.starts_with("E_VIEW_")
+                        || e.code.starts_with("E_LAKE_")
+                        || e.code.starts_with("E_HISTORY_")
+                        || e.code.starts_with("E_OLAP_")
+                        || e.code.starts_with("E_LOAD_")
+                })
                 .map(|e| {
                     let message = match e.help {
                         Some(help) => format!("{} ({help})", e.message),
@@ -993,6 +1446,17 @@ fn humanize(id: &str) -> String {
         Some(c) => c.to_uppercase().chain(chars).collect(),
         None => String::new(),
     }
+}
+
+/// Read roles as the descriptor lists them, a lake table's and a history's alike: each once, where it was first named.
+fn roles_once(roles: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for r in roles {
+        if !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

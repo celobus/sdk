@@ -254,7 +254,7 @@ pub async fn count_all_notes(ctx: Ctx, req: CountAllNotesRequest) -> Result<Note
     })
 }
 
-/// Counts the notes of each owner the caller may read: SQL over the notes' secure view (`hello_note`), run as the
+/// Counts the notes of each owner the caller may read: SQL over the notes (`hello_note`), run as the
 /// caller through the notes' rules.
 pub async fn notes_by_owner(ctx: Ctx, req: NotesByOwnerRequest) -> Result<NotesByOwnerReply> {
     Ok(NotesByOwnerReply {

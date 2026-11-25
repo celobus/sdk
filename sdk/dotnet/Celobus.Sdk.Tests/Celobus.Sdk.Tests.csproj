@@ -31,6 +31,8 @@
     <None Include="../../conformance/notify/descriptor.json" Link="conformance/notify.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../conformance/jobs/descriptor.json" Link="conformance/jobs.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../conformance/query/revenue.json" Link="conformance/revenue.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../conformance/query/weekly.json" Link="conformance/weekly.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../conformance/query/estimates.json" Link="conformance/estimates.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />

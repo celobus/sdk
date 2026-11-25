@@ -86,6 +86,7 @@ internal sealed class FieldSchema
     public string? Nav { get; init; }                    // [Ref(Nav = ..)]
     public string? Inverse { get; init; }                // [Ref(Inverse = ..)]
     public string? OnDelete { get; init; }               // [Ref(OnDelete = ..)], snake_case
+    public bool History { get; init; }                   // [History] on an entity's column
 
     /// <summary>The descriptor type; refs resolve against the plugin id.</summary>
     public string DescriptorType(string pluginId) => Kind switch
@@ -252,6 +253,7 @@ internal sealed class MessageSchema
             Unique = prop.IsDefined(typeof(UniqueAttribute)) || param?.IsDefined(typeof(UniqueAttribute)) == true,
             Indexed = prop.IsDefined(typeof(IndexAttribute)) || param?.IsDefined(typeof(IndexAttribute)) == true,
             Encrypted = prop.IsDefined(typeof(EncryptedAttribute)) || param?.IsDefined(typeof(EncryptedAttribute)) == true,
+            History = prop.IsDefined(typeof(HistoryAttribute)) || param?.IsDefined(typeof(HistoryAttribute)) == true,
             Searchable = (prop.GetCustomAttribute<SearchableAttribute>() ?? param?.GetCustomAttribute<SearchableAttribute>())?.Language,
             Nav = (prop.GetCustomAttribute<RefAttribute>() ?? param?.GetCustomAttribute<RefAttribute>())?.Nav,
             Inverse = (prop.GetCustomAttribute<RefAttribute>() ?? param?.GetCustomAttribute<RefAttribute>())?.Inverse,
@@ -300,13 +302,23 @@ internal sealed class MessageSchema
     }
 }
 
-internal static class Schema
+internal static partial class Schema
 {
     public static bool IsMessage(Type t) =>
-        t.IsClass && (t.IsDefined(typeof(MessageAttribute), false) || t.IsDefined(typeof(EntityAttribute), false));
+        t.IsClass && (t.IsDefined(typeof(MessageAttribute), false) || t.IsDefined(typeof(EntityAttribute), false)
+                      || t.IsDefined(typeof(ViewAttribute), false) || t.IsDefined(typeof(LakeTableAttribute), false));
+
+    /// <summary>The row of an analytic view of the plugin (<c>[View]</c>).</summary>
+    public static bool IsView(Type t) => t.IsClass && t.IsDefined(typeof(ViewAttribute), false);
+
+    /// <summary>A view's name: <c>[View(Name = ..)]</c>, or the type's name in snake_case.</summary>
+    public static string ViewName(Type t) => t.GetCustomAttribute<ViewAttribute>(false)?.Name ?? Names.Snake(t.Name);
 
     /// <summary>An entity of this plugin (<c>[Entity]</c> without <c>Plugin</c>).</summary>
     public static bool IsEntity(Type t) => t.IsClass && t.GetCustomAttribute<EntityAttribute>(false) is { Plugin: null };
+
+    /// <summary>An entity whose rows are kept in the analytic copy only (<c>[Entity(Storage = EntityStorage.Olap)]</c>).</summary>
+    public static bool IsOlap(Type t) => t.IsClass && t.GetCustomAttribute<EntityAttribute>(false) is { Storage: EntityStorage.Olap };
 
     /// <summary>A dependency's entity (<c>[Entity(Plugin = "customers")]</c>), read with <c>ctx.Query&lt;T&gt;()</c>.</summary>
     public static bool IsForeignEntity(Type t) => ForeignPlugin(t) is not null;

@@ -1,0 +1,14 @@
+{
+  "sources": [
+    { "entity": "long_estimate", "alias": "long_estimate" }
+  ],
+  "filter": { "compare": { "left": { "column": { "source": "long_estimate", "field": "hours" } }, "op": "GE",
+                           "values": [{ "stringValue": "20.50" }] } },
+  "select": [
+    { "column": { "source": "long_estimate", "field": "title" } },
+    { "column": { "source": "long_estimate", "field": "hours" } }
+  ],
+  "order": [
+    { "term": { "column": { "source": "long_estimate", "field": "hours" } }, "desc": true }
+  ]
+}

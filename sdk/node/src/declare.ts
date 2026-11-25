@@ -1,9 +1,11 @@
 // Declarations of identity and behavior: roles, endpoints, background jobs and the plugin's options. Names come from
 // the keys these objects are registered under in `plugin({...})`, so a declaration carries no name of its own.
-import type { Ctx, RoleLike, RunChangeHandler } from "./ctx.js";
+import { noted } from "./keys.js";
+import type { Ctx, JobCtx, RoleLike, RunChangeHandler } from "./ctx.js";
 import type { NotificationKind } from "./notify.js";
-import type { EntityDef, EnumDef, Infer, IoType, IoValue, MessageDef, Shape } from "./schema.js";
+import type { EntityDef, EnumDef, Infer, IoType, IoValue, MessageDef, Shape, ViewDef } from "./schema.js";
 import type { InvalidationLike, TopicLike, UiDoc } from "./ui.js";
+import type { LakeTableDef, LayerDef } from "./lake.js";
 
 export type DefaultFor = "none" | "member" | "admin";
 
@@ -24,7 +26,7 @@ export class RoleDef {
 
 /** `export const manager = role({ title: 'Order manager', strict: true })`. */
 export function role(options: RoleOptions = {}): RoleDef {
-  return new RoleDef(options);
+  return noted(new RoleDef(options), "role", options);
 }
 
 /** The platform's base roles, by their full names. */
@@ -101,7 +103,7 @@ export class EndpointDef<I extends IoType = IoType, O extends IoType = IoType> {
 }
 
 export function endpoint<I extends IoType, O extends IoType>(options: EndpointOptions<I, O>): EndpointDef<I, O> {
-  return new EndpointDef(options);
+  return noted(new EndpointDef(options), "endpoint", options);
 }
 
 /**
@@ -160,9 +162,10 @@ export interface JobOptions<P extends JobPayloadType> {
   /**
    * The run: `ctx.job` says which (run id, attempt), `ctx.signal` aborts when it must stop. Resolving ends the attempt
    * as done; throwing fails it, and the run is retried unless the error is permanent (`permanent(..)`, an error marked
-   * `.asPermanent()`, or `invalid`, `not_found`, `permission_denied`, `payload_invalid`).
+   * `.asPermanent()`, or `invalid`, `not_found`, `permission_denied`, `payload_invalid`). Its lake appends have a
+   * default write key (`JobCtx`).
    */
-  handler(ctx: Ctx, payload: JobPayload<P>): Promise<void> | void;
+  handler(ctx: JobCtx, payload: JobPayload<P>): Promise<void> | void;
 }
 
 /**
@@ -179,7 +182,7 @@ export class JobDef<P extends JobPayloadType = JobPayloadType> {
  * async handler(ctx, p) { .. } })`, listed in `plugin({ jobs: { remindUnpaid } })`.
  */
 export function job<P extends JobPayloadType>(options: JobOptions<P>): JobDef<P> {
-  return new JobDef(options);
+  return noted(new JobDef(options), "job", options);
 }
 
 export interface ScopeOptions {
@@ -326,6 +329,29 @@ export interface PluginOptions {
   connections?: Record<string, ConnectionOptions>;
   dependencies?: readonly (string | Dependency)[];
   entities?: Record<string, EntityDef<any>>;
+  /**
+   * The plugin's analytic views by key (`views: { sales, salesByMonth }`, each `view({..})`); a camelCase key is the
+   * snake_case name (`sales_by_month`), its row message the PascalCase one (`SalesByMonth`).
+   */
+  views?: Record<string, ViewDef<any>>;
+  /**
+   * The layers of the plugin's part of the Data Lake by key (`layers: { raw, core }`, each `layer({..})`); a camelCase
+   * key is the snake_case name.
+   */
+  layers?: Record<string, LayerDef>;
+  /**
+   * The plugin's lake tables by key (`lakeTables: { stockFile, stock }`, each `lakeTable({ layer, columns, .. })`); a
+   * camelCase key is the snake_case name unless the table names itself.
+   */
+  lakeTables?: Record<string, LakeTableDef<any, false>>;
+  /** Other plugins' exported lake tables this plugin reads (`lakeTable({ plugin: 'retail', name: 'stock', columns })`). */
+  lakeDependencies?: readonly LakeTableDef<any, true>[];
+  /**
+   * Other plugins' entities whose exported histories this plugin reads (`ctx.lake().history(e)`; the entity as
+   * declared with its owner and name, `entity({ plugin: 'helpdesk', name: 'ticket', columns })`). In the descriptor each is
+   * named in its dependency's `lake`, after the lake tables of `lakeDependencies`.
+   */
+  historyDependencies?: readonly EntityDef<any, true>[];
   endpoints?: Record<string, EndpointDef<any, any>>;
   /**
    * The kinds of notification the plugin sends (`notification('mention', {..})`, `ctx.notifications`); they need the

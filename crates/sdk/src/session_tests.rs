@@ -911,7 +911,10 @@ async fn session_with_a_fake_celld() {
                 let result = match sc.call.unwrap() {
                     syscall::Call::DbCount(c) => {
                         assert_eq!((c.entity.as_str(), c.request_id), ("tally", 77));
-                        syscall_result::Result::DbCount(pb::DbCountResult { count: 41 })
+                        syscall_result::Result::DbCount(pb::DbCountResult {
+                            count: 41,
+                            ..Default::default()
+                        })
                     }
                     syscall::Call::DbCreate(c) => {
                         let row: Value = serde_json::from_slice(&c.rows[0]).unwrap();
@@ -988,7 +991,10 @@ async fn session_with_a_fake_celld() {
             Some(plugin_message::Kind::Syscall(sc)) => {
                 let result = match sc.call.unwrap() {
                     syscall::Call::DbCount(_) => {
-                        syscall_result::Result::DbCount(pb::DbCountResult { count: 0 })
+                        syscall_result::Result::DbCount(pb::DbCountResult {
+                            count: 0,
+                            ..Default::default()
+                        })
                     }
                     syscall::Call::DbCreate(_) => syscall_result::Result::DbRows(pb::DbRows {
                         rows: vec![bytes::Bytes::from(

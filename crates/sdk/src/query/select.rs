@@ -79,6 +79,19 @@ where
     }
 }
 
+impl<S, I, E: Queryable, T: Nullable> Item<S, I> for super::terms::Bucket<E, T>
+where
+    S: Has<E, I>,
+{
+    type Out = <<S as Has<E, I>>::N as Nullity>::Wrap<T>;
+    fn item(&self) -> pb::QuerySelect {
+        select(query_select::Kind::Column(self.wire()))
+    }
+    fn read(v: &Value, path: &str) -> Result<Self::Out> {
+        value(v, path)
+    }
+}
+
 /// The index of an item that does not depend on the sources.
 pub struct Free;
 

@@ -91,6 +91,21 @@ pub struct Descriptor {
     /// The background jobs; written only when declared.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<celobus_descriptor::Job>,
+    /// The analytic views; written only when declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<celobus_descriptor::view::View>,
+    /// The layers of the Data Lake; written only when declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<celobus_descriptor::lake::Layer>,
+    /// The lake tables; written only when declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lake_tables: Vec<celobus_descriptor::lake::LakeTable>,
+    /// The models of lake tables; written only when declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lake_models: Vec<celobus_descriptor::lake_model::LakeModel>,
+    /// The loads of the entities stored in OLAP; written only when declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub loads: Vec<celobus_descriptor::load::Load>,
 }
 
 /// `runs`: the plugin handles the run-change hook (`on_change`).
@@ -187,6 +202,10 @@ pub struct DependencyDecl {
     /// Written only when declared.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<ReadDecl>,
+    /// The dependency's exported lake tables the plugin reads and its entities whose histories it reads, by their names
+    /// there (a plugin never names a lake table like one of its entities); written only when declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lake: Vec<String>,
 }
 
 /// An entity of a dependency the plugin reads, with the fields it reads.
@@ -233,6 +252,15 @@ pub struct EntityDecl {
     /// The access rules; written only when declared (none: no one but a system context).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<Value>,
+    /// The history in the Data Lake; written only when declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<celobus_descriptor::history::EntityHistory>,
+    /// `olap`: its rows are kept in the analytic copy only; written only when declared.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub storage: String,
+    /// The fields that key a row of an entity stored in OLAP; written only when declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub olap_key: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -274,6 +302,9 @@ pub struct FieldDecl {
     pub inverse: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub on_delete: String,
+    /// The entity's history keeps its changes; written only when set.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub history: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

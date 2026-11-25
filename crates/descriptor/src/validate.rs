@@ -39,6 +39,11 @@ pub fn validate(d: &Descriptor) -> Vec<Error> {
     v.errors.extend(crate::ui_check::validate_ui(d));
     v.notifications(d);
     v.jobs(d, &types);
+    v.errors.extend(crate::view::validate(d));
+    v.errors.extend(crate::lake::validate(d));
+    v.errors.extend(crate::lake_model::validate(d));
+    v.errors.extend(crate::load::validate(d));
+    v.errors.extend(crate::history::validate(d));
     v.errors
 }
 
@@ -889,12 +894,13 @@ impl V {
                     || !f.nav.is_empty()
                     || !f.inverse.is_empty()
                     || !f.on_delete.is_empty()
+                    || f.history
                 {
                     self.push(
                         Error::new(
                             "E_COL_MODIFIER",
                             format!("messages[{}].fields[{}]", at(&m.name, i), at(&f.name, j)),
-                            "unique, index, encrypted, searchable, nav, inverse and on_delete are column modifiers of an entity",
+                            "unique, index, encrypted, searchable, nav, inverse, on_delete and history are column modifiers of an entity",
                         )
                         .help("declare them on the entity's field"),
                     );

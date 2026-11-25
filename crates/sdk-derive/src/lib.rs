@@ -2,10 +2,14 @@
 //!
 //! - `#[derive(Message)]` on a struct with named fields: a protobuf message of the plugin (its
 //!   descriptor entry and its JSON codec); on an enum without fields: a protobuf enum.
+//! - `#[derive(View)]` on a struct with named fields: the row of an analytic view (`#[view(name = "sales")]`).
+//! - `#[derive(LakeTable)]` on a struct with named fields: the row of a lake table (`#[lake(layer = RAW,
+//!   name = "stock", partition(day), key(day, sku))]`).
 //! - `#[derive(Entity)]` on a struct with named fields and an `id: Id<Self>` field: an entity
 //!   (`#[entity(key = uuid | i64 | string, soft_delete, version, append_only, label = field,
-//!   index(a, b desc), unique_index(a, b))]`, `#[col(unique, index, encrypted, searchable,
-//!   searchable(lang = "english"), nav = name, inverse = name, on_delete = cascade)]` on its fields).
+//!   index(a, b desc), unique_index(a, b), history(layer = AUDIT, all, unmasked))]`, `#[col(unique, index,
+//!   encrypted, searchable, searchable(lang = "english"), nav = name, inverse = name, on_delete = cascade,
+//!   history)]` on its fields).
 //!
 //! The generated code refers to `::celobus_sdk::__private`, so the plugin depends on `celobus-sdk`
 //! (which re-exports these macros) and never on this crate directly.
@@ -53,7 +57,9 @@ pub fn derive_message(input: TokenStream) -> TokenStream {
 /// handle on the target, `Customer::orders`, so the target is an entity of the same crate);
 /// `#[col(on_delete = cascade)]` what the ref does when its target is deleted for good (`restrict` by default,
 /// `cascade`, `set_null`, `no_action`; a ref to another plugin or the directory `keep` by default, or `set_null`
-/// onto the directory).
+/// onto the directory). `#[entity(history(layer = AUDIT))]` keeps the entity's history in the lake's layer `AUDIT` (a
+/// `Layer` constant): the changes of the columns marked `#[col(history)]`, or with `all` of every column but the
+/// encrypted ones and, unless `unmasked` is said too, the masked ones.
 #[proc_macro_derive(Entity, attributes(entity, col))]
 pub fn derive_entity(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -69,6 +75,200 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     out.unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
+/// An analytic view's row (a struct with named fields): a message of the plugin, and a source of queries
+/// (`ctx.query::<V>()`, `ctx.analytics().query::<V>()`) once the plugin declares the view (`Plugin::view`).
+///
+/// `#[view(name = "sales")]`; the name defaults to the type's in snake_case. The first paragraph of a doc comment is
+/// the view's description (an agent of the plugin reads it to pick the view).
+#[proc_macro_derive(View, attributes(view))]
+pub fn derive_view(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let out = match &input.data {
+        Data::Struct(_) => view_name(&input).and_then(|name| {
+            let ty = &input.ident;
+            let message = message_struct(&input, None)?;
+            Ok(quote! {
+                #message
+                const _: () = {
+                    use ::celobus_sdk::__private as __p;
+                    impl __p::Queryable for #ty {
+                        const SOURCE: &'static str = #name;
+                        const OWNER: ::std::option::Option<&'static str> = ::std::option::Option::None;
+                    }
+                    impl __p::QueryRow for #ty {
+                        type Row = Self;
+                        fn row(value: &__p::Value) -> __p::Result<Self> {
+                            <Self as __p::Message>::from_json(value, "")
+                        }
+                    }
+                };
+            })
+        }),
+        _ => Err(syn::Error::new(
+            input.ident.span(),
+            "#[derive(View)] supports structs with named fields",
+        )),
+    };
+    out.unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+/// A lake table's row (a struct with named fields): a message of the plugin, a table of the workspace's Data Lake once
+/// the plugin declares it (`Plugin::lake_table`), written with `ctx.lake().table::<T>()` and read with
+/// `ctx.lake().query::<T>()`.
+///
+/// `#[lake(layer = RAW, name = "stock_file", partition(loaded_on), key(day, sku))]`: the layer (a `Layer` constant),
+/// the table's name (default: the type's in snake_case), its partition columns (what `replace` swaps) and its key
+/// columns (what `merge` writes over); each a field of the struct. `#[lake(plugin = "retail", name = "stock")]`
+/// declares another plugin's exported table this plugin reads (`Plugin::lake_dependency`): not part of this plugin's
+/// tables. The first paragraph of a doc comment is the table's description.
+#[proc_macro_derive(LakeTable, attributes(lake))]
+pub fn derive_lake_table(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let out = match &input.data {
+        Data::Struct(data) => lake_options(&input).and_then(|o| {
+            let ty = &input.ident;
+            let Fields::Named(named) = &data.fields else {
+                return Err(syn::Error::new(ty.span(), "a lake table has named fields"));
+            };
+            let fields: Vec<String> = named
+                .named
+                .iter()
+                .filter_map(|f| f.ident.as_ref().map(unraw))
+                .collect();
+            for (what, list) in [("partition", &o.partition), ("key", &o.key)] {
+                for c in list {
+                    if !fields.contains(c) {
+                        return Err(syn::Error::new(
+                            ty.span(),
+                            format!("{what} column `{c}` is not a field of {ty}"),
+                        ));
+                    }
+                }
+            }
+            if o.plugin.is_none() && o.layer.is_none() {
+                return Err(syn::Error::new(
+                    ty.span(),
+                    "a lake table names its layer: #[lake(layer = RAW)] (a `Layer` constant)",
+                ));
+            }
+            let message = message_struct(&input, None)?;
+            let name = o
+                .name
+                .clone()
+                .unwrap_or_else(|| snake_case(&ty.to_string()));
+            let layer = match &o.layer {
+                Some(l) => quote! { #l },
+                None => quote! { __p::Layer::new("") },
+            };
+            let owner = match &o.plugin {
+                Some(p) => quote! { ::std::option::Option::Some(#p) },
+                None => quote! { ::std::option::Option::None },
+            };
+            let (partition, key) = (&o.partition, &o.key);
+            Ok(quote! {
+                #message
+                const _: () = {
+                    use ::celobus_sdk::__private as __p;
+                    impl __p::Queryable for #ty {
+                        const SOURCE: &'static str = #name;
+                        const OWNER: ::std::option::Option<&'static str> = #owner;
+                    }
+                    impl __p::QueryRow for #ty {
+                        type Row = Self;
+                        fn row(value: &__p::Value) -> __p::Result<Self> {
+                            <Self as __p::Message>::from_json(value, "")
+                        }
+                    }
+                    impl __p::LakeTable for #ty {
+                        const LAYER: __p::Layer = #layer;
+                        const TABLE: &'static str = #name;
+                        const PARTITION: &'static [&'static str] = &[ #( #partition ),* ];
+                        const KEY: &'static [&'static str] = &[ #( #key ),* ];
+                    }
+                };
+            })
+        }),
+        _ => Err(syn::Error::new(
+            input.ident.span(),
+            "#[derive(LakeTable)] supports structs with named fields",
+        )),
+    };
+    out.unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+struct LakeOptions {
+    layer: Option<syn::Path>,
+    name: Option<String>,
+    plugin: Option<String>,
+    partition: Vec<String>,
+    key: Vec<String>,
+}
+
+/// `(a, b)`: field names.
+fn field_list(input: syn::parse::ParseStream) -> syn::Result<Vec<String>> {
+    let content;
+    syn::parenthesized!(content in input);
+    let mut out = Vec::new();
+    while !content.is_empty() {
+        let name: Ident = content.parse()?;
+        out.push(unraw(&name));
+        if !content.is_empty() {
+            content.parse::<syn::Token![,]>()?;
+        }
+    }
+    Ok(out)
+}
+
+fn lake_options(input: &DeriveInput) -> syn::Result<LakeOptions> {
+    let mut o = LakeOptions {
+        layer: None,
+        name: None,
+        plugin: None,
+        partition: vec![],
+        key: vec![],
+    };
+    for attr in input.attrs.iter().filter(|a| a.path().is_ident("lake")) {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("layer") {
+                o.layer = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("name") {
+                let v: LitStr = meta.value()?.parse()?;
+                o.name = Some(v.value());
+            } else if meta.path.is_ident("plugin") {
+                let v: LitStr = meta.value()?.parse()?;
+                o.plugin = Some(v.value());
+            } else if meta.path.is_ident("partition") {
+                o.partition = field_list(meta.input)?;
+            } else if meta.path.is_ident("key") {
+                o.key = field_list(meta.input)?;
+            } else {
+                return Err(meta.error(
+                    "unknown lake option (layer = .., name = \"..\", plugin = \"..\", partition(..), key(..))",
+                ));
+            }
+            Ok(())
+        })?;
+    }
+    Ok(o)
+}
+
+/// `#[view(name = "sales")]`, or the type's name in snake_case.
+fn view_name(input: &DeriveInput) -> syn::Result<String> {
+    let mut name = snake_case(&input.ident.to_string());
+    for attr in input.attrs.iter().filter(|a| a.path().is_ident("view")) {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("name") {
+                let v: LitStr = meta.value()?.parse()?;
+                name = v.value();
+                Ok(())
+            } else {
+                Err(meta.error("unknown view option (name = \"..\")"))
+            }
+        })?;
+    }
+    Ok(name)
+}
+
 struct EntityOptions {
     key: &'static str,
     soft_delete: bool,
@@ -78,6 +278,12 @@ struct EntityOptions {
     plugin: Option<String>,
     /// (columns with `desc`, unique)
     indexes: Vec<(Vec<(String, bool)>, bool)>,
+    /// `history(layer = .., all, unmasked)`: the layer, all, unmasked
+    history: Option<(syn::Path, bool, bool)>,
+    /// `storage = olap`: its rows are kept in the analytic copy only
+    olap: bool,
+    /// `key(a, b)`: the fields that key a row of an entity stored in OLAP
+    olap_key: Vec<String>,
 }
 
 /// `(a, b desc, c asc)`: the columns of an index.
@@ -126,6 +332,8 @@ struct ColumnOptions {
     /// `restrict`, `cascade`, `set_null`, `no_action` (a ref within the plugin), `keep`, `set_null` (to another
     /// plugin or the directory); checked by `celobus plugin check`
     on_delete: Option<Ident>,
+    /// the entity's history keeps the column's changes
+    history: bool,
 }
 
 impl ColumnOptions {
@@ -137,6 +345,7 @@ impl ColumnOptions {
             || self.nav.is_some()
             || self.inverse.is_some()
             || self.on_delete.is_some()
+            || self.history
     }
 }
 
@@ -163,6 +372,8 @@ fn column_options(attrs: &[Attribute]) -> syn::Result<ColumnOptions> {
                         }
                     })?;
                 }
+            } else if meta.path.is_ident("history") {
+                o.history = true;
             } else if meta.path.is_ident("nav") {
                 o.nav = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("inverse") {
@@ -179,7 +390,7 @@ fn column_options(attrs: &[Attribute]) -> syn::Result<ColumnOptions> {
                 o.on_delete = Some(v);
             } else {
                 return Err(meta.error(
-                    "unknown column option (unique, index, encrypted, searchable, searchable(lang = \"..\"), nav = name, inverse = name, on_delete = ..)",
+                    "unknown column option (unique, index, encrypted, searchable, searchable(lang = \"..\"), nav = name, inverse = name, on_delete = .., history)",
                 ));
             }
             Ok(())
@@ -221,10 +432,28 @@ fn entity_options(input: &DeriveInput) -> syn::Result<EntityOptions> {
         label: None,
         plugin: None,
         indexes: Vec::new(),
+        history: None,
+        olap: false,
+        olap_key: Vec::new(),
     };
     for attr in input.attrs.iter().filter(|a| a.path().is_ident("entity")) {
         attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("key") {
+            if meta.path.is_ident("key") && meta.input.peek(syn::token::Paren) {
+                // `key(day, store, metric)`: an entity stored in OLAP keyed by its fields
+                opts.olap_key = field_list(meta.input)?;
+                if opts.olap_key.is_empty() {
+                    return Err(meta.error("key(..) names the fields that key a row"));
+                }
+            } else if meta.path.is_ident("storage") {
+                let storage: Ident = meta.value()?.parse()?;
+                if storage != "olap" {
+                    return Err(syn::Error::new(
+                        storage.span(),
+                        "storage = olap keeps the entity's rows in the analytic copy only (the default keeps them in the workspace's database)",
+                    ));
+                }
+                opts.olap = true;
+            } else if meta.path.is_ident("key") {
                 let key: Ident = meta.value()?.parse()?;
                 opts.key = match key.to_string().as_str() {
                     "uuid" => "uuid",
@@ -248,9 +477,27 @@ fn entity_options(input: &DeriveInput) -> syn::Result<EntityOptions> {
                 opts.indexes.push((index_columns(meta.input)?, false));
             } else if meta.path.is_ident("unique_index") {
                 opts.indexes.push((index_columns(meta.input)?, true));
+            } else if meta.path.is_ident("history") {
+                let (mut layer, mut all, mut unmasked) = (None, false, false);
+                meta.parse_nested_meta(|inner| {
+                    if inner.path.is_ident("layer") {
+                        layer = Some(inner.value()?.parse::<syn::Path>()?);
+                    } else if inner.path.is_ident("all") {
+                        all = true;
+                    } else if inner.path.is_ident("unmasked") {
+                        unmasked = true;
+                    } else {
+                        return Err(inner.error("history takes layer = <Layer>, all, unmasked"));
+                    }
+                    Ok(())
+                })?;
+                let layer = layer.ok_or_else(|| {
+                    meta.error("history names its layer: history(layer = AUDIT) (a `Layer` constant)")
+                })?;
+                opts.history = Some((layer, all, unmasked));
             } else {
                 return Err(meta.error(
-                    "unknown entity option (known: key, soft_delete, version, append_only, label, plugin, index, unique_index)",
+                    "unknown entity option (known: key, soft_delete, version, append_only, label, plugin, index, unique_index, history, storage = olap, key(..))",
                 ));
             }
             Ok(())
@@ -377,8 +624,9 @@ fn message_struct(input: &DeriveInput, entity: Option<EntityOptions>) -> syn::Re
         .iter()
         .map(|c| c.on_delete.as_ref().map(unraw).unwrap_or_default());
     let encrypted = columns.iter().map(|c| c.encrypted);
+    let kept = columns.iter().map(|c| c.history);
     let fields = quote! {
-        ::std::vec![ #( reg.field::<#types>(#names, #docs).column(#uniques, #indexed, #encrypted).searchable(#searchable).navigation(#navs, #inverses).on_delete(#on_deletes), )* ]
+        ::std::vec![ #( reg.field::<#types>(#names, #docs).column(#uniques, #indexed, #encrypted).searchable(#searchable).navigation(#navs, #inverses).on_delete(#on_deletes).history(#kept), )* ]
     };
     // navigation handles: a ref's forward nav (when its name is not the field's own) and its inverse nav, on the
     // target (an entity of the same crate)
@@ -537,6 +785,29 @@ fn message_struct(input: &DeriveInput, entity: Option<EntityOptions>) -> syn::Re
                     cols.iter().map(|(c, d)| (c, *d)).unzip();
                 quote! { __p::IndexInfo { columns: ::std::vec![ #( (#cols, #descs) ),* ], unique: #unique } }
             });
+            let history = match &opts.history {
+                Some((layer, all, unmasked)) => quote! {
+                    ::std::option::Option::Some(__p::HistoryInfo { layer: #layer, all: #all, unmasked: #unmasked })
+                },
+                None => quote! { ::std::option::Option::None },
+            };
+            let storage = if opts.olap { "olap" } else { "" };
+            let olap = opts.olap;
+            for k in &opts.olap_key {
+                if !names.contains(k) {
+                    return Err(syn::Error::new(
+                        ty.span(),
+                        format!("key({k}): `{k}` is not a field of {name}"),
+                    ));
+                }
+            }
+            if !opts.olap_key.is_empty() && !opts.olap {
+                return Err(syn::Error::new(
+                    ty.span(),
+                    "key(..) keys an entity stored in OLAP: declare storage = olap",
+                ));
+            }
+            let olap_key = opts.olap_key.clone();
             let register = if opts.plugin.is_some() {
                 quote! { let _ = reg; }
             } else {
@@ -554,6 +825,9 @@ fn message_struct(input: &DeriveInput, entity: Option<EntityOptions>) -> syn::Re
                             append_only: #append_only,
                             fields,
                             indexes: ::std::vec![ #( #indexes ),* ],
+                            history: #history,
+                            storage: #storage,
+                            olap_key: ::std::vec![ #( #olap_key ),* ],
                         });
                     }
                 }
@@ -564,8 +838,19 @@ fn message_struct(input: &DeriveInput, entity: Option<EntityOptions>) -> syn::Re
                     type Key = #key;
                     const ENTITY: &'static str = #entity_name;
                     const PLUGIN: ::std::option::Option<&'static str> = #plugin;
+                    const OLAP: bool = #olap;
                 }
-                impl __p::Queryable for #ty {}
+                impl __p::Queryable for #ty {
+                    const SOURCE: &'static str = #entity_name;
+                    const OWNER: ::std::option::Option<&'static str> = #plugin;
+                    const OLAP: bool = #olap;
+                }
+                impl __p::QueryRow for #ty {
+                    type Row = __p::Row<Self>;
+                    fn row(value: &__p::Value) -> __p::Result<__p::Row<Self>> {
+                        <__p::Row<Self> as __p::Message>::from_json(value, "")
+                    }
+                }
             };
             (register, Some(entity_impl))
         }

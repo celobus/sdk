@@ -158,12 +158,21 @@ public sealed class Ctx
     }
 
     /// <summary>The repository of one of the plugin's entities; in a transaction (<c>tx.Db&lt;T&gt;()</c>) its calls are part of it.</summary>
-    /// <exception cref="InvalidOperationException"><typeparamref name="T"/> is a dependency's entity (read it with <see cref="Query{T}"/>).</exception>
+    /// <exception cref="InvalidOperationException"><typeparamref name="T"/> is a dependency's entity or a view (read it with <see cref="Query{T}"/>).</exception>
     public Db<T> Db<T>() where T : class
     {
+        if (Schema.IsView(typeof(T)))
+            throw new InvalidOperationException(
+                $"{typeof(T).Name} is a view: it is read, never written (ctx.Query<{typeof(T).Name}>())");
+        if (Schema.IsLakeTable(typeof(T)))
+            throw new InvalidOperationException(
+                $"{typeof(T).Name} is a lake table: write it with ctx.Lake().Table<{typeof(T).Name}>(), read it with ctx.Lake().Query<{typeof(T).Name}>()");
         if (Schema.ForeignPlugin(typeof(T)) is { } plugin)
             throw new InvalidOperationException(
                 $"{typeof(T).Name} is an entity of {plugin}: read it with ctx.Query<{typeof(T).Name}>(), not ctx.Db<{typeof(T).Name}>()");
+        if (Schema.IsOlap(typeof(T)))
+            throw new InvalidOperationException(
+                $"{typeof(T).Name} is stored in OLAP: its load fills it, ctx.Analytics().Query<{typeof(T).Name}>() reads it");
         return new(this);
     }
 
@@ -178,7 +187,26 @@ public sealed class Ctx
     /// plugin's own entities within its <c>authz:bypass</c>, the directory as a member reads it, and a dependency's
     /// entity under the provider's rules for the caller (never more than the caller reads without it).
     /// </summary>
-    public CelobusQuery<T> Query<T>() where T : class => new(this);
+    public CelobusQuery<T> Query<T>() where T : class => Schema.IsOlap(typeof(T))
+        ? throw new InvalidOperationException(
+            $"{typeof(T).Name} is stored in OLAP: read it with ctx.Analytics().Query<{typeof(T).Name}>()")
+        : new(this);
+
+    /// <summary>
+    /// The analytic copy of the workspace's entities, for reports and figures over many rows:
+    /// <c>ctx.Analytics().Query&lt;T&gt;()</c> is <c>ctx.Query&lt;T&gt;()</c> read there, and its answers say when
+    /// their data is from (<c>ToListAsOfAsync()</c>, <c>CountAsOfAsync()</c>, <c>QueryPage.AsOf</c>). A screen that must
+    /// show what was just saved reads with <c>ctx.Query&lt;T&gt;()</c>. Its limits and refusals: <see cref="Sdk.Analytics"/>.
+    /// </summary>
+    public Analytics Analytics() => new(this);
+
+    /// <summary>
+    /// The workspace's Data Lake (Lake.cs): <c>ctx.Lake().Table&lt;T&gt;()</c> writes one of the plugin's lake tables
+    /// (<c>ReplaceAsync(filter, rows)</c>, <c>AppendAsync(rows, key)</c>, <c>MergeAsync(rows)</c>),
+    /// <c>ctx.Lake().Query&lt;T&gt;()</c> reads lake tables with LINQ. Outside a job's run an append names its write key;
+    /// in a run it has a default.
+    /// </summary>
+    public Lake Lake() => new(this);
 
     /// <summary>
     /// SQL that reads (<c>select</c>, <c>with</c>, <c>values</c>), with positional parameters: <c>$1</c> is the first of
@@ -397,7 +425,11 @@ public sealed class Ctx
         ["append_only"] = 400, ["invalid"] = 400, ["query_rows_limit"] = 422, ["bulk_limit"] = 422,
         ["transaction_timeout"] = 504, ["permission_denied"] = 403, ["guard_denied"] = 403,
         ["capability_missing"] = 403, ["row_locked"] = 409, ["query_invalid"] = 500, ["query_size_limit"] = 422,
-        ["query_join_limit"] = 422, ["query_response_limit"] = 422,
+        ["query_join_limit"] = 422, ["query_response_limit"] = 422, ["analytic_time_limit"] = 422,
+        ["analytic_memory_limit"] = 422, ["analytic_busy"] = 503, ["lake_rows_limit"] = 422,
+        ["lake_time_limit"] = 422, ["lake_memory_limit"] = 422, ["lake_busy"] = 503,
+        ["lake_model_rows_limit"] = 422, ["lake_partitions_limit"] = 422, ["lake_model_parse"] = 422, ["lake_model_changed"] = 409,
+        ["not_loaded"] = 409, ["analytic_load_limit"] = 429, ["analytic_load_busy"] = 503, ["analytic_load_pending"] = 503,
     };
 
     internal static PluginError SyscallFailed(string error, DbErrorDetails? details = null)

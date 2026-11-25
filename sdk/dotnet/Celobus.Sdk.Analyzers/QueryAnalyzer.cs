@@ -2,7 +2,8 @@
 // tree refuses. A query names columns, compares them with values or columns, and calls only what the SDK translates:
 // LINQ's aggregates of a group (Count, LongCount, Sum, Average, Min, Max, Select(..).Distinct().Count()), Any of another
 // ctx.Query<T>() (exists), Contains (a substring of a column, or a list of values), DefaultIfEmpty (a left join), and
-// Celobus.Sdk.Linq.Query's Label and Search. A call that depends on no row (a captured value, DateTime.UtcNow) is a
+// Celobus.Sdk.Linq.Query's methods (Label, Search, CreatedAt, UpdatedAt, the buckets Day .. Year, DaysAgo, Between,
+// Parse). A view's query (Views.From<T>()) and a model's (LakeModel.From<T>(), LakeModel.History<T>()) are analyzed as one. A call that depends on no row (a captured value, DateTime.UtcNow) is a
 // value computed before the query is sent, and allowed.
 
 using System.Collections.Immutable;
@@ -21,7 +22,7 @@ public sealed class QueryAnalyzer : DiagnosticAnalyzer
     public static readonly DiagnosticDescriptor Rule = new(
         Id,
         "A query cannot translate this",
-        "{0} cannot be part of a query: a query names columns and calls only what it translates (LINQ's aggregates, Any, Contains, DefaultIfEmpty, Query.Label, Query.Search); compute it before the query or after reading the rows",
+        "{0} cannot be part of a query: a query names columns and calls only what it translates (LINQ's aggregates, Any, Contains, DefaultIfEmpty, Query.Label, Query.Search, Query.Parse, Query's buckets and DaysAgo); compute it before the query or after reading the rows",
         "Celobus",
         DiagnosticSeverity.Error,
         isEnabledByDefault: true,

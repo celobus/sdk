@@ -22,7 +22,7 @@ use crate::types::{Id, Timestamp};
 use crate::ui::Field;
 
 /// The protobuf JSON name of a field: `owner_id` → `ownerId`.
-fn json_name(name: &str) -> String {
+pub(crate) fn json_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut upper = false;
     for c in name.chars() {
@@ -154,7 +154,7 @@ impl<E> Order<E> {
     }
 }
 
-impl<E: Entity, T: FieldValue> Field<E, T> {
+impl<E: crate::query::Queryable, T: FieldValue> Field<E, T> {
     fn compare(&self, op: Op, v: T) -> Filter<E> {
         Filter::condition(self.name(), op, vec![db_value(v.encode())])
     }
@@ -223,7 +223,7 @@ pub trait Text: FieldValue {}
 impl Text for String {}
 impl Text for Option<String> {}
 
-impl<E: Entity, T: Text> Field<E, T> {
+impl<E: crate::query::Queryable, T: Text> Field<E, T> {
     /// Full-text search of a `searchable` column (`#[col(searchable)]`): the rows whose text matches `words` in the
     /// column's language (web search syntax: `"a phrase"`, `or`, `-word`). The platform refuses it (400 `invalid`) on a
     /// column that is not searchable.
@@ -1327,6 +1327,13 @@ impl Ctx {
             assert!(
                 E::PLUGIN.is_none(),
                 "ctx.db is the plugin's own entities: read a dependency's with ctx.query"
+            )
+        };
+        const {
+            assert!(
+                !E::OLAP,
+                "an entity stored in OLAP is neither read nor written with ctx.db: its load fills it, \
+                 ctx.analytics().query() reads it"
             )
         };
         Db::new(self.clone())

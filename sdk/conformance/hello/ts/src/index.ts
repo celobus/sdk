@@ -196,7 +196,7 @@ export const countAllNotes = endpoint({
 });
 
 /**
- * Counts the notes of each owner the caller may read: SQL over the notes' secure view (`hello_note`), run as the
+ * Counts the notes of each owner the caller may read: SQL over the notes (`hello_note`), run as the
  * caller through the notes' rules; its rows are JSON objects by column name.
  */
 export const notesByOwner = endpoint({

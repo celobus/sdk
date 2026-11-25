@@ -39,6 +39,23 @@ public static class Revenue
          select new Row(Q.Label(g.Key.CreatedBy), g.Key.Name, g.Sum(x => x.Amount), g.Count()))
         .Take(20);
 
+    /// <summary>The same query on the analytic copy: every source from <c>ctx.Analytics()</c>.</summary>
+    public static IQueryable<Row> BuildAnalytic(Ctx ctx)
+    {
+        var a = ctx.Analytics();
+        return (from l in a.Query<OrderLine>()
+                join o in a.Query<Order>() on l.OrderId equals o.Id
+                join c in a.Query<Crm.Customer>() on o.CustomerId equals (Id<Crm.Customer>?)c.Id into cs
+                from c in cs.DefaultIfEmpty()
+                where o.Status == OrderStatus.Paid && o.Total >= 10.50m
+                where a.Query<Platform.RoleAssignment>().Any(r => r.UserId == o.CreatedBy && r.Role == "shop.clerk")
+                group l by new { o.CreatedBy, CustomerId = c!.Id, c.Name } into g
+                where g.Count() > 1
+                orderby g.Sum(x => x.Amount) descending
+                select new Row(Q.Label(g.Key.CreatedBy), g.Key.Name, g.Sum(x => x.Amount), g.Count()))
+            .Take(20);
+    }
+
     public sealed record Row(Label? Clerk, string? Customer, decimal Revenue, int Lines);
 }
 
@@ -58,6 +75,78 @@ public class QueryLinqTests
         var tree = JsonNode.Parse(Revenue.Build(Context(Nothing)).TreeJson());
         var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/revenue.json")));
         Assert.True(JsonNode.DeepEquals(expected, tree), tree!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task TheConformanceQueryIsTheSharedTreeOnTheAnalyticEngine()
+    {
+        var platform = new FakeSyscalls(_ => new SyscallResult { DbRows = new DbRows() });
+        var q = Revenue.BuildAnalytic(Context(platform));
+        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/revenue.json")));
+        var tree = JsonNode.Parse(q.TreeJson());
+        Assert.True(JsonNode.DeepEquals(expected, tree), tree!.ToJsonString());
+        await q.ToListAsync();
+        var sent = platform.Calls.Single().Query;
+        Assert.Equal((Engine.Analytic, QueryRead.Types.Mode.All), (sent.Engine, sent.Mode));
+        var wire = JsonNode.Parse(JsonFormatter.Default.Format(sent.Query));
+        Assert.True(JsonNode.DeepEquals(expected, wire), wire!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task AnAnalyticReadNamesItsEngineAndSaysWhenItsDataIsFrom()
+    {
+        const long at = 1_795_000_000_123;
+        var platform = new FakeSyscalls(call =>
+        {
+            var analytic = call.Query.Engine == Engine.Analytic;
+            long asOf = analytic ? at : 0;
+            ulong generation = analytic ? 4UL : 0UL;
+            return call.Query.Mode == QueryRead.Types.Mode.Count
+                ? new SyscallResult { DbCount = new DbCountResult { Count = 1, AsOf = asOf, Generation = generation } }
+                : new SyscallResult { DbRows = new DbRows { Rows = { ByteString.CopyFromUtf8("""["SO-1"]""") }, AsOf = asOf, Generation = generation } };
+        });
+        var ctx = Context(platform);
+        var q = ctx.Analytics().Query<Revenue.Order>().Select(o => new { o.Number });
+        var got = await q.ToListAsOfAsync();
+        Assert.Equal("SO-1", got.Rows.Single().Number);
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(at), got.AsOf);
+        Assert.Equal(4UL, got.Generation);
+        var counted = await q.CountAsOfAsync();
+        Assert.Equal((1L, (DateTimeOffset?)DateTimeOffset.FromUnixTimeMilliseconds(at)), (counted.Rows, counted.AsOf));
+        Assert.Equal(1, await q.CountAsync());
+        var page = await q.PageAsync();
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(at), page.AsOf);
+        // the store's reads carry no time
+        var plain = await ctx.Query<Revenue.Order>().Select(o => new { o.Number }).ToListAsOfAsync();
+        Assert.Equal((null, null), (plain.AsOf, plain.Generation));
+        Assert.Null((await ctx.Query<Revenue.Order>().Select(o => new { o.Number }).PageAsync()).AsOf);
+        Assert.Equal(
+            [Engine.Analytic, Engine.Analytic, Engine.Analytic, Engine.Analytic, Engine.Store, Engine.Store],
+            platform.Calls.Select(c => c.Query.Engine));
+    }
+
+    [Fact]
+    public async Task AnAnalyticQueryNeverReadsTheWorkspacesDataAndNeverMixesEngines()
+    {
+        var none = new FakeSyscalls(_ => new SyscallResult { Ok = new Empty() });
+        var ctx = Context(none);
+        var q = ctx.Analytics().Query<Revenue.Order>();
+        // the repository's reads are of the workspace's data: refused on the analytic copy, before anything is sent
+        Assert.Throws<InvalidOperationException>(() => q.Find());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => q.All());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => q.Count());
+        Assert.Throws<InvalidOperationException>(() => { _ = q.Get(new Id<Revenue.Order>("0190f3c2-0000-7000-8000-0000000000aa")); });
+        // one query reads one engine
+        var mixed =
+            from o in ctx.Analytics().Query<Revenue.Order>()
+            join l in ctx.Query<Revenue.OrderLine>() on o.Id equals l.OrderId
+            select new { o.Number, l.Sku };
+        var e = await Assert.ThrowsAsync<PluginError>(() => mixed.ToListAsync());
+        Assert.Equal((500, "query_invalid"), (e.Status, e.Code));
+        Assert.Contains("ctx.Analytics().Query<T>()", e.Message);
+        var exists = ctx.Query<Revenue.Order>().Where(o => ctx.Analytics().Query<Revenue.OrderLine>().Any(l => l.OrderId == o.Id));
+        Assert.Equal(500, (await Assert.ThrowsAsync<PluginError>(() => exists.CountAsync())).Status);
+        Assert.Empty(none.Calls);
     }
 
     [Fact]

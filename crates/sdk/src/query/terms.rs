@@ -15,21 +15,38 @@ use crate::message::{Entity, FieldValue};
 use crate::types::Id;
 use crate::ui::Field;
 
-/// An entity a query may name: the plugin's own (`#[derive(Entity)]`), a dependency's whose provider exports `read`
-/// (the type `celobus plugin add` generates for it, and only for it), the directory's (`platform::User`, `Group`,
-/// `GroupMember`, `RoleAssignment`). Implemented by the derive and the SDK, never by hand.
-pub trait Queryable: Entity {}
+/// What a query may name as a source: the plugin's own entity (`#[derive(Entity)]`), a dependency's whose provider
+/// exports `read` (the type `celobus plugin add` generates for it), the directory's (`platform::User`, `Group`,
+/// `GroupMember`, `RoleAssignment`), or one of the plugin's analytic views (`#[derive(View)]`). Implemented by the
+/// derives and the SDK, never by hand.
+pub trait Queryable: Send + Sync + 'static {
+    /// The entity's (or the view's) name: snake_case of the type's (`OrderLine` → `order_line`).
+    const SOURCE: &'static str;
+    /// The plugin that owns it; `None` for this plugin's own.
+    const OWNER: Option<&'static str>;
+    /// An entity whose rows are kept in the analytic copy only (`#[entity(storage = olap)]`): only
+    /// `ctx.analytics().query()` reads it.
+    const OLAP: bool = false;
+}
 
-/// The entity's name in a query: `order` (the plugin's own), `crm.customer`, `platform.user`.
-pub fn canonical<E: Entity>() -> String {
-    match E::PLUGIN {
-        None => E::ENTITY.to_string(),
-        Some(p) => format!("{p}.{}", E::ENTITY),
+/// A source whose rows a query without `select` answers: an entity's rows (`Row<E>`, with its system columns), or a
+/// view's (the view's own type).
+pub trait QueryRow: Queryable {
+    type Row;
+    #[doc(hidden)]
+    fn row(v: &Value) -> Result<Self::Row>;
+}
+
+/// The source's name in a query: `order` (the plugin's own), `crm.customer`, `platform.user`, `sales` (a view).
+pub fn canonical<E: Queryable>() -> String {
+    match E::OWNER {
+        None => E::SOURCE.to_string(),
+        Some(p) => format!("{p}.{}", E::SOURCE),
     }
 }
 
-/// The alias an entity has in a query unless it is given one: its name with `_` for `.` (`crm_customer`).
-pub fn default_alias<E: Entity>() -> String {
+/// The alias a source has in a query unless it is given one: its name with `_` for `.` (`crm_customer`).
+pub fn default_alias<E: Queryable>() -> String {
     canonical::<E>().replace('.', "_")
 }
 
@@ -97,13 +114,14 @@ pub(crate) fn column(source: &str, field: &str) -> pb::QueryColumn {
     pb::QueryColumn {
         source: source.into(),
         field: field.into(),
+        ..Default::default()
     }
 }
 
 /// A column of a query: a field handle (`Order::status`, of the entity's default alias) or an alias's column
 /// (`manager.col(platform::User::display_name)`); `V` is its value type.
 pub trait Column {
-    type Entity: Entity;
+    type Entity: Queryable;
     type V: FieldValue;
     #[doc(hidden)]
     fn wire(&self) -> pb::QueryColumn;
@@ -286,25 +304,286 @@ impl<E: Queryable> BitOr<Cond> for Filter<E> {
     }
 }
 
-/// A comparison of two columns: a condition, and what `join_on` joins on (`eq_col`).
+/// A comparison of a column with a column (or with `days_ago`): a condition, and what `join_on` joins on
+/// (`eq_col` of two columns).
 #[derive(Clone, Debug)]
 pub struct ColCmp {
     pub(crate) left: pb::QueryColumn,
     pub(crate) op: Op,
-    pub(crate) right: pb::QueryColumn,
+    pub(crate) right: pb::QueryTerm,
+}
+
+impl ColCmp {
+    /// The right side when it is a column.
+    pub(crate) fn right_column(&self) -> Option<&pb::QueryColumn> {
+        match &self.right.kind {
+            Some(query_term::Kind::Column(c)) => Some(c),
+            _ => None,
+        }
+    }
 }
 
 impl From<ColCmp> for Cond {
     fn from(c: ColCmp) -> Cond {
-        let term = |c: pb::QueryColumn| pb::QueryTerm {
-            kind: Some(query_term::Kind::Column(c)),
-        };
         Cond::expr(Node::Compare(pb::QueryCompare {
-            left: Some(term(c.left)),
+            left: Some(pb::QueryTerm {
+                kind: Some(query_term::Kind::Column(c.left)),
+            }),
             op: c.op as i32,
             values: vec![],
-            right: Some(term(c.right)),
+            right: Some(c.right),
         }))
+    }
+}
+
+/// What a column is compared with: another column, or a day relative to the day the query runs ([`days_ago`]).
+pub trait Operand {
+    type V;
+    #[doc(hidden)]
+    fn term(&self) -> pb::QueryTerm;
+}
+
+impl<C: Column> Operand for C {
+    type V = C::V;
+    fn term(&self) -> pb::QueryTerm {
+        pb::QueryTerm {
+            kind: Some(query_term::Kind::Column(self.wire())),
+        }
+    }
+}
+
+/// `days_ago(n)`: today in the workspace's time zone less `n` days, worked out when the query runs (so a view that
+/// keeps "the last 30 days" moves with the calendar). Compared with a `Date` column or a bucket as that day, with a
+/// `Timestamp` column as the first moment of that day: `Order::paid_at.ge_col(days_ago(30))`.
+pub fn days_ago(n: i32) -> DaysAgo {
+    DaysAgo(n)
+}
+
+/// A day relative to the day the query runs (see [`days_ago`]).
+#[derive(Clone, Copy, Debug)]
+pub struct DaysAgo(i32);
+
+/// What `days_ago` compares with: a day or a moment.
+pub struct Day;
+impl Comparable<crate::types::Date> for Day {}
+impl Comparable<Option<crate::types::Date>> for Day {}
+impl Comparable<crate::types::Timestamp> for Day {}
+impl Comparable<Option<crate::types::Timestamp>> for Day {}
+
+impl Operand for DaysAgo {
+    type V = Day;
+    fn term(&self) -> pb::QueryTerm {
+        pb::QueryTerm {
+            kind: Some(query_term::Kind::DaysAgo(self.0)),
+        }
+    }
+}
+
+/// A column whose moments or days fall in periods: `Timestamp` and `Date`, optional or not. A bucket of it is the
+/// first day of its period, a `Date` (an `Option<Date>` of an optional column).
+pub trait Bucketable: FieldValue {
+    type Day: FieldValue + Nullable;
+}
+impl Bucketable for crate::types::Timestamp {
+    type Day = crate::types::Date;
+}
+impl Bucketable for Option<crate::types::Timestamp> {
+    type Day = Option<crate::types::Date>;
+}
+impl Bucketable for crate::types::Date {
+    type Day = crate::types::Date;
+}
+impl Bucketable for Option<crate::types::Date> {
+    type Day = Option<crate::types::Date>;
+}
+
+/// The period a column's moment or day falls in (`Order::paid_at.month()`): the first day of its day, week, month,
+/// quarter or year in the workspace's time zone, a week from the workspace's first day of the week. A column of
+/// type `V` (a date) wherever a column stands: filtered, grouped, ordered, selected, aggregated, joined, compared.
+pub struct Bucket<E, V> {
+    pub(crate) field: &'static str,
+    pub(crate) unit: pb::query_column::Bucket,
+    _p: PhantomData<Marker<(E, V)>>,
+}
+
+impl<E, V> Clone for Bucket<E, V> {
+    fn clone(&self) -> Self {
+        Self {
+            field: self.field,
+            unit: self.unit,
+            _p: PhantomData,
+        }
+    }
+}
+
+impl<E: Queryable, V: FieldValue> Column for Bucket<E, V> {
+    type Entity = E;
+    type V = V;
+    fn wire(&self) -> pb::QueryColumn {
+        pb::QueryColumn {
+            source: default_alias::<E>(),
+            field: self.field.into(),
+            bucket: self.unit as i32,
+            ..Default::default()
+        }
+    }
+}
+
+impl<E: Queryable, T: Bucketable> Field<E, T> {
+    fn bucket(&self, unit: pb::query_column::Bucket) -> Bucket<E, T::Day> {
+        Bucket {
+            field: self.name(),
+            unit,
+            _p: PhantomData,
+        }
+    }
+
+    /// The day (in the workspace's time zone) of the moment.
+    pub fn day(&self) -> Bucket<E, T::Day> {
+        self.bucket(pb::query_column::Bucket::Day)
+    }
+
+    /// The first day of the week, from the workspace's first day of the week.
+    pub fn week(&self) -> Bucket<E, T::Day> {
+        self.bucket(pb::query_column::Bucket::Week)
+    }
+
+    pub fn month(&self) -> Bucket<E, T::Day> {
+        self.bucket(pb::query_column::Bucket::Month)
+    }
+
+    pub fn quarter(&self) -> Bucket<E, T::Day> {
+        self.bucket(pb::query_column::Bucket::Quarter)
+    }
+
+    pub fn year(&self) -> Bucket<E, T::Day> {
+        self.bucket(pb::query_column::Bucket::Year)
+    }
+
+    /// Between `from` and `to`, both included.
+    pub fn between(&self, from: T, to: T) -> Filter<E> {
+        self.ge(from) & self.le(to)
+    }
+}
+
+/// A type a text column of a lake table is parsed as (`StockFileRow::on_hand.parse::<Decimal>()`): `Decimal`, `i32`,
+/// `i64`, `f64`, `bool`, `Date`, `Timestamp`, `Uuid`.
+pub trait ParseAs: FieldValue {
+    #[doc(hidden)]
+    const PARSE: pb::query_column::Parse;
+}
+
+macro_rules! parse_as {
+    ($($t:ty => $p:ident),*) => { $( impl ParseAs for $t { const PARSE: pb::query_column::Parse = pb::query_column::Parse::$p; } )* };
+}
+parse_as!(
+    crate::types::Decimal => Decimal,
+    i32 => Int32,
+    i64 => Int64,
+    f64 => Double,
+    bool => Bool,
+    crate::types::Date => Date,
+    crate::types::Timestamp => Timestamp,
+    crate::types::Uuid => Uuid
+);
+
+/// A text column of a lake table read as `V` (see [`Field::parse`]): a column of type `V` wherever a column stands in
+/// a model of the lake or a lake query.
+pub struct Parsed<E, V> {
+    pub(crate) field: &'static str,
+    pub(crate) parse: pb::query_column::Parse,
+    _p: PhantomData<Marker<(E, V)>>,
+}
+
+impl<E, V> Clone for Parsed<E, V> {
+    fn clone(&self) -> Self {
+        Self {
+            field: self.field,
+            parse: self.parse,
+            _p: PhantomData,
+        }
+    }
+}
+
+impl<E: Queryable, V: FieldValue> Column for Parsed<E, V> {
+    type Entity = E;
+    type V = V;
+    fn wire(&self) -> pb::QueryColumn {
+        pb::QueryColumn {
+            source: default_alias::<E>(),
+            field: self.field.into(),
+            parse: self.parse as i32,
+            ..Default::default()
+        }
+    }
+}
+
+impl<E: Queryable> Field<E, String> {
+    /// The column's text, without the spaces around it, read as `T` (a lake table's text column only, in a model or a
+    /// lake query): `StockFileRow::on_hand.parse::<Decimal>()`. A text that does not read as `T` fails the query (a
+    /// model's refresh: `lake_model_parse`, naming the column; nothing is written). A decimal reads only within the
+    /// lake's digits (20 before the point, 18 after), never rounded.
+    pub fn parse<T: ParseAs>(&self) -> Parsed<E, T> {
+        Parsed {
+            field: self.name(),
+            parse: T::PARSE,
+            _p: PhantomData,
+        }
+    }
+}
+
+impl<E: Queryable> Field<E, Option<String>> {
+    /// As [`Field::parse`] of a text, for an optional one: absent stays absent.
+    pub fn parse<T: ParseAs>(&self) -> Parsed<E, Option<T>> {
+        Parsed {
+            field: self.name(),
+            parse: T::PARSE,
+            _p: PhantomData,
+        }
+    }
+}
+
+impl<E: Queryable, V: FieldValue> Bucket<E, V> {
+    fn compare(&self, op: Op, values: Vec<Value>) -> Cond {
+        Cond::expr(Node::Compare(pb::QueryCompare {
+            left: Some(pb::QueryTerm {
+                kind: Some(query_term::Kind::Column(self.wire())),
+            }),
+            op: op as i32,
+            values: values.into_iter().map(crate::db::db_value).collect(),
+            right: None,
+        }))
+    }
+
+    pub fn eq(&self, v: V) -> Cond {
+        self.compare(Op::Eq, vec![v.encode()])
+    }
+    pub fn ne(&self, v: V) -> Cond {
+        self.compare(Op::Ne, vec![v.encode()])
+    }
+    pub fn lt(&self, v: V) -> Cond {
+        self.compare(Op::Lt, vec![v.encode()])
+    }
+    pub fn le(&self, v: V) -> Cond {
+        self.compare(Op::Le, vec![v.encode()])
+    }
+    pub fn gt(&self, v: V) -> Cond {
+        self.compare(Op::Gt, vec![v.encode()])
+    }
+    pub fn ge(&self, v: V) -> Cond {
+        self.compare(Op::Ge, vec![v.encode()])
+    }
+    pub fn between(&self, from: V, to: V) -> Cond {
+        self.ge(from) & self.le(to)
+    }
+    pub fn is_in(&self, values: impl IntoIterator<Item = V>) -> Cond {
+        self.compare(Op::In, values.into_iter().map(|v| v.encode()).collect())
+    }
+    pub fn asc(&self) -> QOrder {
+        QOrder::column(self.wire(), false)
+    }
+    pub fn desc(&self) -> QOrder {
+        QOrder::column(self.wire(), true)
     }
 }
 
@@ -329,21 +608,21 @@ impl Not for ColCmp {
     }
 }
 
-/// A column compared with a column of the same type (`Id<E>` with `Id<E>`, `String` with `Option<String>`): a
-/// condition, or (`eq_col`) what `join_on` joins on.
+/// A column compared with a column of the same type (`Id<E>` with `Id<E>`, `String` with `Option<String>`), or with
+/// [`days_ago`]: a condition, or (`eq_col` of two columns) what `join_on` joins on.
 pub trait ColumnCompare: Column + Sized {
-    fn cmp_col<C: Column>(&self, op: Op, other: C) -> ColCmp
+    fn cmp_col<C: Operand>(&self, op: Op, other: C) -> ColCmp
     where
         C::V: Comparable<Self::V>,
     {
         ColCmp {
             left: self.wire(),
             op,
-            right: other.wire(),
+            right: other.term(),
         }
     }
 
-    fn eq_col<C: Column>(&self, other: C) -> ColCmp
+    fn eq_col<C: Operand>(&self, other: C) -> ColCmp
     where
         C::V: Comparable<Self::V>,
     {
@@ -351,35 +630,35 @@ pub trait ColumnCompare: Column + Sized {
     }
 
     /// Not equal (a null is not equal to a value).
-    fn ne_col<C: Column>(&self, other: C) -> ColCmp
+    fn ne_col<C: Operand>(&self, other: C) -> ColCmp
     where
         C::V: Comparable<Self::V>,
     {
         self.cmp_col(Op::Ne, other)
     }
 
-    fn lt_col<C: Column>(&self, other: C) -> ColCmp
+    fn lt_col<C: Operand>(&self, other: C) -> ColCmp
     where
         C::V: Comparable<Self::V>,
     {
         self.cmp_col(Op::Lt, other)
     }
 
-    fn le_col<C: Column>(&self, other: C) -> ColCmp
+    fn le_col<C: Operand>(&self, other: C) -> ColCmp
     where
         C::V: Comparable<Self::V>,
     {
         self.cmp_col(Op::Le, other)
     }
 
-    fn gt_col<C: Column>(&self, other: C) -> ColCmp
+    fn gt_col<C: Operand>(&self, other: C) -> ColCmp
     where
         C::V: Comparable<Self::V>,
     {
         self.cmp_col(Op::Gt, other)
     }
 
-    fn ge_col<C: Column>(&self, other: C) -> ColCmp
+    fn ge_col<C: Operand>(&self, other: C) -> ColCmp
     where
         C::V: Comparable<Self::V>,
     {
@@ -673,13 +952,13 @@ pub trait JoinRef<T> {
     fn join_ref(&self) -> (String, &'static str, String);
 }
 
-impl<X: Entity, T: Entity> JoinRef<T> for Field<X, Id<T>> {
+impl<X: Queryable, T: Queryable + Entity> JoinRef<T> for Field<X, Id<T>> {
     fn join_ref(&self) -> (String, &'static str, String) {
         (canonical::<X>(), self.name(), canonical::<T>())
     }
 }
 
-impl<X: Entity, T: Entity> JoinRef<T> for Field<X, Option<Id<T>>> {
+impl<X: Queryable, T: Queryable + Entity> JoinRef<T> for Field<X, Option<Id<T>>> {
     fn join_ref(&self) -> (String, &'static str, String) {
         (canonical::<X>(), self.name(), canonical::<T>())
     }

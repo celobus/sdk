@@ -1,5 +1,5 @@
 // `testCtx(plugin, {..})`: a context without the platform, for unit tests of handlers and of jobs' handlers.
-import { Caller, Ctx, NO_RUN, type CallerKind, type JobInfo, type RoleLike, type SyscallSession } from "./ctx.js";
+import { Caller, Ctx, JobCtx, NO_RUN, type CallerKind, type JobInfo, type RoleLike, type SyscallSession } from "./ctx.js";
 import { unavailable } from "./errors.js";
 import type { Logger } from "./log.js";
 import type { Plugin } from "./plugin.js";
@@ -61,8 +61,10 @@ const quiet: Logger = {
  *
  *   const ctx = testCtx(crm, { caller: { userId: 'u1', roles: [sales] } });
  *   await assert.rejects(handler(ctx, input), { code: 'forbidden' });
- *   const run = testCtx(crm, { run: { runId: 'run-1', attempt: 1, maxAttempts: 4 } });
+ *   const run = testCtx(crm, { run: { runId: 'run-1', attempt: 1, maxAttempts: 4 } });   // a JobCtx
  */
+export function testCtx(plugin: Plugin, options: TestCtxOptions & { run: TestRun }): JobCtx;
+export function testCtx(plugin: Plugin, options?: TestCtxOptions): Ctx;
 export function testCtx(plugin: Plugin, options: TestCtxOptions = {}): Ctx {
   const model = plugin.model();
   const id = model.descriptor.id;
@@ -96,7 +98,7 @@ export function testCtx(plugin: Plugin, options: TestCtxOptions = {}): Ctx {
         isLastAttempt: run.attempt >= run.maxAttempts,
       })
     : NO_RUN;
-  return new Ctx(
+  return new (run ? JobCtx : Ctx)(
     session,
     new Caller(principal, id, model.roleName),
     {

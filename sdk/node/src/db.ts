@@ -3,6 +3,7 @@
 // filters as a tree of conditions on field handles (`note.f.title.eq('a')`, combined with `and`, `or`, `not`),
 // orders (`note.f.title.desc()`). Reads return `Stored<E>`: the row and its system columns. A dependency's entity
 // is read through the same calls with `dependency` set (`ctx.query(customer)`), and has no writes.
+import { checkCall } from "./keys.js";
 import { decodeFieldValue, decodeMessage, encodeFieldValue, encodeMessage, messageFields, type FieldErrors } from "./codec.js";
 import { Decimal } from "./decimal.js";
 import { RpcError, internal } from "./errors.js";
@@ -17,14 +18,22 @@ export interface DbLink {
   tx: string;
   /** the reason of a system context (`ctx.asSystem`); "" for the caller's */
   asSystem: string;
+  /** the request's deadline (a ticket's wait ends before it) */
+  deadline?: Date;
+  /** whether this is a job's run (no request deadline bounds a ticket's wait) */
+  inRun?: boolean;
 }
 
 /** @internal The members of `SyscallResult` the repository reads. */
 export interface DbResult {
-  dbRows?: { rows?: Buffer[]; nextPageToken?: string; included?: Buffer[] } | null;
-  dbCount?: { count: string | number } | null;
+  dbRows?: { rows?: Buffer[]; nextPageToken?: string; included?: Buffer[]; asOf?: string | number; generation?: string | number } | null;
+  dbCount?: { count: string | number; asOf?: string | number; generation?: string | number } | null;
   dbGroups?: { groups?: { key: Buffer; value: Buffer }[] } | null;
   txBegun?: { tx: string } | null;
+  /** The answer to a chunk of a lake write (`lake.ts`). */
+  lakeWritten?: { write: string | number; rows: string | number; committed: boolean; skipped: boolean } | null;
+  /** The answer to a refresh of a lake table's model (`lake.ts`): its rows, and its data's time (unix ms, 0: none). */
+  lakeRefreshed?: { rows?: string | number; asOf?: string | number; stalePartitions?: string | number } | null;
 }
 
 /** How a lock read waits for a row another transaction holds. */
@@ -332,6 +341,7 @@ export class ReadRepository<E extends EntityDef<any>> {
 
   /** @internal */
   protected async getting(id: string, options: GetOptions, strength: LockStrength | undefined, wait: LockWait | undefined): Promise<Stored<E>> {
+    checkCall("get()", options);
     const names = includeNames(options.include ?? []);
     const lock = wireLock(this.link, strength, wait);
     const r = await this.send({ dbGet: { ...this.head(), id, withDeleted: !!options.withDeleted, include: names.wire, ...lock } });

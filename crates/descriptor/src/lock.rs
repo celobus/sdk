@@ -48,6 +48,22 @@ pub struct Lock {
     /// How each entity is stored: what a later version cannot change without a new entity.
     #[serde(default, rename = "entity", skip_serializing_if = "BTreeMap::is_empty")]
     pub entities: BTreeMap<String, LockedEntity>,
+    /// The lake tables' layers, partition and key columns and columns: what a later version cannot change
+    /// ([`crate::lake::changes`]). Written only when the plugin has lake tables.
+    #[serde(
+        default,
+        rename = "lake_table",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub lake_tables: BTreeMap<String, crate::lake::Locked>,
+    /// The entities' histories: their layers and kept columns ([`crate::history::changes`]). Written only when the
+    /// plugin keeps a history.
+    #[serde(
+        default,
+        rename = "history",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub histories: BTreeMap<String, crate::history::Locked>,
 }
 
 /// An entity's storage: its key type and the options that shape its table and its rows' life.
@@ -93,6 +109,14 @@ pub struct LockedDependency {
     /// (`E_CONTRACT_EXPORT_FIELD`), and `celobus plugin check` refuses a read the lock does not have.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reads: BTreeMap<String, BTreeMap<String, String>>,
+    /// The dependency's lake tables its contract let another plugin's models copy (`export_models`), when it was
+    /// pinned: `celobus plugin check` refuses a model over another of its tables (`E_LAKE_MODEL_SOURCE`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lake_models: Vec<String>,
+    /// The dependency's entities stored in OLAP, when it was pinned: `celobus plugin check` refuses a ref to one
+    /// (`E_OLAP_REF`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub olap_entities: Vec<String>,
 }
 
 /// The fields a dependent reads of `entity` of the provider `d`: `id` and every field with its wire type, when the
@@ -350,6 +374,8 @@ pub fn lock_of(d: &Descriptor) -> Lock {
     for e in &d.entities {
         lock.entities.insert(e.name.clone(), LockedEntity::of(e));
     }
+    lock.lake_tables = crate::lake::locked(d);
+    lock.histories = crate::history::locked(d);
     lock
 }
 
@@ -552,6 +578,28 @@ pub fn update(prev: Option<&Lock>, d: &Descriptor) -> Update {
         .iter()
         .map(|e| (e.name.clone(), LockedEntity::of(e)))
         .collect();
+    // a lake table only grows; one no longer declared stays locked (its table stays in the lake)
+    changes.extend(crate::lake::changes(&prev.lake_tables, d));
+    lock.lake_tables = prev.lake_tables.clone();
+    lock.lake_tables.extend(crate::lake::locked(d));
+    // a history only grows too: its layer and the types of the columns it ever kept stay locked
+    changes.extend(crate::history::changes(&prev.histories, d));
+    lock.histories = prev.histories.clone();
+    for (name, h) in crate::history::locked(d) {
+        let mut columns = lock
+            .histories
+            .get(&name)
+            .map(|o| o.columns.clone())
+            .unwrap_or_default();
+        columns.extend(h.columns);
+        lock.histories.insert(
+            name,
+            crate::history::Locked {
+                layer: h.layer,
+                columns,
+            },
+        );
+    }
     Update { lock, changes }
 }
 

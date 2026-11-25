@@ -49,8 +49,9 @@ public class AnalyzerTests
                 from o in ctx.Query<Order>()
                 where ctx.Query<Line>().Any(l => l.OrderId == o.Id && l.Amount.ToString() == "1")
                 select o.Number;
+            public static object V() => from o in Views.From<Order>() select new { Day = o.PlacedAt.AddDays(1) };
             """);
-        Assert.Equal(["String.ToUpperInvariant", "Q.Shout", "Decimal.ToString"],
+        Assert.Equal(["String.ToUpperInvariant", "Q.Shout", "Decimal.ToString", "DateTimeOffset.AddDays"],
             d.OrderBy(x => x.Location.SourceSpan.Start).Select(x => x.GetMessage().Split(' ')[0]).ToArray());
         Assert.All(d, x => Assert.Equal((QueryAnalyzer.Id, DiagnosticSeverity.Error), (x.Id, x.Severity)));
     }
@@ -68,6 +69,12 @@ public class AnalyzerTests
                 where g.Count() > 1
                 orderby g.Sum(x => x.Amount) descending
                 select new { By = Query.Label(g.Key.CreatedBy), Total = g.Sum(x => x.Amount), Max = g.Max(x => x.Amount) };
+            // a view's query, with buckets, a system column, a relative day and a range
+            public static object V() =>
+                from o in Views.From<Order>()
+                where o.PlacedAt >= Query.DaysAgo(30) && Query.Between(Query.Month(Query.CreatedAt(o)), new DateOnly(2026, 1, 1), new DateOnly(2026, 6, 1))
+                group o by Query.Week(o.PlacedAt) into g
+                select new { Week = g.Key, Orders = g.LongCount() };
             // not a query of ctx.Query<T>(): LINQ to objects is not the analyzer's business
             public static object N() => new List<Order>().AsQueryable().Where(o => o.Number.Trim() == "");
             """);

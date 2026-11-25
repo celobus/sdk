@@ -8,17 +8,106 @@
 use std::time::Duration;
 
 use celobus_sdk::prelude::*;
+use celobus_sdk::query::count;
+
+mod lake;
+
+use lake::AUDIT;
 
 pub const MEMBER: Role = Role::new("member")
     .title("Member")
     .default_for(DefaultFor::Member);
 
+// Its history keeps the changes of its status
 #[derive(Entity, Clone, Debug, PartialEq)]
+#[entity(history(layer = AUDIT))]
 pub struct Task {
     pub id: Id<Task>,
     pub title: String,
     // new, then processed
+    #[col(history)]
     pub status: String,
+}
+
+// A stage of the work: the title of a task's status (`new`, `processed`)
+#[derive(Entity, Clone, Debug, PartialEq)]
+pub struct Stage {
+    pub id: Id<Stage>,
+    pub name: String,
+    pub title: String,
+}
+
+// An estimate of some work, in hours (a decimal)
+#[derive(Entity, Clone, Debug, PartialEq)]
+pub struct Estimate {
+    pub id: Id<Estimate>,
+    pub title: String,
+    pub hours: Decimal,
+}
+
+// The hours planned for some work: its history keeps every column but the list, the encrypted and the masked one
+#[derive(Entity, Clone, Debug, PartialEq)]
+#[entity(history(layer = AUDIT, all))]
+pub struct Budget {
+    pub id: Id<Budget>,
+    pub title: String,
+    pub hours: Option<Decimal>,
+    pub tags: Vec<String>,
+    #[col(encrypted)]
+    pub secret: Option<String>,
+    pub notes: Option<String>,
+}
+
+/// The titled tasks of the last 30 days, a row each, with the title of their stage.
+#[derive(View, Clone, Debug)]
+#[view(name = "recent_task")]
+pub struct RecentTask {
+    pub day: Date,
+    pub title: String,
+    pub stage: Option<String>,
+}
+
+/// The recent tasks by week and stage, where a stage had more than one.
+#[derive(View, Clone, Debug)]
+pub struct TasksByWeek {
+    pub week: Date,
+    pub stage: Option<String>,
+    pub tasks: i64,
+}
+
+/// A task's day, its title and its stage's title (the stage joined on its name, a plain column).
+pub fn recent_tasks() -> View<RecentTask> {
+    View::<RecentTask>::from::<Task>()
+        .left_join_on::<Stage>(Stage::name.eq_col(Task::status))
+        .filter(Task::created_at.ge_col(days_ago(30)) & Task::title.ne(String::new()))
+        .col(RecentTask::day, Task::created_at.day())
+        .col(RecentTask::title, Task::title)
+        .col(RecentTask::stage, Stage::title)
+}
+
+/// The recent tasks counted by week and stage: a view of a view, grouped.
+pub fn tasks_by_week() -> View<TasksByWeek> {
+    View::<TasksByWeek>::from::<RecentTask>()
+        .group_by((RecentTask::day.week(), RecentTask::stage))
+        .having(count().gt(1))
+        .col(TasksByWeek::week, RecentTask::day.week())
+        .col(TasksByWeek::stage, RecentTask::stage)
+        .col(TasksByWeek::tasks, count())
+}
+
+/// The estimates of more than 12.50 hours.
+#[derive(View, Clone, Debug)]
+pub struct LongEstimate {
+    pub title: String,
+    pub hours: Decimal,
+}
+
+/// The estimates over 12.50 hours: a decimal column compared with a decimal (a string in the declaration).
+pub fn long_estimates() -> View<LongEstimate> {
+    View::<LongEstimate>::from::<Estimate>()
+        .filter(Estimate::hours.gt("12.50".parse().unwrap()))
+        .col(LongEstimate::title, Estimate::title)
+        .col(LongEstimate::hours, Estimate::hours)
 }
 
 #[derive(Message, Clone, Debug)]
@@ -189,7 +278,7 @@ async fn slow(_ctx: Ctx, p: Slow) -> Result<()> {
 }
 
 pub fn plugin() -> Plugin {
-    Plugin::new("jobsdemo", env!("CARGO_PKG_VERSION"))
+    let p = Plugin::new("jobsdemo", env!("CARGO_PKG_VERSION"))
         .title("Jobs demo")
         .describe("The SDK conformance plugin of background jobs.")
         .role(MEMBER)
@@ -199,6 +288,21 @@ pub fn plugin() -> Plugin {
             a.create(MEMBER);
             a.update(MEMBER);
         }))
+        .entity::<Stage>()
+        .access::<Stage>(Access::build(|a| a.read(MEMBER)))
+        .entity::<Estimate>()
+        .access::<Estimate>(Access::build(|a| a.read(MEMBER)))
+        .entity::<Budget>()
+        .access::<Budget>(Access::build(|a| {
+            a.read(MEMBER);
+            a.mask(Budget::notes, [MEMBER]);
+        }))
+        .capability(
+            Capability::AUTHZ_BYPASS,
+            "The lake's models copy the estimates and the budgets",
+        )
+        .bypass::<Estimate>([Perm::READ])
+        .bypass::<Budget>([Perm::READ])
         .endpoint(
             Endpoint::new(create_task)
                 .describe("Creates a task and enqueues its processing.")
@@ -239,8 +343,18 @@ pub fn plugin() -> Plugin {
                 .timeout(Duration::from_secs(10))
                 .concurrency(2),
         )
+        .view(recent_tasks())
+        .view(tasks_by_week())
+        .view(long_estimates());
+    lake::declare(p)
 }
 
 fn main() {
     plugin().serve()
 }
+
+#[cfg(test)]
+mod query_tests;
+#[cfg(test)]
+#[path = "../tests/support/tree.rs"]
+mod tree;

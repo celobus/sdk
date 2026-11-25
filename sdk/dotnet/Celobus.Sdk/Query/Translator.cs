@@ -15,9 +15,10 @@ using Google.Protobuf;
 namespace Celobus.Sdk;
 
 /// <summary>A translated query: its tree, and how a row of the answer becomes the query's element.</summary>
-internal sealed class Translated(Celobus.V1.Query tree, Func<JsonElement, ByteString, object?> read)
+internal sealed class Translated(Celobus.V1.Query tree, Func<JsonElement, ByteString, object?> read, Engine engine)
 {
     public Celobus.V1.Query Tree { get; } = tree;
+    public Engine Engine { get; } = engine;
     public Func<JsonElement, ByteString, object?> Read { get; } = read;
 }
 
@@ -54,10 +55,13 @@ internal static class Translator
 
     public static bool IsDirectory(Type t) => Directory.ContainsKey(t);
 
-    /// <summary>The entity's name in a query: <c>order</c>, <c>crm.customer</c>, <c>platform.user</c>.</summary>
+    /// <summary>The entity's (or the view's) name in a query: <c>order</c>, <c>crm.customer</c>, <c>platform.user</c>, <c>sales</c>.</summary>
     public static string Canonical(Type t) =>
         Directory.TryGetValue(t, out var d) ? d
+        : Schema.IsHistoryRow(t) ? Canonical(Schema.HistoryOf(t))
+        : Schema.IsLakeTable(t) ? Schema.LakeSource(t)
         : Schema.ForeignPlugin(t) is { } p ? $"{p}.{Names.Snake(t.Name)}"
+        : Schema.IsView(t) ? Schema.ViewName(t)
         : Names.Snake(t.Name);
 
     public static string DefaultAlias(Type t) => Canonical(t).Replace('.', '_');
@@ -79,11 +83,82 @@ internal static class Translator
         return t.Finish(ElementOf(e.Type));
     }
 
+    /// <summary>
+    /// A view's query (<c>Plugin.View</c>): its tree without a select, and each of its row's columns (by the row's
+    /// snake_case field names) with its term.
+    /// </summary>
+    public static (Celobus.V1.Query Tree, List<(string Name, QueryTerm Term)> Columns) TranslateView(Expression e, Type row)
+    {
+        var t = new Translation();
+        t.Operator(e);
+        return t.FinishView(row);
+    }
+
+    /// <summary>
+    /// A load's query (<c>Plugin.Load</c>): its tree without a select, and each member of its projection (an anonymous
+    /// type or a record: the entity's columns by the members' snake_case names) with its term.
+    /// </summary>
+    public static (Celobus.V1.Query Tree, List<(string Name, QueryTerm Term)> Columns) TranslateLoad(Expression e)
+    {
+        var t = new Translation();
+        t.Operator(e);
+        return t.FinishLoad();
+    }
+
+    /// <summary>The types of every root a query names (its sources, joined and in <c>Any</c>), in the order met.</summary>
+    public static List<Type> Roots(Expression e)
+    {
+        var v = new RootFinder();
+        v.Visit(e);
+        return v.Found;
+    }
+
+    private sealed class RootFinder : ExpressionVisitor
+    {
+        public List<Type> Found { get; } = [];
+
+        protected override Expression VisitConstant(ConstantExpression node)
+        {
+            if (node.Value is IQueryRoot r && !Found.Contains(r.Entity)) Found.Add(r.Entity);
+            return node;
+        }
+
+        protected override Expression VisitMethodCall(MethodCallExpression node)
+        {
+            // ctx.Lake().Query<T>() and the like inside a lambda (an Any): a root by its type
+            if (node.Method.Name is "Query" or "History" or "From"
+                && node.Type.IsGenericType && node.Type.GetGenericTypeDefinition() == typeof(CelobusQuery<>))
+            {
+                var t = node.Type.GetGenericArguments()[0];
+                if (!Found.Contains(t)) Found.Add(t);
+                return node;
+            }
+            return base.VisitMethodCall(node);
+        }
+    }
+
     private sealed class Translation
     {
         private readonly Celobus.V1.Query _tree = new();
         private Shape _shape = null!;
         private Type _root = null!;
+        private Engine? _engine;
+
+        /// <summary>A root of the query, all of whose roots read one engine.</summary>
+        private IQueryRoot? Root(Expression e)
+        {
+            if (RootOf(e) is not { } r) return null;
+            if (Schema.IsOlap(r.Entity) && r.Engine == Engine.Store && r.Ctx is not null)
+                throw No($"{r.Entity.Name} from ctx.Query<T>(): an entity stored in OLAP is read with ctx.Analytics().Query<T>()");
+            if (Schema.IsLakeSource(r.Entity) != (r.Engine == Engine.Lake))
+                throw No($"{r.Entity.Name} from {(r.Engine == Engine.Lake ? "the lake: ctx.Lake() reads lake tables only" : "outside the lake: read a lake table with ctx.Lake().Query<T>()")}");
+            if (_engine is { } engine && engine != r.Engine)
+                throw No(engine == Engine.Lake || r.Engine == Engine.Lake
+                    ? "lake tables and entities together: start every source of a lake query from ctx.Lake().Query<T>()"
+                    : "both the workspace's data and its analytic copy: start every source of an analytic query from ctx.Analytics().Query<T>()");
+            _engine = r.Engine;
+            return r;
+        }
 
         private bool Taken(string alias) => _tree.Sources.Any(s => s.Alias == alias);
 
@@ -98,18 +173,22 @@ internal static class Translator
         private static IQueryRoot? RootOf(Expression e) => e switch
         {
             ConstantExpression { Value: IQueryRoot r } => r,
-            MethodCallExpression { Method.Name: "Query", Method.DeclaringType: var d } m when d == typeof(Ctx) && !HasParameter(m)
+            MethodCallExpression { Method.Name: "Query" or "History", Method.DeclaringType: var d } m
+                when (d == typeof(Ctx) || d == typeof(Analytics) || d == typeof(Lake)) && !HasParameter(m)
                 => Evaluate(m) as IQueryRoot,
             _ => null,
         };
 
         public void Operator(Expression e)
         {
-            if (RootOf(e) is { } root)
+            if (Root(e) is { } root)
             {
                 _root = root.Entity;
                 var alias = DefaultAlias(root.Entity);
-                _tree.Sources.Add(new QuerySource { Entity = Canonical(root.Entity), Alias = alias });
+                _tree.Sources.Add(new QuerySource
+                {
+                    Entity = Canonical(root.Entity), Alias = alias, History = root.History, EachDay = root.EachDay,
+                });
                 _shape = new SourceShape(alias, root.Entity);
                 return;
             }
@@ -138,7 +217,8 @@ internal static class Translator
                 case "Join":
                 case "GroupJoin":
                 {
-                    var inner = RootOf(m.Arguments[1]) ?? throw No("a join of anything but ctx.Query<T>()");
+                    var inner = Root(m.Arguments[1]) ?? throw No("a join of anything but ctx.Query<T>()");
+                    if (inner.History) throw No("a join of a history: a history is the root of its query");
                     var outerKey = Lambda(m.Arguments[2]);
                     var innerKey = Lambda(m.Arguments[3]);
                     var result = Lambda(m.Arguments[4]);
@@ -234,14 +314,61 @@ internal static class Translator
             }
         }
 
+        public (Celobus.V1.Query, List<(string, QueryTerm)>) FinishView(Type row)
+        {
+            if (_tree.Order.Count > 0 || _tree.Limit > 0) throw No("an order or a limit in a view: order and limit its reads");
+            if (_shape is not RecordShape { Build: { } build } record || build.Type != row)
+                throw No($"a view's rows other than select new {row.Name}(..) of its columns");
+            var columns = new List<(string, QueryTerm)>();
+            foreach (var (name, shape) in record.Members)
+            {
+                if (shape is not ValueShape { Term: { } term } || term.KindCase == QueryTerm.KindOneofCase.DaysAgo)
+                    throw No($"the column {name} other than a column of a source or an aggregate");
+                columns.Add((Names.Snake(name), term));
+            }
+            return (_tree, columns);
+        }
+
+        public (Celobus.V1.Query, List<(string, QueryTerm)>) FinishLoad()
+        {
+            if (_tree.Order.Count > 0 || _tree.Limit > 0) throw No("an order or a limit in a load");
+            if (_shape is not RecordShape { Build: not null } record)
+                throw No("a load's rows other than select new { .. } of the entity's columns");
+            var columns = new List<(string, QueryTerm)>();
+            foreach (var (name, shape) in record.Members)
+            {
+                if (shape is not ValueShape { Term: { } term } || term.KindCase == QueryTerm.KindOneofCase.DaysAgo)
+                    throw No($"the column {name} other than a column of a source or an aggregate");
+                columns.Add((Names.Snake(name), term));
+            }
+            return (_tree, columns);
+        }
+
         public Translated Finish(Type element)
         {
+            if (_shape is SourceShape hist && hist.Entity == element && Schema.IsHistoryRow(element)
+                && hist.Alias == _tree.Sources[0].Alias)
+            {
+                // a history's rows, with their own columns and the kept ones
+                var read = element.GetMethod("Read", BindingFlags.NonPublic | BindingFlags.Static)!;
+                return new Translated(_tree, (_, raw) =>
+                {
+                    try
+                    {
+                        return read.Invoke(null, [raw]);
+                    }
+                    catch (TargetInvocationException e) when (e.InnerException is not null)
+                    {
+                        throw e.InnerException;
+                    }
+                }, _engine ?? Engine.Store);
+            }
             if (_shape is SourceShape src && src.Entity == element && src.Alias == _tree.Sources[0].Alias)
             {
                 // the root's rows, as the repository reads them
                 return new Translated(_tree, (_, raw) =>
                     JsonSerializer.Deserialize(raw.Span, element, CelobusJson.Options)
-                    ?? throw PluginError.Unavailable("platform: an empty row"));
+                    ?? throw PluginError.Unavailable("platform: an empty row"), _engine ?? Engine.Store);
             }
             if (!Projectable(_shape)) throw No("rows of entities: select their columns (an anonymous type or a record of them)");
             var leaves = Leaves(_shape).ToList();
@@ -260,7 +387,7 @@ internal static class Translator
             {
                 var i = 0;
                 return Build(shape, row, ref i);
-            });
+            }, _engine ?? Engine.Store);
         }
 
         // --- shapes -----------------------------------------------------------------------------------------------
@@ -299,11 +426,18 @@ internal static class Translator
                     return env.TryGetValue(p, out var s) ? s : null;
                 case UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } u:
                     return Resolve(u.Operand, env) is ValueShape v ? v with { Type = u.Type } : Resolve(u.Operand, env);
+                // x.Value of a nullable column (h.Day.Value of a history per day): the column itself
+                case MemberExpression { Member.Name: "Value", Expression: { } nullable } nv
+                    when Nullable.GetUnderlyingType(nullable.Type) is not null && Resolve(nullable, env) is ValueShape nvv:
+                    return nvv with { Type = nv.Type };
                 case MemberExpression { Expression: { } inner } me:
                 {
                     var of = Resolve(inner, env);
                     return of switch
                     {
+                        // a history's kept columns: h.Row.Status, under the history's alias
+                        SourceShape src when Schema.IsHistoryRow(src.Entity) && me.Member.Name == nameof(HistoryRow<object>.Row)
+                            => new SourceShape(src.Alias, Schema.HistoryOf(src.Entity)),
                         SourceShape src => new ValueShape(
                             new QueryTerm { Column = new QueryColumn { Source = src.Alias, Field = Names.Snake(me.Member.Name) } },
                             null, MemberType(me.Member)),
@@ -320,7 +454,8 @@ internal static class Translator
                     {
                         var shape = Resolve(n.Arguments[i], env);
                         if (shape is null) return null;
-                        members.Add((n.Members?[i].Name ?? $"Item{i + 1}", shape));
+                        // an anonymous type's member, or a record's constructor parameter (named as its property)
+                        members.Add((n.Members?[i].Name ?? n.Constructor?.GetParameters()[i].Name ?? $"Item{i + 1}", shape));
                     }
                     return new RecordShape(members, n);
                 }
@@ -349,13 +484,66 @@ internal static class Translator
             _ => typeof(object),
         };
 
-        /// <summary>A label, or an aggregate of a group.</summary>
+        private static readonly Dictionary<string, QueryColumn.Types.Bucket> Buckets = new()
+        {
+            [nameof(Linq.Query.Day)] = QueryColumn.Types.Bucket.Day,
+            [nameof(Linq.Query.Week)] = QueryColumn.Types.Bucket.Week,
+            [nameof(Linq.Query.Month)] = QueryColumn.Types.Bucket.Month,
+            [nameof(Linq.Query.Quarter)] = QueryColumn.Types.Bucket.Quarter,
+            [nameof(Linq.Query.Year)] = QueryColumn.Types.Bucket.Year,
+        };
+
+        private static readonly Dictionary<Type, QueryColumn.Types.Parse> Parses = new()
+        {
+            [typeof(decimal)] = QueryColumn.Types.Parse.Decimal,
+            [typeof(int)] = QueryColumn.Types.Parse.Int32,
+            [typeof(long)] = QueryColumn.Types.Parse.Int64,
+            [typeof(double)] = QueryColumn.Types.Parse.Double,
+            [typeof(bool)] = QueryColumn.Types.Parse.Bool,
+            [typeof(DateOnly)] = QueryColumn.Types.Parse.Date,
+            [typeof(DateTimeOffset)] = QueryColumn.Types.Parse.Timestamp,
+            [typeof(Guid)] = QueryColumn.Types.Parse.Uuid,
+        };
+
+        /// <summary>A label, a bucket, a parsed text, a relative day, or an aggregate of a group.</summary>
         private Shape? Call(MethodCallExpression m, Dictionary<ParameterExpression, Shape> env)
         {
             if (m.Method.DeclaringType == typeof(Linq.Query) && m.Method.Name == nameof(Linq.Query.Label))
             {
                 var c = Column(Resolve(m.Arguments[0], env), "a label");
                 return new ValueShape(null, c, typeof(Label));
+            }
+            if (m.Method.DeclaringType == typeof(Linq.Query) && Buckets.TryGetValue(m.Method.Name, out var bucket))
+            {
+                var c = Term(m.Arguments[0], env)?.Column ?? throw No($"{m}: a bucket of anything but a column");
+                if (c.Bucket != QueryColumn.Types.Bucket.None) throw No($"{m}: a bucket of a bucket");
+                var b = c.Clone();
+                b.Bucket = bucket;
+                return new ValueShape(new QueryTerm { Column = b }, null, m.Type);
+            }
+            if (m.Method.DeclaringType == typeof(Linq.Query)
+                && m.Method.Name is nameof(Linq.Query.CreatedAt) or nameof(Linq.Query.UpdatedAt))
+            {
+                if (Resolve(m.Arguments[0], env) is not SourceShape src) throw No($"{m}: a system column of anything but a row of a source");
+                var field = m.Method.Name == nameof(Linq.Query.CreatedAt) ? "created_at" : "updated_at";
+                return new ValueShape(new QueryTerm { Column = new QueryColumn { Source = src.Alias, Field = field } }, null, m.Type);
+            }
+            if (m.Method.DeclaringType == typeof(Linq.Query) && m.Method.Name == nameof(Linq.Query.Parse))
+            {
+                var target = m.Method.GetGenericArguments()[0];
+                if (!Parses.TryGetValue(target, out var parse))
+                    throw No($"{m}: a parse as {target.Name}: decimal, int, long, double, bool, DateOnly, DateTimeOffset or Guid");
+                var c = Term(m.Arguments[0], env)?.Column ?? throw No($"{m}: a parse of anything but a column");
+                if (c.Bucket != QueryColumn.Types.Bucket.None || c.Parse != QueryColumn.Types.Parse.None)
+                    throw No($"{m}: a parse of a bucket or of a parsed column");
+                var p = c.Clone();
+                p.Parse = parse;
+                return new ValueShape(new QueryTerm { Column = p }, null, m.Type);
+            }
+            if (m.Method.DeclaringType == typeof(Linq.Query) && m.Method.Name == nameof(Linq.Query.DaysAgo))
+            {
+                var days = Convert.ToInt32(Evaluate(m.Arguments[0]), CultureInfo.InvariantCulture);
+                return new ValueShape(new QueryTerm { DaysAgo = days }, null, typeof(Linq.DaysAgo));
             }
             if (m.Method.DeclaringType != typeof(Enumerable) || m.Arguments.Count == 0) return null;
             // g.Select(x => x.P).Distinct().Count(): the distinct values
@@ -455,6 +643,13 @@ internal static class Translator
         {
             var l = Term(b.Left, env);
             var r = Term(b.Right, env);
+            // a relative day stands on the right of the comparison
+            if (l?.Term?.KindCase == QueryTerm.KindOneofCase.DaysAgo && r is not null)
+            {
+                (l, r) = (r, l);
+                op = Mirror[op];
+            }
+            if (l?.Term?.KindCase == QueryTerm.KindOneofCase.DaysAgo) throw No($"{b}: a relative day compared with anything but a column");
             if (l is not null && r is not null)
             {
                 if (l.Term is null || r.Term is null) throw No("a comparison of labels");
@@ -502,6 +697,23 @@ internal static class Translator
                 var t = Term(m.Arguments[0], env)?.Term ?? throw No("a search of anything but a column");
                 return Compared(t, DbCondition.Types.Op.Search, [Evaluate(m.Arguments[1])], false);
             }
+            // Query.Between(column, from, to): from <= column <= to
+            if (m.Method.DeclaringType == typeof(Linq.Query) && m.Method.Name == nameof(Linq.Query.Between))
+            {
+                var t = Term(m.Arguments[0], env) ?? throw No($"{m}: a range of anything but a column");
+                if (t.Term is null || t.IsAggregate && !having) throw No($"{m}: a range of anything but a column");
+                return new QueryExpr
+                {
+                    And = new QueryExprs
+                    {
+                        Items =
+                        {
+                            Compared(t.Term, DbCondition.Types.Op.Ge, [Evaluate(m.Arguments[1])], t.IsAggregate),
+                            Compared(t.Term, DbCondition.Types.Op.Le, [Evaluate(m.Arguments[2])], t.IsAggregate),
+                        },
+                    },
+                };
+            }
             // column.Contains("text"): a substring
             if (m.Method.DeclaringType == typeof(string) && m.Method.Name == nameof(string.Contains) && m.Object is { } obj
                 && m.Arguments.Count == 1 && Term(obj, env) is { Term: { } col })
@@ -522,7 +734,7 @@ internal static class Translator
             }
             // ctx.Query<T>().Any(x => ..): a correlated EXISTS
             if (m.Method.Name == "Any" && (m.Method.DeclaringType == typeof(Queryable) || m.Method.DeclaringType == typeof(Enumerable))
-                && RootOf(m.Arguments[0]) is { } root)
+                && Root(m.Arguments[0]) is { } root)
             {
                 if (having) throw No("exists in a group's condition");
                 var alias = AliasFor(root.Entity, m.Arguments.Count == 2 ? Lambda(m.Arguments[1]).Parameters[0].Name : null);

@@ -32,7 +32,10 @@ impl Entity for User {
     const ENTITY: &'static str = "user";
     const PLUGIN: Option<&'static str> = Some("platform");
 }
-impl Queryable for User {}
+impl Queryable for User {
+    const SOURCE: &'static str = "user";
+    const OWNER: Option<&'static str> = Some("platform");
+}
 
 /// A person or a service account.
 #[derive(crate::Message, Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +91,10 @@ impl Entity for Group {
     const ENTITY: &'static str = "group";
     const PLUGIN: Option<&'static str> = Some("platform");
 }
-impl Queryable for Group {}
+impl Queryable for Group {
+    const SOURCE: &'static str = "group";
+    const OWNER: Option<&'static str> = Some("platform");
+}
 
 #[allow(non_upper_case_globals)]
 impl Group {
@@ -108,7 +114,10 @@ impl Entity for GroupMember {
     const ENTITY: &'static str = "group_member";
     const PLUGIN: Option<&'static str> = Some("platform");
 }
-impl Queryable for GroupMember {}
+impl Queryable for GroupMember {
+    const SOURCE: &'static str = "group_member";
+    const OWNER: Option<&'static str> = Some("platform");
+}
 
 #[allow(non_upper_case_globals)]
 impl GroupMember {
@@ -128,7 +137,10 @@ impl Entity for RoleAssignment {
     const ENTITY: &'static str = "role_assignment";
     const PLUGIN: Option<&'static str> = Some("platform");
 }
-impl Queryable for RoleAssignment {}
+impl Queryable for RoleAssignment {
+    const SOURCE: &'static str = "role_assignment";
+    const OWNER: Option<&'static str> = Some("platform");
+}
 
 #[allow(non_upper_case_globals)]
 impl RoleAssignment {

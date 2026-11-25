@@ -3,6 +3,7 @@
 // directory, the runs of its agents, notifications: `ctx.notifications`, notify.ts; background jobs: `ctx.jobs` to
 // enqueue and cancel runs, `ctx.job` for the run a job's handler is in). Events are not available: those members
 // exist and reject with `unavailable`.
+import { checkCall } from "./keys.js";
 import { decodeMessage, encodeMessage, stringify, type FieldErrors } from "./codec.js";
 import { Repository, TxRepository, type DbLink, type DbResult } from "./db.js";
 import { RpcError, internal, invalid, unauthenticated, unavailable } from "./errors.js";
@@ -11,8 +12,9 @@ import type { ResolvedJob } from "./descriptor.js";
 import type { Logger } from "./log.js";
 import { endpointPath, snake } from "./names.js";
 import { Notifications, linkWire, type NotifyLink } from "./notify.js";
-import { entityNames, foreignPlugin, type EntityDef, type IoValue, type MessageDef } from "./schema.js";
-import { startQuery, type Query, type Queryable } from "./query.js";
+import { ViewDef, entityNames, foreignPlugin, type EntityDef, type IoValue, type MessageDef } from "./schema.js";
+import { Analytics, startQuery, type Query, type Queryable } from "./query.js";
+import { Lake, type LakeTableDef } from "./lake.js";
 import { sqlParams, sqlRows, type SqlRow } from "./sql.js";
 import type { TopicDef } from "./ui.js";
 
@@ -296,6 +298,21 @@ const DB_REFUSALS = new Map([
   ["query_size_limit", 422],
   ["query_join_limit", 422],
   ["query_response_limit", 422],
+  ["analytic_time_limit", 422],
+  ["analytic_memory_limit", 422],
+  ["analytic_busy", 503],
+  ["lake_rows_limit", 422],
+  ["lake_time_limit", 422],
+  ["lake_memory_limit", 422],
+  ["lake_busy", 503],
+  ["lake_model_rows_limit", 422],
+  ["lake_partitions_limit", 422],
+  ["lake_model_parse", 422],
+  ["lake_model_changed", 409],
+  ["not_loaded", 409],
+  ["analytic_load_limit", 429],
+  ["analytic_load_busy", 503],
+  ["analytic_load_pending", 503],
 ]);
 
 /**
@@ -768,6 +785,7 @@ export class Ctx {
     };
     this.agents = {
       run: async (agent, input, options = {}) => {
+        checkCall("ctx.agents.run()", options);
         const start = {
           agent,
           input,
@@ -802,6 +820,7 @@ export class Ctx {
       },
       get: async (runId) => runOf((await this.syscall({ agentGet: { runId } })).agentRun, "agent_get"),
       events: async (runId, options = {}) => {
+        checkCall("ctx.agents.events()", options);
         const page = (await this.syscall({ agentEvents: { runId, after: String(options.after ?? 0), limit: options.limit ?? 0 } }))
           .agentEvents;
         const messages = (page?.partial?.messages ?? []).map((m) => ({ messageId: m.messageId, text: m.text }));
@@ -820,6 +839,7 @@ export class Ctx {
         };
       },
       list: async (options = {}) => {
+        checkCall("ctx.agents.list()", options);
         const r = await this.syscall({ agentRuns: { agent: options.agent ?? "", limit: options.limit ?? 0, group: options.group ?? "" } });
         return (r.agentRuns?.runs ?? []).map((run) => runOf(run, "agent_runs"));
       },
@@ -847,6 +867,7 @@ export class Ctx {
   get jobs(): Jobs {
     return {
       enqueue: async (job, payload, options = {}) => {
+        checkCall("ctx.jobs.enqueue()", options);
         const found = this.session.jobs?.get(job);
         if (!found) throw invalid("ctx.jobs.enqueue: the job is not in plugin({ jobs })");
         let json: string;
@@ -961,6 +982,8 @@ export class Ctx {
       requestId: this.request.id,
       tx: this.tx,
       asSystem: this.system,
+      deadline: this.request.deadline,
+      inRun: this.job.isRun,
     };
   }
 
@@ -977,7 +1000,11 @@ export class Ctx {
    * The repository of one of the plugin's entities; in a transaction (`tx.db(order)`) its calls are part of it. A
    * dependency's entity is read with `ctx.query` (500 `internal` here).
    */
-  db<E extends EntityDef<any>>(entity: E & (E extends EntityDef<any, true> ? never : unknown)): Repository<E> {
+  db<E extends EntityDef<any>>(entity: E & (E extends EntityDef<any, true> ? never : E extends EntityDef<any, any, true> ? never : unknown)): Repository<E> {
+    if ((entity as unknown) instanceof ViewDef) throw internal(new Error("ctx.db(): a view is read, never written: read it with ctx.query()"));
+    if (entity.options.storage === "olap") {
+      throw internal(new Error("ctx.db(): an entity stored in OLAP is neither read nor written so: its load fills it, ctx.analytics().query() reads it"));
+    }
     const provider = foreignPlugin(entity);
     if (provider) {
       throw internal(new Error(`ctx.db(): ${provider}.${entity.options.name} is another plugin's entity; read it with ctx.query()`));
@@ -996,8 +1023,48 @@ export class Ctx {
    * the directory as a member does, and a dependency's entity under the provider's rules for the caller (never more
    * than the caller reads without the system context).
    */
-  query<E extends Queryable>(entity: E): Query<E> {
+  query<E extends Queryable>(
+    entity: E & (E extends LakeTableDef<any, any> ? never : E extends EntityDef<any, any, true> ? never : unknown),
+  ): Query<E> {
     return startQuery(this.link(), entity);
+  }
+
+  /**
+   * The analytic copy of the workspace's entities: `ctx.analytics().query(entity)` is `ctx.query(entity)` read there,
+   * for reports and figures over many rows. Its answer may be slightly behind (usually under a second, never
+   * promised) and says when its data is from (`allAsOf()`, `countAsOf()`, `asOf` on a page); a screen that must show
+   * what was just saved reads with `ctx.query()`. A query runs at most 10 s (422 `analytic_time_limit`) within the
+   * copy's memory (422 `analytic_memory_limit`); four of the workspace run at once, two of the plugin (503
+   * `analytic_busy` after a short wait); 503 `unavailable` while the copy is being made, when its data is older than
+   * the workspace's limit (15 minutes unless the workspace sets another; never a fallback to `ctx.query()`) or when the
+   * workspace has none. Refused inside a transaction (400 `invalid`).
+   */
+  analytics(): Analytics {
+    return new Analytics(this.link());
+  }
+
+  /**
+   * The workspace's Data Lake (`lake.ts`): `ctx.lake().table(t)` writes one of the plugin's lake tables
+   * (`replace(filter, rows)`, `append(rows, { key })`, `merge(rows)`), `ctx.lake().query(t)` reads lake tables with the
+   * builder of `ctx.query()`. Outside a job's run an append names its write key; in a run (`JobCtx`) it has a default.
+   */
+  lake(): Lake<false> {
+    return new Lake<false>(this.lakeLink());
+  }
+
+  /** @internal */
+  protected lakeLink() {
+    const request = this.request;
+    return {
+      db: this.link(),
+      job: this.job,
+      // one count per request or run, whichever context of it appends (`asSystem` keeps the request)
+      nextAppend: () => {
+        const n = (appends.get(request) ?? 0) + 1;
+        appends.set(request, n);
+        return n;
+      },
+    };
   }
 
   /**
@@ -1059,6 +1126,7 @@ export class Ctx {
    * transaction still open when the request ends or 5 s pass (504 `transaction_timeout`).
    */
   async transaction<T>(fn: (tx: TxCtx) => Promise<T>, options: TransactionOptions = {}): Promise<T> {
+    checkCall("ctx.transaction()", options);
     const isolation = { read_committed: "READ_COMMITTED", repeatable_read: "REPEATABLE_READ", serializable: "SERIALIZABLE" }[
       options.isolation ?? "read_committed"
     ];
@@ -1081,11 +1149,24 @@ export class Ctx {
 }
 
 /**
+ * The context of an attempt of a job's run (a job's handler gets it): a `Ctx` whose lake appends have a default write
+ * key, the run's id and the number of the append in the run (`<runId>#1`, `#2`, ..), the same in every attempt.
+ */
+export class JobCtx extends Ctx {
+  override lake(): Lake<true> {
+    return new Lake<true>(this.lakeLink());
+  }
+}
+
+/** The lake appends of each request or run so far (a run's default write key is its id and the append's number). */
+const appends = new WeakMap<object, number>();
+
+/**
  * The context inside a declared transaction (`ctx.transaction(async (tx) => ..)`): a `Ctx` whose repositories may
  * lock the rows they read (`tx.db(e).get(id, { lock: 'update' })`, `tx.db(e).find(f).forUpdate().skipLocked()`).
  */
 export class TxCtx extends Ctx {
-  override db<E extends EntityDef<any>>(entity: E & (E extends EntityDef<any, true> ? never : unknown)): TxRepository<E> {
+  override db<E extends EntityDef<any>>(entity: E & (E extends EntityDef<any, true> ? never : E extends EntityDef<any, any, true> ? never : unknown)): TxRepository<E> {
     const repo = super.db(entity);
     return new TxRepository(this.link(), repo.entity, repo.name);
   }

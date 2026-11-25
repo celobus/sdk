@@ -11,6 +11,7 @@
 //
 // The API is `ctx.notifications` (`Notifications`): `send` a notice of a kind, `ask` an approval or a decision with
 // buttons and `resolve` it, `follow` a key, `unfollow` it, ask whether the caller is `following` it.
+import { checkCall, noted } from "./keys.js";
 import { encodeMessage, stringify } from "./codec.js";
 import { describedEndpoints, type EndpointDef } from "./declare.js";
 import { internal } from "./errors.js";
@@ -44,7 +45,7 @@ export class NotificationKind {
 
 /** `export const mention = notification('mention', { title: 'Mentions', digest: true })`. */
 export function notification(name: string, options: NotificationOptions): NotificationKind {
-  return new NotificationKind(name, options);
+  return noted(new NotificationKind(name, options), "notification", options);
 }
 
 // ---------------------------------------------------------------------------------------------- what is sent
@@ -208,6 +209,7 @@ export const notify = {
     request: IoValue<I>,
     options: { primary?: boolean; icon?: string } = {},
   ): NotifyButton {
+    checkCall("notify.button()", options);
     return new NotifyButton(label, endpoint, request, !!options.primary, options.icon ?? "");
   },
 };
@@ -279,11 +281,13 @@ export class Notifications {
 
   /** Sends a notification of one of the plugin's kinds. */
   async send(kind: NotificationKind, notice: Notice): Promise<void> {
+    checkCall("ctx.notifications.send()", notice);
     await this.link.syscall({ notifySend: this.sendWire(kind.name, notice) });
   }
 
   /** Asks members for an approval or a decision. */
   async ask(ask: Ask): Promise<void> {
+    checkCall("ctx.notifications.ask()", ask);
     const wire = {
       kind: ask.kind === "decision" ? "DECISION" : "APPROVAL",
       buttons: ask.buttons.map(buttonWire),
@@ -316,6 +320,7 @@ export class Notifications {
 
   /** Makes the caller (or, for `replied` and `edited`, `follow.users`) follow `key`. */
   async follow(key: NotifyKey, follow: Follow = {}): Promise<void> {
+    checkCall("ctx.notifications.follow()", follow);
     await this.link.syscall({ notifyFollow: this.followWire(key, "FOLLOW", follow, REASONS[follow.reason ?? "manual"]) });
   }
 

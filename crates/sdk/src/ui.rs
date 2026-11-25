@@ -1,4 +1,4 @@
-//! UI declarations (`reviews/plugin-ui-v2/proposal.md`): a plugin's sidebar, screens, overlays, home widgets and
+//! UI declarations: a plugin's sidebar, screens, overlays, home widgets and
 //! commands, built from the platform's catalog of primitives and bound to the plugin's own endpoints and topics. It
 //! is data in the descriptor: every client renders it with its own components, and every read and action is the
 //! member's own call. Nothing here styles anything: tones, emphasis and density are meanings.

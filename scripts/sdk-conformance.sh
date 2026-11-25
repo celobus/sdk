@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
-# SDK conformance: the plugins `hello`, `shop` (a UI), `notify` (notifications) and `jobsdemo` (background jobs, in
-# sdk/conformance/jobs) are declared the same way in every SDK (sdk/conformance/<plugin>/<lang>/); each is built, run
-# with --describe, and its output, canonicalized (object keys sorted by `jq -S .`, arrays as printed), must equal
-# sdk/conformance/<plugin>/descriptor.json.
+# SDK conformance: the plugins `hello`, `shop` (a UI), `notify` (notifications) and `jobsdemo` (background jobs,
+# analytic views and the Data Lake, in sdk/conformance/jobs) are declared the same way in every SDK (sdk/conformance/<plugin>/<lang>/);
+# each is built, run with --describe, and its output, canonicalized (object keys sorted by `jq -S .`, arrays as
+# printed), must equal sdk/conformance/<plugin>/descriptor.json. Each SDK's unit tests then build the conformance query
+# (sdk/conformance/query/revenue.json) and must send that tree, from the analytic engine (`engine = ANALYTIC`) too, and
+# the conformance queries over jobsdemo's views on the analytic engine: `recent_task` with a time bucket and a relative
+# day (sdk/conformance/query/weekly.json), `long_estimate` with a decimal column compared with a fractional value, sent
+# as its text (sdk/conformance/query/estimates.json; the view itself compares one in its declaration). The lake leg: a
+# fake platform (sdk/conformance/jobs/rust/tests/lake.rs) runs each SDK's jobsdemo as a process, sends it the requests
+# and job runs of sdk/conformance/jobs/lake.json and checks every lake write chunk (table, mode, filter, key, write,
+# last, rows), the answers, the lake query (engine LAKE, the tree of sdk/conformance/query/lake.json), the refreshes of
+# the models (table, partition filter, the refusals' statuses) and the history reads (whole and per day); it needs
+# cargo for every language. jobsdemo's descriptor holds a model of each kind of source, two histories and an entity
+# stored in OLAP with its load; the leg also requests the load, follows its ticket (a status, a wait) and maps every
+# refusal and failure code of loads.
 #   ./scripts/sdk-conformance.sh [--strict] [rust] [ts] [csharp]
 # Default: all three languages; a language whose toolchain is missing is skipped with a note. With --strict (or
 # CONFORMANCE_REQUIRE_ALL=1), as in CI, a missing toolchain or conformance plugin fails the run instead.
@@ -48,13 +59,20 @@ compare() { # lang, command... (FIXTURE: the expected descriptor)
   fi
 }
 
-query() { # lang, command...: the SDK's test of the conformance query's tree
-  local lang=$1; shift
-  if "$@" >"$tmp/$lang-query.out" 2>&1; then
-    echo "ok   $lang-query"
+query() { # name, pattern its output must show (the tests ran), command...: the SDK's test of the conformance query
+  local name=$1 ran=$2; shift 2
+  if "$@" >"$tmp/$name.out" 2>&1 && grep -Eq "$ran" "$tmp/$name.out"; then
+    echo "ok   $name"
   else
-    echo "FAIL $lang-query: the query tree differs from sdk/conformance/query/revenue.json"; cat "$tmp/$lang-query.out"; fail=1
+    echo "FAIL $name: the query or its engine differs from its file in sdk/conformance/query (or no test ran)"
+    cat "$tmp/$name.out"; fail=1
   fi
+}
+
+lake() { # name, the plugin's command: the lake leg against that SDK's jobsdemo
+  local name=$1; shift
+  if ! command -v cargo >/dev/null; then skip "$name: the lake leg's fake platform needs cargo"; return; fi
+  query "$name" '1 passed' env CONFORMANCE_PLUGIN="$*" cargo test -q -p celobus-conformance-jobs --test lake
 }
 
 for lang in "${LANGS[@]}"; do
@@ -65,7 +83,12 @@ for lang in "${LANGS[@]}"; do
       FIXTURE=$SHOP compare rust-shop target/debug/shop
       FIXTURE=$NOTIFY compare rust-notify target/debug/notify
       FIXTURE=$JOBS compare rust-jobs target/debug/jobsdemo
-      query rust cargo test -q -p celobus-sdk --lib the_conformance_query_is_the_shared_tree
+      query rust-query '1 passed' cargo test -q -p celobus-sdk --lib the_conformance_query_is_the_shared_tree
+      query rust-analytic '1 passed' cargo test -q -p celobus-sdk --lib an_analytic_read_names_its_engine
+      query rust-view-query '1 passed' cargo test -q -p celobus-conformance-jobs the_conformance_view_query_is_the_shared_tree
+      query rust-decimal-query '1 passed' cargo test -q -p celobus-conformance-jobs the_conformance_decimal_query_is_the_shared_tree
+      query rust-lake-query '1 passed' cargo test -q -p celobus-conformance-jobs the_conformance_lake_query_is_the_shared_tree
+      lake rust-lake "$PWD/target/debug/jobsdemo"
       ;;
     ts)
       if command -v npm >/dev/null; then
@@ -82,7 +105,11 @@ for lang in "${LANGS[@]}"; do
         FIXTURE=$NOTIFY compare ts-notify node sdk/conformance/notify/ts/dist/main.js
         (cd sdk/conformance/jobs/ts && npm ci --silent && npm run --silent build) >/dev/null
         FIXTURE=$JOBS compare ts-jobs node sdk/conformance/jobs/ts/dist/main.js
-        query ts node --test --test-name-pattern "the conformance query" sdk/node/test/query.test.mjs
+        query ts-query 'pass 1$' node --test --test-name-pattern "the conformance query is the shared tree" sdk/node/test/query.test.mjs
+        query ts-analytic 'pass 1$' node --test --test-name-pattern "the conformance query reads the analytic engine" sdk/node/test/query.test.mjs
+        query ts-view-query 'pass 1$' node --test --test-name-pattern "the conformance view query is the shared tree" sdk/node/test/views.test.mjs
+        query ts-decimal-query 'pass 1$' node --test --test-name-pattern "the conformance decimal query is the shared tree" sdk/node/test/views.test.mjs
+        lake ts-lake node "$PWD/sdk/conformance/jobs/ts/dist/main.js"
       else
         skip "ts: node and npm are not installed"
       fi
@@ -101,7 +128,15 @@ for lang in "${LANGS[@]}"; do
         FIXTURE=$NOTIFY compare csharp-notify dotnet sdk/conformance/notify/csharp/bin/Release/net10.0/Notify.dll
         dotnet build -c Release --nologo -v q sdk/conformance/jobs/csharp >/dev/null
         FIXTURE=$JOBS compare csharp-jobs dotnet sdk/conformance/jobs/csharp/bin/Release/net10.0/Jobsdemo.dll
-        query csharp dotnet test --nologo -v q sdk/dotnet/Celobus.Sdk.Tests --filter TheConformanceQueryIsTheSharedTree
+        query csharp-query 'Passed: +1,' dotnet test --nologo -v q sdk/dotnet/Celobus.Sdk.Tests \
+          --filter 'FullyQualifiedName~QueryLinqTests.TheConformanceQueryIsTheSharedTree&FullyQualifiedName!~Analytic'
+        query csharp-analytic 'Passed: +1,' dotnet test --nologo -v q sdk/dotnet/Celobus.Sdk.Tests \
+          --filter FullyQualifiedName~QueryLinqTests.TheConformanceQueryIsTheSharedTreeOnTheAnalyticEngine
+        query csharp-view-query 'Passed: +1,' dotnet test --nologo -v q sdk/dotnet/Celobus.Sdk.Tests \
+          --filter FullyQualifiedName~ViewTests.TheConformanceViewQueryIsTheSharedTreeOnTheAnalyticEngine
+        query csharp-decimal-query 'Passed: +1,' dotnet test --nologo -v q sdk/dotnet/Celobus.Sdk.Tests \
+          --filter FullyQualifiedName~ViewTests.TheConformanceDecimalQueryIsTheSharedTreeOnTheAnalyticEngine
+        lake csharp-lake dotnet "$PWD/sdk/conformance/jobs/csharp/bin/Release/net10.0/Jobsdemo.dll"
       else
         skip "csharp: dotnet is not installed"
       fi

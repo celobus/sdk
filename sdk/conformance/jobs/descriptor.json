@@ -1,7 +1,35 @@
 {
   "agents": [],
-  "capabilities": [],
-  "dependencies": [],
+  "capabilities": [
+    {
+      "name": "authz:bypass",
+      "on": [
+        {
+          "entity": "estimate",
+          "ops": [
+            "read"
+          ]
+        },
+        {
+          "entity": "budget",
+          "ops": [
+            "read"
+          ]
+        }
+      ],
+      "reason": "The lake's models copy the estimates and the budgets"
+    }
+  ],
+  "dependencies": [
+    {
+      "calls": [],
+      "lake": [
+        "issue_day",
+        "issue"
+      ],
+      "plugin": "tracker"
+    }
+  ],
   "description": "The SDK conformance plugin of background jobs.",
   "endpoints": [
     {
@@ -41,6 +69,96 @@
       "input": "CancelRunRequest",
       "name": "CancelRun",
       "output": "CancelRunReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Writes generated rows to the lake.",
+      "idempotency": "off",
+      "input": "LoadTasksRequest",
+      "name": "LoadTasks",
+      "output": "LoadTasksReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Reads the tasks of the month back from the lake.",
+      "idempotency": "off",
+      "input": "TaskDaysRequest",
+      "name": "TaskDays",
+      "output": "TaskDaysReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Refreshes a table computed by a model.",
+      "idempotency": "off",
+      "input": "RefreshTablesRequest",
+      "name": "RefreshTables",
+      "output": "RefreshTablesReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Reads the history of tasks.",
+      "idempotency": "off",
+      "input": "TaskTrailRequest",
+      "name": "TaskTrail",
+      "output": "TaskTrailReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Asks for the load of the days by stage, or follows its ticket.",
+      "idempotency": "off",
+      "input": "LoadStageDaysRequest",
+      "name": "LoadStageDays",
+      "output": "LoadStageDaysReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Reads the loaded days by stage.",
+      "idempotency": "off",
+      "input": "StageDaysRequest",
+      "name": "StageDays",
+      "output": "StageDaysReply",
       "roles": [
         "member"
       ],
@@ -90,6 +208,7 @@
         },
         {
           "description": "",
+          "history": true,
           "name": "status",
           "number": 3,
           "optional": false,
@@ -97,11 +216,277 @@
           "type": "string"
         }
       ],
+      "history": {
+        "export": true,
+        "layer": "audit",
+        "read": [
+          "member"
+        ],
+        "system_read": true
+      },
       "key": "uuid",
       "label": "title",
       "message": "Task",
       "name": "task",
       "soft_delete": false,
+      "version": false
+    },
+    {
+      "access": {
+        "admin": true,
+        "create": null,
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [],
+        "permits": [],
+        "read": {
+          "role": "member"
+        },
+        "relations": [],
+        "update": null
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.stage"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "key": "uuid",
+      "label": "name",
+      "message": "Stage",
+      "name": "stage",
+      "soft_delete": false,
+      "version": false
+    },
+    {
+      "access": {
+        "admin": true,
+        "create": null,
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [],
+        "permits": [],
+        "read": {
+          "role": "member"
+        },
+        "relations": [],
+        "update": null
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.estimate"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        }
+      ],
+      "key": "uuid",
+      "label": "title",
+      "message": "Estimate",
+      "name": "estimate",
+      "soft_delete": false,
+      "version": false
+    },
+    {
+      "access": {
+        "admin": true,
+        "create": null,
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [
+          {
+            "field": "notes",
+            "roles": [
+              "member"
+            ]
+          }
+        ],
+        "permits": [],
+        "read": {
+          "role": "member"
+        },
+        "relations": [],
+        "update": null
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.budget"
+        },
+        {
+          "description": "",
+          "history": true,
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "history": true,
+          "name": "hours",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "decimal"
+        },
+        {
+          "description": "",
+          "name": "tags",
+          "number": 4,
+          "optional": false,
+          "repeated": true,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "encrypted": true,
+          "name": "secret",
+          "number": 5,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "notes",
+          "number": 6,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "history": {
+        "all": true,
+        "layer": "audit",
+        "read": [
+          "member"
+        ]
+      },
+      "key": "uuid",
+      "label": "title",
+      "message": "Budget",
+      "name": "budget",
+      "soft_delete": false,
+      "version": false
+    },
+    {
+      "access": {
+        "admin": true,
+        "create": null,
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [],
+        "permits": [],
+        "read": {
+          "role": "member"
+        },
+        "relations": [],
+        "update": null
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.stage_day"
+        },
+        {
+          "description": "",
+          "name": "day",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "stage",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "tasks",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 5,
+          "optional": true,
+          "repeated": false,
+          "type": "decimal"
+        }
+      ],
+      "key": "uuid",
+      "label": "id",
+      "message": "StageDay",
+      "name": "stage_day",
+      "olap_key": [
+        "day",
+        "stage"
+      ],
+      "soft_delete": false,
+      "storage": "olap",
       "version": false
     }
   ],
@@ -156,6 +541,390 @@
       "name": "slow",
       "payload": "Slow",
       "timeout_ms": 10000
+    },
+    {
+      "description": "Appends a batch of tasks to the lake",
+      "name": "task_batch",
+      "payload": "TaskBatch"
+    }
+  ],
+  "lake_models": [
+    {
+      "columns": [
+        {
+          "name": "day",
+          "value": {
+            "column": {
+              "field": "loaded_on",
+              "source": "task_load"
+            }
+          }
+        },
+        {
+          "name": "title",
+          "value": {
+            "column": {
+              "field": "title",
+              "source": "task_load"
+            }
+          }
+        },
+        {
+          "name": "hours",
+          "value": {
+            "column": {
+              "field": "hours",
+              "parse": "decimal",
+              "source": "task_load"
+            }
+          }
+        }
+      ],
+      "filter": {
+        "compare": {
+          "left": {
+            "column": {
+              "field": "title",
+              "source": "task_load"
+            }
+          },
+          "op": "ne",
+          "values": [
+            ""
+          ]
+        }
+      },
+      "sources": [
+        {
+          "alias": "task_load",
+          "entity": "task_load"
+        }
+      ],
+      "table": "task_hours"
+    },
+    {
+      "columns": [
+        {
+          "name": "week",
+          "value": {
+            "column": {
+              "bucket": "week",
+              "field": "day",
+              "source": "tracker_issue_day"
+            }
+          }
+        },
+        {
+          "name": "issues",
+          "value": {
+            "aggregate": {
+              "column": {
+                "field": "issues",
+                "source": "tracker_issue_day"
+              },
+              "fn": "sum"
+            }
+          }
+        }
+      ],
+      "group_by": [
+        {
+          "bucket": "week",
+          "field": "day",
+          "source": "tracker_issue_day"
+        }
+      ],
+      "sources": [
+        {
+          "alias": "tracker_issue_day",
+          "entity": "tracker.issue_day"
+        }
+      ],
+      "table": "issue_week"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "value": {
+            "column": {
+              "field": "id",
+              "source": "budget"
+            }
+          }
+        },
+        {
+          "name": "title",
+          "value": {
+            "column": {
+              "field": "title",
+              "source": "budget"
+            }
+          }
+        },
+        {
+          "name": "notes",
+          "value": {
+            "column": {
+              "field": "notes",
+              "source": "budget"
+            }
+          }
+        }
+      ],
+      "sources": [
+        {
+          "alias": "budget",
+          "entity": "budget"
+        }
+      ],
+      "table": "budget_copy",
+      "unmasked": true
+    },
+    {
+      "columns": [
+        {
+          "name": "title",
+          "value": {
+            "column": {
+              "field": "title",
+              "source": "long_estimate"
+            }
+          }
+        },
+        {
+          "name": "hours",
+          "value": {
+            "column": {
+              "field": "hours",
+              "source": "long_estimate"
+            }
+          }
+        }
+      ],
+      "sources": [
+        {
+          "alias": "long_estimate",
+          "entity": "long_estimate"
+        }
+      ],
+      "table": "long_estimate_copy"
+    },
+    {
+      "columns": [
+        {
+          "name": "day",
+          "value": {
+            "column": {
+              "field": "day",
+              "source": "task"
+            }
+          }
+        },
+        {
+          "name": "status",
+          "value": {
+            "column": {
+              "field": "status",
+              "source": "task"
+            }
+          }
+        },
+        {
+          "name": "tasks",
+          "value": {
+            "aggregate": {
+              "fn": "count"
+            }
+          }
+        }
+      ],
+      "filter": {
+        "compare": {
+          "left": {
+            "column": {
+              "field": "status",
+              "source": "task"
+            }
+          },
+          "op": "ne",
+          "values": [
+            "processed"
+          ]
+        }
+      },
+      "group_by": [
+        {
+          "field": "day",
+          "source": "task"
+        },
+        {
+          "field": "status",
+          "source": "task"
+        }
+      ],
+      "sources": [
+        {
+          "alias": "task",
+          "each_day": true,
+          "entity": "task",
+          "history": true
+        }
+      ],
+      "table": "open_by_day"
+    }
+  ],
+  "lake_tables": [
+    {
+      "description": "Tasks as an outside tracker sends them, a load a day.",
+      "layer": "raw",
+      "message": "TaskLoadRow",
+      "name": "task_load",
+      "partition": [
+        "loaded_on"
+      ],
+      "system_read": true
+    },
+    {
+      "description": "The tasks of a day by stage.",
+      "export": true,
+      "export_models": true,
+      "key": [
+        "day",
+        "stage"
+      ],
+      "layer": "mart",
+      "message": "TaskDay",
+      "name": "task_day",
+      "partition": [
+        "day"
+      ],
+      "read": [
+        "member"
+      ],
+      "system_read": true
+    },
+    {
+      "description": "The hours of the loaded tasks, as numbers: computed from `task_load`.",
+      "layer": "mart",
+      "message": "TaskHours",
+      "name": "task_hours",
+      "partition": [
+        "day"
+      ],
+      "read": [
+        "member"
+      ]
+    },
+    {
+      "description": "The tracker's issues by week: computed from its exported `issue_day`.",
+      "layer": "mart",
+      "message": "IssueWeek",
+      "name": "issue_week",
+      "partition": [
+        "week"
+      ]
+    },
+    {
+      "description": "The budgets with their notes: computed from the entity, its masked column as it is.",
+      "layer": "mart",
+      "message": "BudgetCopy",
+      "name": "budget_copy"
+    },
+    {
+      "description": "The long estimates: computed from the analytic view.",
+      "layer": "mart",
+      "message": "LongEstimateCopy",
+      "name": "long_estimate_copy"
+    },
+    {
+      "description": "The tasks not processed at the end of each day, by status: computed from the history of tasks.",
+      "layer": "mart",
+      "message": "OpenByDay",
+      "name": "open_by_day",
+      "partition": [
+        "day"
+      ],
+      "read": [
+        "member"
+      ]
+    }
+  ],
+  "layers": [
+    {
+      "name": "raw",
+      "title": "As it arrived"
+    },
+    {
+      "name": "mart",
+      "title": "For reports"
+    },
+    {
+      "name": "audit",
+      "title": "History of records"
+    }
+  ],
+  "loads": [
+    {
+      "columns": [
+        {
+          "name": "day",
+          "value": {
+            "column": {
+              "field": "day",
+              "source": "task_day"
+            }
+          }
+        },
+        {
+          "name": "stage",
+          "value": {
+            "column": {
+              "field": "stage",
+              "source": "task_day"
+            }
+          }
+        },
+        {
+          "name": "tasks",
+          "value": {
+            "column": {
+              "field": "tasks",
+              "source": "task_day"
+            }
+          }
+        },
+        {
+          "name": "hours",
+          "value": {
+            "column": {
+              "field": "hours",
+              "source": "task_day"
+            }
+          }
+        }
+      ],
+      "entity": "stage_day",
+      "filter": {
+        "compare": {
+          "left": {
+            "column": {
+              "field": "tasks",
+              "source": "task_day"
+            }
+          },
+          "op": "gt",
+          "values": [
+            "0"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "alias": "task_day",
+          "entity": "task_day"
+        }
+      ]
     }
   ],
   "messages": [
@@ -278,6 +1047,336 @@
       "fields": [
         {
           "description": "",
+          "name": "mode",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "rows",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        },
+        {
+          "description": "",
+          "name": "width",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        },
+        {
+          "description": "",
+          "name": "key",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "LoadTasksRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "rows",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "skipped",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "LoadTasksReply"
+    },
+    {
+      "description": "",
+      "fields": [],
+      "kind": "message",
+      "name": "TaskDaysRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "groups",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        }
+      ],
+      "kind": "message",
+      "name": "TaskDaysReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "table",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "day",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        },
+        {
+          "description": "",
+          "name": "every",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "RefreshTablesRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "rows",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "as_of",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "stale_partitions",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "RefreshTablesReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "each_day",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        }
+      ],
+      "kind": "message",
+      "name": "TaskTrailRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "rows",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        },
+        {
+          "description": "",
+          "name": "change",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "changed_by_kind",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "changed_by_plugin",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "day",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "status",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "valid_from",
+          "number": 7,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "valid_to",
+          "number": 8,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "TaskTrailReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "step",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "ticket",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "LoadStageDaysRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "ticket",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "state",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "generation",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "entities",
+          "number": 4,
+          "optional": false,
+          "repeated": true,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "rows",
+          "number": 5,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "code",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "LoadStageDaysReply"
+    },
+    {
+      "description": "",
+      "fields": [],
+      "kind": "message",
+      "name": "StageDaysRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "rows",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        }
+      ],
+      "kind": "message",
+      "name": "StageDaysReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
           "name": "id",
           "number": 1,
           "optional": false,
@@ -303,6 +1402,170 @@
       ],
       "kind": "message",
       "name": "Task"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.stage"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Stage"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.estimate"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        }
+      ],
+      "kind": "message",
+      "name": "Estimate"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.budget"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "decimal"
+        },
+        {
+          "description": "",
+          "name": "tags",
+          "number": 4,
+          "optional": false,
+          "repeated": true,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "secret",
+          "number": 5,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "notes",
+          "number": 6,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "Budget"
+    },
+    {
+      "description": "The tasks of a day by stage with tasks, kept in the analytic copy only: loaded from `task_day`.",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.stage_day"
+        },
+        {
+          "description": "",
+          "name": "day",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "stage",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "tasks",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 5,
+          "optional": true,
+          "repeated": false,
+          "type": "decimal"
+        }
+      ],
+      "kind": "message",
+      "name": "StageDay"
     },
     {
       "description": "",
@@ -366,6 +1629,323 @@
       ],
       "kind": "job",
       "name": "Slow"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "rows",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        }
+      ],
+      "kind": "job",
+      "name": "TaskBatch"
+    },
+    {
+      "description": "The titled tasks of the last 30 days, a row each, with the title of their stage.",
+      "fields": [
+        {
+          "description": "",
+          "name": "day",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "stage",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "RecentTask"
+    },
+    {
+      "description": "The recent tasks by week and stage, where a stage had more than one.",
+      "fields": [
+        {
+          "description": "",
+          "name": "week",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "stage",
+          "number": 2,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "tasks",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "TasksByWeek"
+    },
+    {
+      "description": "The estimates of more than 12.50 hours.",
+      "fields": [
+        {
+          "description": "",
+          "name": "title",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        }
+      ],
+      "kind": "message",
+      "name": "LongEstimate"
+    },
+    {
+      "description": "Tasks as an outside tracker sends them, a load a day.",
+      "fields": [
+        {
+          "description": "",
+          "name": "loaded_on",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "TaskLoadRow"
+    },
+    {
+      "description": "The tasks of a day by stage.",
+      "fields": [
+        {
+          "description": "",
+          "name": "day",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "stage",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "tasks",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        },
+        {
+          "description": "",
+          "name": "note",
+          "number": 5,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "TaskDay"
+    },
+    {
+      "description": "The hours of the loaded tasks, as numbers: computed from `task_load`.",
+      "fields": [
+        {
+          "description": "",
+          "name": "day",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        }
+      ],
+      "kind": "message",
+      "name": "TaskHours"
+    },
+    {
+      "description": "The tracker's issues by week: computed from its exported `issue_day`.",
+      "fields": [
+        {
+          "description": "",
+          "name": "week",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "issues",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "IssueWeek"
+    },
+    {
+      "description": "The budgets with their notes: computed from the entity, its masked column as it is.",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.budget"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "notes",
+          "number": 3,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "BudgetCopy"
+    },
+    {
+      "description": "The long estimates: computed from the analytic view.",
+      "fields": [
+        {
+          "description": "",
+          "name": "title",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "hours",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        }
+      ],
+      "kind": "message",
+      "name": "LongEstimateCopy"
+    },
+    {
+      "description": "The tasks not processed at the end of each day, by status: computed from the history of tasks.",
+      "fields": [
+        {
+          "description": "",
+          "name": "day",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "description": "",
+          "name": "status",
+          "number": 2,
+          "optional": true,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "tasks",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "int64"
+        }
+      ],
+      "kind": "message",
+      "name": "OpenByDay"
     }
   ],
   "permissions": [],
@@ -381,5 +1961,202 @@
   "schema": 1,
   "scopes": [],
   "title": "Jobs demo",
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "views": [
+    {
+      "columns": [
+        {
+          "name": "day",
+          "value": {
+            "column": {
+              "bucket": "day",
+              "field": "created_at",
+              "source": "task"
+            }
+          }
+        },
+        {
+          "name": "title",
+          "value": {
+            "column": {
+              "field": "title",
+              "source": "task"
+            }
+          }
+        },
+        {
+          "name": "stage",
+          "value": {
+            "column": {
+              "field": "title",
+              "source": "stage"
+            }
+          }
+        }
+      ],
+      "description": "The titled tasks of the last 30 days, a row each, with the title of their stage.",
+      "filter": {
+        "and": [
+          {
+            "compare": {
+              "left": {
+                "column": {
+                  "field": "created_at",
+                  "source": "task"
+                }
+              },
+              "op": "ge",
+              "right": {
+                "days_ago": 30
+              }
+            }
+          },
+          {
+            "compare": {
+              "left": {
+                "column": {
+                  "field": "title",
+                  "source": "task"
+                }
+              },
+              "op": "ne",
+              "values": [
+                ""
+              ]
+            }
+          }
+        ]
+      },
+      "message": "RecentTask",
+      "name": "recent_task",
+      "sources": [
+        {
+          "alias": "task",
+          "entity": "task"
+        },
+        {
+          "alias": "stage",
+          "entity": "stage",
+          "join": "left",
+          "left": {
+            "field": "status",
+            "source": "task"
+          },
+          "right": {
+            "field": "name",
+            "source": "stage"
+          }
+        }
+      ]
+    },
+    {
+      "columns": [
+        {
+          "name": "week",
+          "value": {
+            "column": {
+              "bucket": "week",
+              "field": "day",
+              "source": "recent_task"
+            }
+          }
+        },
+        {
+          "name": "stage",
+          "value": {
+            "column": {
+              "field": "stage",
+              "source": "recent_task"
+            }
+          }
+        },
+        {
+          "name": "tasks",
+          "value": {
+            "aggregate": {
+              "fn": "count"
+            }
+          }
+        }
+      ],
+      "description": "The recent tasks by week and stage, where a stage had more than one.",
+      "group_by": [
+        {
+          "bucket": "week",
+          "field": "day",
+          "source": "recent_task"
+        },
+        {
+          "field": "stage",
+          "source": "recent_task"
+        }
+      ],
+      "having": {
+        "compare": {
+          "left": {
+            "aggregate": {
+              "fn": "count"
+            }
+          },
+          "op": "gt",
+          "values": [
+            "1"
+          ]
+        }
+      },
+      "message": "TasksByWeek",
+      "name": "tasks_by_week",
+      "sources": [
+        {
+          "alias": "recent_task",
+          "entity": "recent_task"
+        }
+      ]
+    },
+    {
+      "columns": [
+        {
+          "name": "title",
+          "value": {
+            "column": {
+              "field": "title",
+              "source": "estimate"
+            }
+          }
+        },
+        {
+          "name": "hours",
+          "value": {
+            "column": {
+              "field": "hours",
+              "source": "estimate"
+            }
+          }
+        }
+      ],
+      "description": "The estimates of more than 12.50 hours.",
+      "filter": {
+        "compare": {
+          "left": {
+            "column": {
+              "field": "hours",
+              "source": "estimate"
+            }
+          },
+          "op": "gt",
+          "values": [
+            "12.50"
+          ]
+        }
+      },
+      "message": "LongEstimate",
+      "name": "long_estimate",
+      "sources": [
+        {
+          "alias": "estimate",
+          "entity": "estimate"
+        }
+      ]
+    }
+  ]
 }

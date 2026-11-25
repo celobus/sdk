@@ -19,6 +19,30 @@
 //!     .await?;                                                    // Vec<(String, Option<Label>, Decimal)>
 //! ```
 //!
+//! The same builder reads the analytic copy of the workspace's entities: `ctx.analytics().query::<E>()` takes the same
+//! joins, filters, groups and aggregates under the same access rules and masks, and answers what `ctx.query()` would
+//! answer for the data the copy holds. The copy follows the data, usually within a second, never with a promise: a
+//! caller does not see their own write in it at once, so a screen that shows what was just saved reads it with
+//! `ctx.query()`. Every analytic answer says when its data is from (`as_of`); it is never waited for and never
+//! refused for being old. A query runs at most 10 s (`analytic_time_limit`) within the copy's memory
+//! (`analytic_memory_limit`); four of the workspace run at once, two of one plugin (`analytic_busy` after a short
+//! wait); `unavailable` while the copy is being made, when its data is older than the workspace's limit (15 minutes
+//! unless the workspace sets another; never a fallback to `ctx.query()`) or when the workspace has none. It is refused
+//! inside a transaction; `search` is not
+//! available there. Text compares and orders by its bytes there. Decimals compute there with at most 20 digits before
+//! the point and 18 after: a query that compares, orders, groups or aggregates a column holding a longer value the
+//! caller may read (or binds one, or sums past them) is `query_invalid`, naming the column, never rounded. A group by
+//! a decimal, and its `min` or `max`, answer the shortest text of the number (`1.5` for `1.5` and `1.50`).
+//!
+//! ```ignore
+//! let sales = ctx.analytics().query::<OrderLine>()
+//!     .join::<Order>(OrderLine::order_id)
+//!     .group_by(Order::status)
+//!     .select((Order::status, sum(OrderLine::line_total)))
+//!     .all_as_of()
+//!     .await?;                                                    // sales.rows, sales.as_of
+//! ```
+//!
 //! A join on a ref between other entities, a column of an entity the query does not have, a comparison of columns of
 //! different types do not compile:
 //!
@@ -81,22 +105,25 @@ use serde_json::Value;
 use crate::ctx::Ctx;
 use crate::db::{Db, Filter, Find, Row};
 use crate::error::{Error, Result};
-use crate::message::Message;
-use crate::types::Id;
+use crate::types::{Id, Timestamp};
+
+mod view;
 
 pub use select::{Cons, Free, Has, Here, Item, Nil, One, Selection, There};
 pub use terms::{
-    ACol, Agg, Alias, Averaged, ColCmp, Column, ColumnCompare, Columns, Comparable, Cond, JoinRef,
-    Label, LabelOf, Nullable, Nullity, Opt, QOrder, Queryable, RefValue, Req, alias, avg,
-    canonical, count, count_distinct, default_alias, exists, exists_as, label, max, min,
-    not_exists, sum,
+    ACol, Agg, Alias, Averaged, Bucket, Bucketable, ColCmp, Column, ColumnCompare, Columns,
+    Comparable, Cond, Day, DaysAgo, JoinRef, Label, LabelOf, Nullable, Nullity, Operand, Opt,
+    ParseAs, Parsed, QOrder, QueryRow, Queryable, RefValue, Req, alias, avg, canonical, count,
+    count_distinct, days_ago, default_alias, exists, exists_as, label, max, min, not_exists, sum,
 };
+pub use view::{View, ViewValue};
 
 /// A query being built over the root `R` and the sources `S` (at the type level: which entities it has, which of them
 /// joined left). Joins, `filter`, `group_by`, `having`, `order_by` and `limit` build it; `select` names the columns of
 /// its rows; `all`, `first`, `count` and `page` read it.
 pub struct Query<R, S = Cons<R, Req, Nil>> {
     ctx: Ctx,
+    engine: pb::Engine,
     tree: pb::Query,
     /// the first mistake made building it (reported by the read)
     error: Option<String>,
@@ -104,11 +131,52 @@ pub struct Query<R, S = Cons<R, Req, Nil>> {
     _p: PhantomData<fn() -> (R, S)>,
 }
 
-/// A page of a query's rows and the token of the next page (none: the last).
+/// A page of a query's rows and the token of the next page (none: the last); from the analytic copy, when its data
+/// is from.
 #[derive(Debug)]
 pub struct QueryPage<T> {
     pub rows: Vec<T>,
     pub next: Option<String>,
+    pub as_of: Option<Timestamp>,
+    /// the generation of the analytic data it was read from (0 when the answer does not say, and from `ctx.query()`)
+    pub generation: u64,
+}
+
+/// An answer and, from the analytic copy (`ctx.analytics()`), when its data is from (`None` from `ctx.query()`) and
+/// the generation of the data it was read from (0 when the answer does not say).
+#[derive(Debug)]
+pub struct AsOf<T> {
+    pub rows: T,
+    pub as_of: Option<Timestamp>,
+    pub generation: u64,
+}
+
+/// The analytic copy of the workspace's entities (`ctx.analytics()`).
+#[derive(Clone)]
+pub struct Analytics {
+    ctx: Ctx,
+}
+
+impl Analytics {
+    /// `ctx.query::<E>()` on the analytic copy: the same builder, rules and answers, plus `as_of`.
+    #[track_caller]
+    pub fn query<E: Queryable>(&self) -> Query<E> {
+        let mut q = self.ctx.query_any::<E>();
+        q.engine = pb::Engine::Analytic;
+        q
+    }
+
+    /// A snapshot of the analytic copy to ask for (`.load::<E>()…request()`).
+    pub fn snapshot(&self) -> crate::lake::Snapshot {
+        crate::lake::Snapshot::new(self.ctx.clone())
+    }
+}
+
+/// When an answer's data is from (unix milliseconds; 0: not an analytic answer).
+fn as_of(ms: i64) -> Option<Timestamp> {
+    (ms != 0)
+        .then(|| chrono::DateTime::from_timestamp_millis(ms))
+        .flatten()
 }
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -116,9 +184,16 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 impl<R: Queryable, S> Query<R, S> {
-    fn retype<S2>(self) -> Query<R, S2> {
+    /// The engine the query is read from (`ctx.lake().query()`).
+    pub(crate) fn set_engine(&mut self, engine: pb::Engine) {
+        self.engine = engine;
+    }
+
+    /// The same query read as another root's rows (an entity's history: `ctx.lake().history()`).
+    pub(crate) fn rerooted<R2: Queryable>(self) -> Query<R2, S> {
         Query {
             ctx: self.ctx,
+            engine: self.engine,
             tree: self.tree,
             error: self.error,
             source: self.source,
@@ -126,27 +201,19 @@ impl<R: Queryable, S> Query<R, S> {
         }
     }
 
-    fn fail(&mut self, message: String) {
-        if self.error.is_none() {
-            self.error = Some(message);
-        }
+    /// The root source of the tree (its history flags).
+    pub(crate) fn root_mut(&mut self) -> Option<&mut pb::QuerySource> {
+        self.tree.sources.first_mut()
     }
 
-    /// The alias of the one source of `entity` (the default one first).
-    fn source_of(&self, entity: &str) -> Option<String> {
-        let all: Vec<&pb::QuerySource> = self
-            .tree
-            .sources
-            .iter()
-            .filter(|s| s.entity == entity)
-            .collect();
-        let default = entity.replace('.', "_");
-        if let Some(s) = all.iter().find(|s| s.alias == default) {
-            return Some(s.alias.clone());
-        }
-        match all.as_slice() {
-            [one] => Some(one.alias.clone()),
-            _ => None,
+    fn retype<S2>(self) -> Query<R, S2> {
+        Query {
+            ctx: self.ctx,
+            engine: self.engine,
+            tree: self.tree,
+            error: self.error,
+            source: self.source,
+            _p: PhantomData,
         }
     }
 
@@ -157,65 +224,11 @@ impl<R: Queryable, S> Query<R, S> {
         left: bool,
         on: (String, &'static str, String),
     ) {
-        let (owner, field, target) = on;
-        let (l, r) = if target == entity && self.source_of(&owner).is_some() {
-            // forward: the ref is a column of an entity of the query, the new one its target
-            let from = self.source_of(&owner).unwrap_or_default();
-            (terms::column(&from, field), terms::column(&alias, "id"))
-        } else if owner == entity {
-            match self.source_of(&target) {
-                Some(to) => (terms::column(&to, "id"), terms::column(&alias, field)),
-                None => {
-                    self.fail(format!(
-                        "join of {entity}: the query has no {target} (or more than one: join with join_on)"
-                    ));
-                    return;
-                }
-            }
-        } else {
-            self.fail(format!(
-                "join of {entity}: the query has no {owner} (or more than one: join with join_on)"
-            ));
-            return;
-        };
-        self.push_join(entity, alias, left, l, r);
-    }
-
-    fn push_join(
-        &mut self,
-        entity: String,
-        alias: String,
-        left: bool,
-        l: pb::QueryColumn,
-        r: pb::QueryColumn,
-    ) {
-        self.tree.sources.push(pb::QuerySource {
-            entity,
-            alias,
-            join: if left { Join::Left } else { Join::Inner } as i32,
-            left: Some(l),
-            right: Some(r),
-        });
+        add_join(&mut self.tree, &mut self.error, entity, alias, left, on)
     }
 
     fn add_join_on(&mut self, entity: String, alias: String, left: bool, on: ColCmp) {
-        if on.op != Op::Eq {
-            self.fail(format!(
-                "join_on of {entity}: the columns are compared with eq_col"
-            ));
-            return;
-        }
-        let (l, r) = if on.right.source == alias {
-            (on.left, on.right)
-        } else if on.left.source == alias {
-            (on.right, on.left)
-        } else {
-            self.fail(format!(
-                "join_on of {entity}: neither column is one of {alias}"
-            ));
-            return;
-        };
-        self.push_join(entity, alias, left, l, r);
+        add_join_on(&mut self.tree, &mut self.error, entity, alias, left, on)
     }
 
     /// Joins `T` along a ref between it and an entity of the query, either way: `join::<Order>(OrderLine::order_id)`
@@ -298,6 +311,7 @@ impl<R: Queryable, S> Query<R, S> {
         Selected {
             q: Reader {
                 ctx: self.ctx,
+                engine: self.engine,
                 tree: self.tree,
                 error: self.error,
                 source: self.source,
@@ -309,6 +323,7 @@ impl<R: Queryable, S> Query<R, S> {
     fn reader(&self) -> Reader {
         Reader {
             ctx: self.ctx.clone(),
+            engine: self.engine,
             tree: self.tree.clone(),
             error: self.error.clone(),
             source: self.source,
@@ -317,64 +332,193 @@ impl<R: Queryable, S> Query<R, S> {
 
     /// How many rows (or groups) the query has.
     pub async fn count(&self) -> Result<u64> {
+        Ok(self.reader().count().await?.rows)
+    }
+
+    /// `count`, with when its data is from.
+    pub async fn count_as_of(&self) -> Result<AsOf<u64>> {
         self.reader().count().await
     }
 }
 
-impl<R: Queryable + Message, S> Query<R, S> {
-    /// The root's rows (at most 1,000: `query_rows_limit` past them).
-    pub async fn all(&self) -> Result<Vec<Row<R>>> {
-        let (rows, _) = self.reader().rows(Mode::All, None).await?;
-        rows.iter().map(|v| Row::<R>::from_json(v, "")).collect()
+fn fail(error: &mut Option<String>, message: String) {
+    if error.is_none() {
+        *error = Some(message);
+    }
+}
+
+/// The alias of the one source of `entity` (the default one first).
+fn source_of(tree: &pb::Query, entity: &str) -> Option<String> {
+    let all: Vec<&pb::QuerySource> = tree.sources.iter().filter(|s| s.entity == entity).collect();
+    let default = entity.replace('.', "_");
+    if let Some(s) = all.iter().find(|s| s.alias == default) {
+        return Some(s.alias.clone());
+    }
+    match all.as_slice() {
+        [one] => Some(one.alias.clone()),
+        _ => None,
+    }
+}
+
+/// Joins `entity` along a ref between it and a source of the tree, either way.
+pub(crate) fn add_join(
+    tree: &mut pb::Query,
+    error: &mut Option<String>,
+    entity: String,
+    alias: String,
+    left: bool,
+    on: (String, &'static str, String),
+) {
+    let (owner, field, target) = on;
+    let (l, r) = if target == entity && source_of(tree, &owner).is_some() {
+        // forward: the ref is a column of an entity of the query, the new one its target
+        let from = source_of(tree, &owner).unwrap_or_default();
+        (terms::column(&from, field), terms::column(&alias, "id"))
+    } else if owner == entity {
+        match source_of(tree, &target) {
+            Some(to) => (terms::column(&to, "id"), terms::column(&alias, field)),
+            None => {
+                fail(
+                    error,
+                    format!(
+                        "join of {entity}: the query has no {target} (or more than one: join with join_on)"
+                    ),
+                );
+                return;
+            }
+        }
+    } else {
+        fail(
+            error,
+            format!(
+                "join of {entity}: the query has no {owner} (or more than one: join with join_on)"
+            ),
+        );
+        return;
+    };
+    push_join(tree, entity, alias, left, l, r);
+}
+
+fn push_join(
+    tree: &mut pb::Query,
+    entity: String,
+    alias: String,
+    left: bool,
+    l: pb::QueryColumn,
+    r: pb::QueryColumn,
+) {
+    tree.sources.push(pb::QuerySource {
+        entity,
+        alias,
+        join: if left { Join::Left } else { Join::Inner } as i32,
+        left: Some(l),
+        right: Some(r),
+        ..Default::default()
+    });
+}
+
+/// Joins `entity` on two equal columns, one of it and one of a source of the tree.
+pub(crate) fn add_join_on(
+    tree: &mut pb::Query,
+    error: &mut Option<String>,
+    entity: String,
+    alias: String,
+    left: bool,
+    on: ColCmp,
+) {
+    let Some(right) = on.right_column().cloned().filter(|_| on.op == Op::Eq) else {
+        fail(
+            error,
+            format!("join_on of {entity}: two columns are compared with eq_col"),
+        );
+        return;
+    };
+    let (l, r) = if right.source == alias {
+        (on.left, right)
+    } else if on.left.source == alias {
+        (right, on.left)
+    } else {
+        fail(
+            error,
+            format!("join_on of {entity}: neither column is one of {alias}"),
+        );
+        return;
+    };
+    push_join(tree, entity, alias, left, l, r);
+}
+
+impl<R: QueryRow, S> Query<R, S> {
+    /// The root's rows (at most 1,000: `query_rows_limit` past them): an entity's `Row<E>`, a view's own type.
+    pub async fn all(&self) -> Result<Vec<R::Row>> {
+        Ok(self.all_as_of().await?.rows)
+    }
+
+    /// `all`, with when its data is from.
+    pub async fn all_as_of(&self) -> Result<AsOf<Vec<R::Row>>> {
+        let r = self.reader().rows(Mode::All, None).await?;
+        Ok(AsOf {
+            rows: r.rows.iter().map(R::row).collect::<Result<_>>()?,
+            as_of: r.as_of,
+            generation: r.generation,
+        })
     }
 
     /// The root's first row.
-    pub async fn first(&self) -> Result<Option<Row<R>>> {
-        let (rows, _) = self.reader().rows(Mode::First, None).await?;
-        rows.first().map(|v| Row::<R>::from_json(v, "")).transpose()
+    pub async fn first(&self) -> Result<Option<R::Row>> {
+        let r = self.reader().rows(Mode::First, None).await?;
+        r.rows.first().map(R::row).transpose()
     }
 
     /// A page of the root's rows (`limit`, at most 100) after the token of the previous page.
-    pub async fn page(&self, token: Option<&str>) -> Result<QueryPage<Row<R>>> {
-        let (rows, next) = self.reader().rows(Mode::Page, token).await?;
+    pub async fn page(&self, token: Option<&str>) -> Result<QueryPage<R::Row>> {
+        let r = self.reader().rows(Mode::Page, token).await?;
         Ok(QueryPage {
-            rows: rows
-                .iter()
-                .map(|v| Row::<R>::from_json(v, ""))
-                .collect::<Result<_>>()?,
-            next,
+            rows: r.rows.iter().map(R::row).collect::<Result<_>>()?,
+            next: r.next,
+            as_of: r.as_of,
+            generation: r.generation,
         })
     }
 }
 
 /// The repository's reads of a dependency's exported entity, as milestone 3 had them (`ctx.query::<Dep>().get(id)`).
+/// On `ctx.analytics().query::<Dep>()` they are refused (500 `internal`) before anything is sent: an analytic query is
+/// never answered from the workspace's data.
 impl<E: crate::sql::Exported> Query<E, Cons<E, Req, Nil>> {
+    /// The context the repository's reads go through (one that refuses them, on an analytic query).
+    fn repo(&self) -> Ctx {
+        match self.engine {
+            pb::Engine::Store => self.ctx.clone(),
+            _ => self.ctx.analytic(),
+        }
+    }
+
     /// A row by id; 404 `not_found` when there is none, or the caller may not read it.
     pub async fn get(&self, id: &Id<E>) -> Result<Row<E>> {
-        Db::<E>::new(self.ctx.clone()).get(id).await
+        Db::<E>::new(self.repo()).get(id).await
     }
 
     /// A row by id, a soft-deleted one too.
     pub async fn get_with_deleted(&self, id: &Id<E>) -> Result<Row<E>> {
-        Db::<E>::new(self.ctx.clone()).get_with_deleted(id).await
+        Db::<E>::new(self.repo()).get_with_deleted(id).await
     }
 
     /// The rows matching `filter`, as `ctx.db().find`: order, limit and page it, then `all()`, `first()` or `page()`.
     pub fn find(&self, filter: Filter<E>) -> Find<E> {
-        Db::<E>::new(self.ctx.clone()).find(filter)
+        Db::<E>::new(self.repo()).find(filter)
     }
 
     pub async fn count_where(&self, filter: Filter<E>) -> Result<u64> {
-        Db::<E>::new(self.ctx.clone()).count_where(filter).await
+        Db::<E>::new(self.repo()).count_where(filter).await
     }
 
     pub async fn exists(&self, filter: Filter<E>) -> Result<bool> {
-        Db::<E>::new(self.ctx.clone()).exists(filter).await
+        Db::<E>::new(self.repo()).exists(filter).await
     }
 
     /// Groups of the rows matching `filter`, as `ctx.db().aggregate`, under the provider's rules.
     pub fn aggregate(&self, filter: Filter<E>) -> crate::db::Aggregate<E> {
-        Db::<E>::new(self.ctx.clone()).aggregate(filter)
+        Db::<E>::new(self.repo()).aggregate(filter)
     }
 }
 
@@ -410,26 +554,42 @@ impl<T> Selected<T> {
 
     /// Every row (at most 1,000, or `limit`: `query_rows_limit` past them).
     pub async fn all(&self) -> Result<Vec<T>> {
-        let (rows, _) = self.q.rows(Mode::All, None).await?;
-        self.decode(rows)
+        Ok(self.all_as_of().await?.rows)
+    }
+
+    /// `all`, with when its data is from.
+    pub async fn all_as_of(&self) -> Result<AsOf<Vec<T>>> {
+        let r = self.q.rows(Mode::All, None).await?;
+        Ok(AsOf {
+            rows: self.decode(r.rows)?,
+            as_of: r.as_of,
+            generation: r.generation,
+        })
     }
 
     pub async fn first(&self) -> Result<Option<T>> {
-        let (rows, _) = self.q.rows(Mode::First, None).await?;
-        Ok(self.decode(rows)?.into_iter().next())
+        let r = self.q.rows(Mode::First, None).await?;
+        Ok(self.decode(r.rows)?.into_iter().next())
     }
 
     /// A page (`limit`, at most 100) after the token of the previous page: keyset over the order and the keys.
     pub async fn page(&self, token: Option<&str>) -> Result<QueryPage<T>> {
-        let (rows, next) = self.q.rows(Mode::Page, token).await?;
+        let r = self.q.rows(Mode::Page, token).await?;
         Ok(QueryPage {
-            rows: self.decode(rows)?,
-            next,
+            rows: self.decode(r.rows)?,
+            next: r.next,
+            as_of: r.as_of,
+            generation: r.generation,
         })
     }
 
     /// How many rows (or groups).
     pub async fn count(&self) -> Result<u64> {
+        Ok(self.q.count().await?.rows)
+    }
+
+    /// `count`, with when its data is from.
+    pub async fn count_as_of(&self) -> Result<AsOf<u64>> {
         self.q.count().await
     }
 
@@ -442,6 +602,7 @@ impl<T> Selected<T> {
 /// What a read sends.
 struct Reader {
     ctx: Ctx,
+    engine: pb::Engine,
     tree: pb::Query,
     error: Option<String>,
     source: &'static Location<'static>,
@@ -465,11 +626,12 @@ impl Reader {
                 page_token: token.unwrap_or_default().into(),
                 as_system: self.ctx.system(),
                 source: format!("{}:{}", self.source.file(), self.source.line()),
+                engine: self.engine as i32,
             }))
             .await
     }
 
-    async fn rows(&self, mode: Mode, token: Option<&str>) -> Result<(Vec<Value>, Option<String>)> {
+    async fn rows(&self, mode: Mode, token: Option<&str>) -> Result<Rows> {
         let Some(syscall_result::Result::DbRows(r)) = self.send(mode, token).await? else {
             return Err(Error::internal(
                 "the platform answered a query with something else",
@@ -485,12 +647,21 @@ impl Reader {
             })
             .collect::<Result<Vec<Value>>>()?;
         let next = (!r.next_page_token.is_empty()).then_some(r.next_page_token);
-        Ok((rows, next))
+        Ok(Rows {
+            rows,
+            next,
+            as_of: as_of(r.as_of),
+            generation: r.generation,
+        })
     }
 
-    async fn count(&self) -> Result<u64> {
+    async fn count(&self) -> Result<AsOf<u64>> {
         match self.send(Mode::Count, None).await? {
-            Some(syscall_result::Result::DbCount(c)) => Ok(c.count),
+            Some(syscall_result::Result::DbCount(c)) => Ok(AsOf {
+                rows: c.count,
+                as_of: as_of(c.as_of),
+                generation: c.generation,
+            }),
             _ => Err(Error::internal(
                 "the platform answered a count with something else",
             )),
@@ -498,7 +669,21 @@ impl Reader {
     }
 }
 
+/// The rows of an answer, the next page's token, when the data is from.
+struct Rows {
+    rows: Vec<Value>,
+    next: Option<String>,
+    as_of: Option<Timestamp>,
+    generation: u64,
+}
+
 impl Ctx {
+    /// The analytic copy of the workspace's entities: `ctx.analytics().query::<E>()` is `ctx.query::<E>()` read there
+    /// (see the module's documentation).
+    pub fn analytics(&self) -> Analytics {
+        Analytics { ctx: self.clone() }
+    }
+
     /// A typed read across entities, from the root `E`: the plugin's own entity, a dependency's exported one
     /// (`deps::crm::Customer`, which also has the repository's reads: `get`, `find`, `count_where`, `exists`,
     /// `aggregate`), or the directory's (`platform::User`). Inside a transaction (`tx.query::<E>()`) it sees the
@@ -507,8 +692,21 @@ impl Ctx {
     /// caller reads without the system context).
     #[track_caller]
     pub fn query<E: Queryable>(&self) -> Query<E> {
+        const {
+            assert!(
+                !E::OLAP,
+                "an entity stored in OLAP is read with ctx.analytics().query(), never ctx.query()"
+            )
+        };
+        self.query_any::<E>()
+    }
+
+    /// [`Ctx::query`] of any source, an entity stored in OLAP too (`ctx.analytics()`, which reads it).
+    #[track_caller]
+    pub(crate) fn query_any<E: Queryable>(&self) -> Query<E> {
         Query {
             ctx: self.clone(),
+            engine: pb::Engine::Store,
             tree: pb::Query {
                 sources: vec![pb::QuerySource {
                     entity: canonical::<E>(),

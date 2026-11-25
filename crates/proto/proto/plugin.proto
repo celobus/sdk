@@ -98,6 +98,10 @@ message Syscall {
     SqlRun sql = 39;
     JobEnqueue job_enqueue = 40;
     JobCancel job_cancel = 41;
+    LakeWrite lake_write = 42;
+    LakeRefresh lake_refresh = 43;
+    AnalyticsLoad analytics_load = 47;
+    AnalyticsLoadStatus analytics_load_status = 48;
   }
 }
 
@@ -335,8 +339,17 @@ message DbRows {
   // nav names (left out when there is none or the caller may not read it) or the list of rows of an inverse nav
   // (in id order; `[]` when none)
   repeated bytes included = 3;
+  // an ANALYTIC query's answer: when its data is from (unix milliseconds), and the generation of the data it was read
+  // from (0 when the answer does not say; answers of one generation read the same data at the same `as_of`)
+  int64 as_of = 4;
+  uint64 generation = 5;
 }
-message DbCountResult { uint64 count = 1; }
+message DbCountResult {
+  uint64 count = 1;
+  // as in DbRows
+  int64 as_of = 2;
+  uint64 generation = 3;
+}
 message DbGroups { repeated DbGroup groups = 1; }
 // A group's key (the group_by field's value as protobuf JSON: `null` for rows without one; `null` without groups)
 // and its measure (a count as an int64, a sum as the field's type: an int64 for int32 and int64 fields), each the
@@ -396,6 +409,43 @@ message SqlRun {
 // `query_size_limit` (422: the encoded tree is over 64 KiB, has more than 500 nodes or nests deeper than 16),
 // `query_join_limit` (422: more than 8 entities, joined and in `exists`), `query_rows_limit` (422: ALL past 1,000
 // rows or groups), `query_response_limit` (422: rows over 4 MiB).
+//
+// The engine: STORE reads the workspace's data itself. ANALYTIC reads the analytic copy of every entity of the
+// workspace: the same tree, the same rules and masks, the same answer for the same data, from a copy that follows
+// the data usually within a second (never promised: a caller is not shown its own write at once). Its answer carries
+// `as_of`, the time the copy's data is from; it is never waited for, and a copy that follows the data answers however
+// far behind it is. Its limits: 10 s
+// per query (`analytic_time_limit`, 422), the copy's memory (`analytic_memory_limit`, 422), four queries of the
+// workspace at once and two of one plugin (`analytic_busy`, 503, after a short wait); `unavailable` (retry later)
+// while the copy is not ready, which may last a while, when its data has not been brought up to date for longer than
+// the workspace's limit (15 minutes unless the workspace sets another), or when the workspace has no analytic copy.
+// An ANALYTIC read never falls back to STORE: a caller that needs an answer then reads with STORE itself. It is refused
+// inside a declared transaction (`invalid`); a `search` condition is `query_invalid` there. Text compares and orders
+// by its bytes there (UTF-8, code point order). Decimals compare, order, group
+// and aggregate by their number there, at most 20 digits before the point and 18 after: a value with more is
+// answered as its text, but a query that compares, orders, groups or aggregates a column one of whose rows the
+// caller may read holds such a value, or binds such a value, or whose sum outgrows them, is `query_invalid` there,
+// naming the column (never a rounded answer). A group by a decimal answers, of its rows' texts of the one number, the
+// shortest (`1.5` for `1.5` and `1.50`); MIN and MAX of a decimal answer, of the rows holding it, the shortest text.
+//
+// LAKE reads the plugin's lake tables: every source of the tree is a lake table,
+// the plugin's own (`stock`) or one another plugin exports and this plugin declares it reads (`retail.stock`), in an
+// `exists` too; never an entity, a view or the directory, and no `label`. There are no row rules: a caller who holds
+// one of a table's read roles (`<plugin>.<role>`, declared with the table) reads every row of it, anyone else is
+// `permission_denied`. A system context (`as_system`) reads only the plugin's own tables, and only those declared to
+// be read so (`capability_missing` otherwise); another plugin's table never in a system context. The answer is that
+// of an ANALYTIC query without `as_of`: the same limits of rows, size and time (10 s, `lake_time_limit`), the memory
+// of the lake's engine (`lake_memory_limit`), four lake queries of the workspace at once (`lake_busy`, after a short
+// wait); `unavailable` when the workspace has no lake. Never inside a declared transaction (`invalid`); `search` is
+// `query_invalid`. A page orders by the table's declared key, then by its other columns (rows equal in every column
+// may be one row across a page's edge). Decimals are numbers
+// with at most 20 digits before the point and 18 after, answered with no trailing zeros (`1.5`).
+enum Engine {
+  STORE = 0;
+  ANALYTIC = 1;
+  LAKE = 2;
+}
+
 message QueryRead {
   uint64 request_id = 1;
   uint64 tx = 2;
@@ -411,11 +461,186 @@ message QueryRead {
   string as_system = 6;
   // where the query was composed (`src/jobs/remind.rs:52`): the platform logs it with a slow or refused query
   string source = 7;
+  Engine engine = 8;
+}
+
+// A write of the calling plugin's own lake table (`ctx.lake().table::<T>()`),
+// sent in chunks: the first chunk has `write` 0 and opens the write, whose id the answer gives (LakeWritten.write);
+// each later chunk names it; the chunk with `last` commits it, in one commit of the lake, or not at all. A chunk
+// carries at most 10,000 rows and 4 MiB of rows (`bulk_limit`); a write at most 1,000,000 rows (`lake_rows_limit`,
+// 422: nothing is written) in at most 1,000 partitions (`lake_partitions_limit`, 422: write fewer partitions at once;
+// nothing is written); a text, bytes or JSON value at most 1 MiB (`invalid`). `table`, `mode`, `filter` and
+// `key` are read from the first chunk. Rows are the table's
+// row message in the protobuf JSON mapping, as DbCreate's; a row whose field the row message does not have, of the
+// wrong type, or without a partition or key column, refuses the write (`invalid`, nothing is written).
+//  * REPLACE swaps every row `filter` selects for the rows written: `filter` is required and names partition columns
+//    only; a row it does not select refuses the write (`invalid`). A table without partition columns is replaced
+//    whole with an empty filter.
+//  * APPEND adds the rows, once per `key`: a write whose key the table has had within 7 days adds nothing
+//    (LakeWritten.skipped). The key is required (`invalid` without one): a write may answer an error although it was
+//    committed, and only its key makes running it again safe.
+//  * MERGE writes each row over the row of the table with the same declared key, or adds it; two rows of the write
+//    with one key refuse it (`invalid`). Only on a table with a declared key.
+// The writes of one table run one at a time across the workspace; one that waits more than 60 s for the others is
+// `lake_busy` (503), as is a plugin's write past 120 commits a minute, or a third write it stages while two are
+// open. A write left without a chunk with rows for 60 s, open for 10 minutes, or whose session ends, is dropped; a
+// commit that runs past 50 s is stopped (`lake_time_limit`, nothing written). `unavailable` when the workspace has
+// no lake. A plugin writes only its own tables; never inside a declared transaction.
+message LakeWrite {
+  uint64 request_id = 1;
+  string table = 2;          // the table's name in the plugin's descriptor (`stock_file`)
+  enum Mode { APPEND = 0; REPLACE = 1; MERGE = 2; }
+  Mode mode = 3;
+  DbFilter filter = 4;       // REPLACE: the partitions replaced
+  string key = 5;            // APPEND: the write key
+  repeated bytes rows = 6;   // this chunk's rows
+  uint64 write = 7;          // 0: a new write; else the write this chunk continues
+  bool last = 8;             // the last chunk: the write commits
+}
+// The answer to each chunk: the write's id, the rows it holds so far; with the last chunk, whether it was
+// committed, or skipped (an APPEND whose key the table has).
+message LakeWritten {
+  uint64 write = 1;
+  uint64 rows = 2;
+  bool committed = 3;
+  bool skipped = 4;
+}
+
+// Runs the model of one of the calling plugin's lake tables (`ctx.lake().refresh::<T>()`)
+// (the descriptor's `lake_models`): the platform computes the model's rows and writes them over the whole table, or
+// over the partitions `filter` names, in one commit of the lake; the rows never pass through the plugin. `filter` names partition
+// columns only, as a REPLACE's (`invalid` otherwise); unset, the whole table is replaced. A filter that is set but names no
+// partition (an empty one, an empty `and`: what the SDKs send for a refresh of "every partition", `Filter::all()`) is
+// `invalid`, as a REPLACE's: it would replace the whole table under the name of some partitions; leave it unset instead.
+// A table without partition columns takes no filter (`invalid`). A refresh is a write of the
+// table: it waits for the table's other writes, as they wait for it (`lake_busy` after 60 s), counts towards the
+// plugin's 120 commits a minute, and its commit is stopped past 50 s (`lake_time_limit`). A plugin runs one refresh at
+// a time beside its two staged writes (`lake_busy` for a second one while the first runs).
+//  * Its rows: at most 1,000,000 (`lake_model_rows_limit`, 422: refresh fewer partitions at once), in at most 1,000
+//    partitions (`lake_partitions_limit`, 422); a text a model
+//    parses that does not read as its type fails the refresh, naming the column (`lake_model_parse`, 422); nothing
+//    is written either way.
+//  * After the model's declaration changed (a new version of the plugin computes the table otherwise), a whole
+//    refresh makes every row the new declaration's; a refresh of partitions replaces those it names, and its answer
+//    says how many partitions still hold an earlier declaration's rows (`stale_partitions`): the table mixes the two
+//    declarations' rows until that is 0, and readers see it so meanwhile.
+//  * A model over the plugin's entities or analytic views reads them as the plugin's system context, past their
+//    rules and (when it says so) their masks, recorded in the audit as any system read: `capability_missing` when
+//    the plugin's bypass of `read` does not cover every entity under it; `unavailable` while the workspace's analytic
+//    copy is not ready on the replica that runs it, its data is older than the workspace's limit, or it is older than
+//    the copy the table's rows of the same partitions (or of the whole table) were last computed from and cannot catch
+//    up (retry): a copy behind first waits for it to catch up with the database, up to 10 s. Its answer carries the
+//    copy's `as_of`.
+//  * A model over lake tables reads them whatever their read roles: the plugin's own read by its system context
+//    (`system_read`), and another plugin's that this
+//    plugin declares it reads and whose owner lets models copy it (the table's `export_models` in the owner's version
+//    installed now; `export` alone does not: `permission_denied`). Each table it reads is audited as a system read.
+//  * Every model is checked again as `celobus plugin check` checks it, another plugin's table by its fields: a model
+//    that does not hold (an undeclared source, a column of another type) is `invalid`, naming the check's codes.
+//  * A row with no value of a field that is not optional (a left join, an optional column, an aggregate over no
+//    rows) fails it naming the field (`invalid`), as does a decimal of the copy past the lake's digits.
+// `invalid` when the table has no model; `unavailable` when the workspace has no lake. Never inside a declared
+// transaction.
+message LakeRefresh {
+  uint64 request_id = 1;
+  string table = 2;          // the table's name in the plugin's descriptor (`stock`)
+  DbFilter filter = 3;       // the partitions replaced; unset: the whole table
+}
+// The rows written, and the time (unix milliseconds) of the analytic copy's data a model over entities or views
+// read (0 for a model over lake tables). `stale_partitions`: after a refresh of partitions, how many partitions the
+// table still holds that an earlier declaration of the model computed (0: every row is this declaration's).
+message LakeRefreshed {
+  uint64 rows = 1;
+  int64 as_of = 2;
+  uint64 stale_partitions = 3;
+}
+
+// Asks for a new snapshot of the workspace's analytic copy that loads some of the calling plugin's entities stored in
+// OLAP from the lake: `ctx.analytics().snapshot().load::<E>().request()`.
+// An entity stored in OLAP (`storage` `olap` in the descriptor) is read only by the analytic engine; its rows are
+// what its load (the descriptor's `loads`: a query over lake tables and histories) gave when a snapshot last ran it.
+// Nothing else writes it, and between two snapshots that load it it does not change, whatever happens in the lake.
+// The call returns at once with a ticket; the snapshot is made later, in the background, and every replica of the
+// workspace adopts it (`AnalyticsLoadStatus` says when).
+//  * `entities` names the plugin's own entities stored in OLAP (at least one, each with its load; `invalid`
+//    otherwise). A request that arrives while the plugin has one waiting is merged into it: the answer is that ticket,
+//    its entities widened. A request that arrives while a snapshot is being made waits for the next one. Requests of
+//    several plugins share one snapshot; the entities other plugins loaded, and this plugin's entities it does not
+//    name, are carried into it as they are.
+//  * Snapshots with loads are at least 10 minutes apart (requests in between wait and share the next); a workspace
+//    makes at most 48 a day, and one plugin's loads are in at most 12 of them, failed ones included (the
+//    installation may set other bounds): `analytic_load_limit` (429) past either. A plugin asks at most 30 times a
+//    minute (`analytic_load_limit`); the same request again within a second is answered with the same ticket.
+//  * Each load runs as the plugin's system context and is audited (who asked, which lake tables it read): the
+//    plugin's own lake tables and histories it reads are declared to be read so (`system_read`,
+//    `history_read_as_system`), another plugin's lake table only when its owner lets other plugins copy it
+//    (`export_models` of the owner's version installed then). It replaces the entity's rows whole.
+//  * Bounds of one load: 1,000,000 rows and 1 GiB of values (`analytic_load_rows_limit`: narrow the load's filter),
+//    50 s of reading the lake (`analytic_load_time_limit`); two rows with the same key (`olap_key`) are
+//    `analytic_load_duplicate`; a row without a value of a field that is not optional, or a value that is not of its
+//    field's type (a text its load parses), is `analytic_load_invalid`. A load that fails leaves its entity as it
+//    was; the other loads of the snapshot stand.
+// `unavailable` when the workspace has no analytic copy, no lake or no object storage for snapshots. Never inside a
+// declared transaction.
+message AnalyticsLoad {
+  uint64 request_id = 1;
+  repeated string entities = 2;   // the plugin's entities stored in OLAP (`store_metric`)
+}
+
+// A ticket's state (`ticket.wait()`, `ticket.status()`): one the calling plugin was given (`not_found` otherwise).
+// `wait_ms` (at most 30,000) waits that long for the ticket to end (DONE or FAILED) before it answers; 0 answers now.
+// The SDKs' wait in a request ends before its deadline (`analytic_load_pending`, 503, with the ticket's `not_before`);
+// in a job's run it waits within the run's timeout.
+// A plugin has at most 16 such waits at once (`analytic_load_busy`, 503, past it: retry).
+message AnalyticsLoadStatus {
+  uint64 request_id = 1;
+  string ticket = 2;
+  uint32 wait_ms = 3;
+}
+
+// A request for loads, as it stands. PENDING: waiting for the next snapshot; BUILDING: a snapshot that runs its loads
+// is being made or adopted; DONE: the snapshot that loaded every entity it names is the workspace's, and the analytic
+// reads of the plugin that asks answer from it (until they do, the ticket answers BUILDING: wait, then read); FAILED: a load failed (`loads` says which and why; the others of the snapshot
+// stand), or the snapshot could not be made (`code` `analytic_load_failed`).
+message AnalyticsTicket {
+  string ticket = 1;
+  enum State { PENDING = 0; BUILDING = 1; DONE = 2; FAILED = 3; }
+  State state = 2;
+  uint64 generation = 3;                  // the snapshot that ran its loads (0 before)
+  repeated AnalyticsLoadOutcome loads = 4; // one per entity, once the snapshot ran its loads
+  string code = 5;                        // FAILED: the first failure's code
+  string error = 6;                       // FAILED: why
+  int64 requested_at = 7;                 // unix milliseconds
+  int64 finished_at = 8;                  // unix milliseconds; 0 before it ended
+  repeated string entities = 9;           // the entities it loads
+  int64 not_before = 10;                  // PENDING: unix milliseconds, the earliest its snapshot may begin (builds
+                                          // with loads are spaced: the next slot, or now); 0 otherwise
+}
+
+// One entity's load in a snapshot: its rows and when they were read from the lake, or why it failed (`code`).
+message AnalyticsLoadOutcome {
+  string entity = 1;
+  uint64 rows = 2;
+  int64 loaded_at = 3;                    // unix milliseconds
+  string code = 4;                        // empty: loaded
+  string error = 5;
 }
 
 // The query tree. Names are canonical: an entity is `order` (the plugin's own), `crm.customer` (a dependency's) or
 // `platform.user` (the directory: `platform.user`, `platform.group`, `platform.group_member`,
 // `platform.role_assignment`); a column is a field's snake_case name, `id` or a system column (`created_at`, ...).
+//
+// A source may also be one of the plugin's own analytic views (`sales`, declared in its descriptor's `views`; a
+// plugin's SQL reads every plugin's views as `<plugin>_<view>`, under the same rules): a
+// named query over entities whose rows are its columns. Every row under a view passes its own entity's rules and
+// masks for the caller, as if the caller ran the view's query; there is no separate right to read a view. A view's
+// columns are filtered, grouped, ordered, aggregated and joined as an entity's; it has no `id` (a page of a view is
+// keyed by its sources' keys, or by its grouped columns). A system context reads a view only when its `authz:bypass`
+// covers `read` of every entity of the plugin the view reads (`capability_missing` otherwise). A view counts as one
+// entity towards `query_join_limit`. A plugin declares at most 32 views; a view names at most 8 sources (joined and in
+// `exists`), has at most 500 nodes in 64 KiB of JSON, nests its conditions at most 16 deep and reads through at most 3
+// other views; in a view's JSON a value compared with a decimal is a string (`"12.50"`) or a whole number, never a
+// number with a fraction. A view past these is refused when the plugin is checked and when it is installed.
 message Query {
   repeated QuerySource sources = 1;   // the first is the root (ROOT), each other joined to one before it
   QueryExpr filter = 2;               // unset: every row
@@ -426,10 +651,12 @@ message Query {
   uint32 limit = 7;                   // 0: none
 }
 
-// An entity of the query under its alias (`[a-z][a-z0-9_]{0,63}`, unique in the query; the SDKs default it to the
-// canonical name with `_` for `.`: `crm_customer`). A join's `left` is a column of a source before it, `right` one of
-// this source, both of one key: a ref and the `id` it names (either direction), or two refs to the same entity. A
-// left-joined source's columns are null where no row (or no row the caller may read) matches.
+// An entity (or one of the plugin's analytic views) of the query under its alias (`[a-z][a-z0-9_]{0,63}`, unique in
+// the query; the SDKs default it to the canonical name with `_` for `.`: `crm_customer`). A join's `left` is a column
+// of a source before it, `right` one of this source, equal: either of one key (a ref and the `id` it names, either
+// direction, or two refs to the same entity), or two plain columns of one type (neither a key nor a ref: `string`
+// with `string`, a bucket with a `date`; never a list, a message, json or an encrypted field). A left-joined source's
+// columns are null where no row (or no row the caller may read) matches.
 message QuerySource {
   string entity = 1;
   string alias = 2;
@@ -437,11 +664,44 @@ message QuerySource {
   Join join = 3;
   QueryColumn left = 4;
   QueryColumn right = 5;
+  // The entity's history instead of its rows (the LAKE engine only; `query_invalid` elsewhere): the entity must keep
+  // one (`history` in the descriptor), the plugin's own or another plugin's it names in `dependencies[].lake` (the owner
+  // exports it). Its rows are the changes of the kept columns, one per change: the entity's `id`, the kept columns as
+  // they were after the change, `valid_from` (when it was made), `valid_to` (the row's next change; unset for the
+  // current version, equal to `valid_from` on a delete), `change` (`baseline` for the rows as they were when the
+  // history began, `insert`, `update`, `delete`, `restore`), `changed_by` (the person or service account the call
+  // was made for, a system context's and a job's too; unset without one and for the platform's own), `changed_by_kind`
+  // (`person`, `service`, `job`, `system`, `platform`, `anonymous`) and `changed_by_plugin` (the plugin whose call made
+  // it; unset for the platform's own). It is read by the holders of its `read` roles, every row of it, as a lake
+  // table is.
+  bool history = 8;
+  // With `history`: one row per day each version was in force at the day's last moment, in the workspace's time
+  // zone, with its `day` (a `date`): days from the day of `valid_from` up to the day before that of `valid_to`, and up
+  // to today for the current version. A version that began and ended within a day, and a delete, have none.
+  bool each_day = 9;
 }
 
+// A column of a source, or the period it falls in (`bucket`): a `timestamp` column's moment, or a `date` column's
+// day, as the first day of its day, week, month, quarter or year in the workspace's time zone (a week starts on the
+// workspace's first day of the week). A bucketed column is a `date` wherever a column stands: compared, grouped,
+// ordered, selected, aggregated, joined; both engines compute it alike. A bucket of any other type is
+// `query_invalid`.
+//
+// `parse` reads a `string` column of a lake table as another type (in the LAKE engine only, never with a bucket; a
+// view cannot): its text, without the spaces around it, as a decimal within 20 digits before the point and 18 after
+// (`12.50`, never rounded), an integer of digits (`42`, not `1.7` nor `1e3`), a double, a bool (`true`, `false`, any
+// case), a date (`YYYY-MM-DD`), a time (RFC 3339, with its offset) or a uuid; a text that does not read so fails the
+// query (`invalid`; a model's refresh `lake_model_parse`, naming the column). Elsewhere `parse` is `query_invalid`.
 message QueryColumn {
   string source = 1;   // a source's alias
   string field = 2;
+  enum Bucket { NONE = 0; DAY = 1; WEEK = 2; MONTH = 3; QUARTER = 4; YEAR = 5; }
+  Bucket bucket = 3;
+  enum Parse {
+    PARSE_NONE = 0; PARSE_DECIMAL = 1; PARSE_INT32 = 2; PARSE_INT64 = 3; PARSE_DOUBLE = 4; PARSE_BOOL = 5;
+    PARSE_DATE = 6; PARSE_TIMESTAMP = 7; PARSE_UUID = 8;
+  }
+  Parse parse = 4;
 }
 
 message QueryExpr {
@@ -464,15 +724,23 @@ message QueryCompare {
   QueryTerm right = 4;
 }
 
+// A term: a column, an aggregate, or a day relative to the day the query runs (`days_ago`: today in the workspace's
+// time zone less this many days, a `date`, worked out when the query runs; the right side of a comparison with a
+// `date` column or a bucket, or with a `timestamp` column, which it then compares with the first moment of that day).
+// `days_ago` is within ±36,500 days (a hundred years back or ahead; a negative number is a day ahead): past it a query
+// is `invalid`.
 message QueryTerm {
   oneof kind {
     QueryColumn column = 1;
     QueryAggregate aggregate = 2;
+    int32 days_ago = 3;
   }
 }
 
 // COUNT counts rows (`column` unset); COUNT_DISTINCT the distinct values of a column; SUM (0 for none) and AVG of a
-// number; MIN and MAX of a comparable column (null for none).
+// number; MIN and MAX of a comparable column (null for none). AVG of an integer or decimal column is a decimal with
+// at least 16 significant digits (`1.5000000000000000` for 1 and 2), the same text on both engines; the ANALYTIC
+// engine compares and orders such averages to 18 digits after the point.
 message QueryAggregate {
   enum Fn { COUNT = 0; COUNT_DISTINCT = 1; SUM = 2; AVG = 3; MIN = 4; MAX = 5; }
   Fn fn = 1;
@@ -930,6 +1198,9 @@ message SyscallResult {
     DbGroups db_groups = 20;                // DbAggregate
     JobEnqueued job_enqueued = 22;          // JobEnqueue
     JobCancelled job_cancelled = 23;        // JobCancel
+    LakeWritten lake_written = 24;          // LakeWrite
+    LakeRefreshed lake_refreshed = 25;      // LakeRefresh
+    AnalyticsTicket analytics_ticket = 29;  // AnalyticsLoad, AnalyticsLoadStatus
   }
   DbErrorDetails error_details = 17;        // with some `error` codes of the Db* calls
 }

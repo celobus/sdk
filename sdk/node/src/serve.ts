@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as loader from "@grpc/proto-loader";
 import { decodeMessage, encodeMessage, OutputError, type FieldErrors } from "./codec.js";
-import { Caller, Ctx, SyscallError, type SyscallResult, type SyscallSession, type WirePrincipal } from "./ctx.js";
+import { Caller, Ctx, JobCtx, SyscallError, type SyscallResult, type SyscallSession, type WirePrincipal } from "./ctx.js";
 import type { ResolvedEndpoint, Resolved } from "./descriptor.js";
 import { DomainError, InvalidError, RpcError, toRpcError, unavailable } from "./errors.js";
 import { cutUtf8, runLogger, type Logger, type LogLevel } from "./log.js";
@@ -362,7 +362,7 @@ export function runSession(model: ServeModel, options: ServeOptions = {}): Promi
       send(current, { pluginLog: { requestId, level: LEVELS[level], message, atUnixMs: String(Date.now()) } }),
     );
     const maxAttempts = Number(run.maxAttempts ?? 0);
-    const ctx = new Ctx(
+    const ctx = new JobCtx(
       session,
       new Caller(run.principal, model.id, model.resolved.roleName),
       { id: requestId, deadline: new Date(Date.now() + timeoutMs), signal: stop.signal },

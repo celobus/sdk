@@ -67,6 +67,21 @@ pub(crate) const DB_REFUSALS: &[(&str, u16)] = &[
     ("query_size_limit", 422),
     ("query_join_limit", 422),
     ("query_response_limit", 422),
+    ("analytic_time_limit", 422),
+    ("analytic_memory_limit", 422),
+    ("analytic_busy", 503),
+    ("lake_rows_limit", 422),
+    ("lake_time_limit", 422),
+    ("lake_memory_limit", 422),
+    ("lake_busy", 503),
+    ("lake_model_rows_limit", 422),
+    ("lake_partitions_limit", 422),
+    ("lake_model_parse", 422),
+    ("lake_model_changed", 409),
+    ("not_loaded", 409),
+    ("analytic_load_limit", 429),
+    ("analytic_load_busy", 503),
+    ("analytic_load_pending", 503),
 ];
 
 /// A db refusal as the typed error: `version_conflict` carries `details.current`, `unique_conflict`
@@ -194,6 +209,8 @@ pub struct Ctx {
     tx: u64,
     /// the reason of a system context (`as_system`); none: the caller's
     system: Option<Arc<str>>,
+    /// a context of an analytic query: it sends queries only (a read of the workspace's data is refused)
+    analytic: bool,
 }
 
 struct CtxInner {
@@ -203,6 +220,8 @@ struct CtxInner {
     caller: Caller,
     /// the run, in a job's handler
     job: Option<crate::jobs::JobInfo>,
+    /// the lake appends made so far (a run's default write key is its id and the append's number)
+    appends: std::sync::atomic::AtomicU32,
 }
 
 /// The plugin serving the request.
@@ -431,9 +450,11 @@ impl Ctx {
                 request,
                 caller,
                 job: None,
+                appends: Default::default(),
             }),
             tx: 0,
             system: None,
+            analytic: false,
         }
     }
 
@@ -452,9 +473,11 @@ impl Ctx {
                 request,
                 caller,
                 job: Some(job),
+                appends: Default::default(),
             }),
             tx: 0,
             system: None,
+            analytic: false,
         }
     }
 
@@ -465,6 +488,14 @@ impl Ctx {
             .job
             .as_ref()
             .unwrap_or_else(|| crate::jobs::JobInfo::none())
+    }
+
+    /// The number of this context's next lake append (1 first), counted per request or run.
+    pub(crate) fn next_append(&self) -> u32 {
+        self.inner
+            .appends
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
     }
 
     /// The transaction this context's repository calls are part of (0: none).
@@ -478,6 +509,7 @@ impl Ctx {
             inner: self.inner.clone(),
             tx,
             system: self.system.clone(),
+            analytic: false,
         }
     }
 
@@ -490,6 +522,7 @@ impl Ctx {
             inner: self.inner.clone(),
             tx: self.tx,
             system: Some(reason.into()),
+            analytic: false,
         }
     }
 
@@ -519,9 +552,11 @@ impl Ctx {
                 request: self.inner.request.clone(),
                 caller,
                 job: self.inner.job.clone(),
+                appends: Default::default(),
             }),
             tx: self.tx,
             system: self.system.clone(),
+            analytic: false,
         }
     }
 
@@ -541,9 +576,11 @@ impl Ctx {
                     max_attempts,
                     scheduled_at: chrono::Utc::now(),
                 }),
+                appends: Default::default(),
             }),
             tx: self.tx,
             system: self.system.clone(),
+            analytic: false,
         }
     }
 
@@ -661,7 +698,21 @@ impl Ctx {
         &self,
         call: syscall::Call,
     ) -> Result<Option<syscall_result::Result>> {
+        if self.analytic && !matches!(call, syscall::Call::Query(_)) {
+            return Err(crate::error::Error::internal(
+                "ctx.analytics().query(): get, find, count_where, exists and aggregate read the workspace's data; use ctx.query()",
+            ));
+        }
         self.inner.link.syscall(call).await
+    }
+
+    /// This context for the reads of an analytic query: a repository read through it is refused, never answered from
+    /// the workspace's data.
+    pub(crate) fn analytic(&self) -> Ctx {
+        Ctx {
+            analytic: true,
+            ..self.clone()
+        }
     }
 
     /// Events: not available, `emit` answers `unavailable`.

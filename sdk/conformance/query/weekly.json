@@ -1,0 +1,28 @@
+{
+  "sources": [
+    { "entity": "recent_task", "alias": "recent_task" }
+  ],
+  "filter": { "and": { "items": [
+    { "compare": { "left": { "column": { "source": "recent_task", "field": "day" } }, "op": "GE",
+                   "right": { "daysAgo": 7 } } },
+    { "and": { "items": [
+      { "compare": { "left": { "column": { "source": "recent_task", "field": "day", "bucket": "MONTH" } }, "op": "GE",
+                     "values": [{ "stringValue": "2026-01-01" }] } },
+      { "compare": { "left": { "column": { "source": "recent_task", "field": "day", "bucket": "MONTH" } }, "op": "LE",
+                     "values": [{ "stringValue": "2026-12-01" }] } }
+    ] } }
+  ] } },
+  "groupBy": [
+    { "source": "recent_task", "field": "day", "bucket": "MONTH" },
+    { "source": "recent_task", "field": "stage" }
+  ],
+  "select": [
+    { "column": { "source": "recent_task", "field": "day", "bucket": "MONTH" } },
+    { "column": { "source": "recent_task", "field": "stage" } },
+    { "aggregate": {} }
+  ],
+  "order": [
+    { "term": { "column": { "source": "recent_task", "field": "day", "bucket": "MONTH" } } }
+  ],
+  "limit": 12
+}

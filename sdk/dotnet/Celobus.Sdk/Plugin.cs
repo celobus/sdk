@@ -36,6 +36,34 @@ internal sealed class PluginDefinition(string id, string version)
     public Ui.PluginUi? Ui { get; set; }
     public List<JobRegistration> Jobs { get; } = [];
 
+    /// <summary>The analytic views: each its row type and its query (<c>.View(..)</c>).</summary>
+    public List<(Type Row, System.Linq.Expressions.Expression Query)> Views { get; } = [];
+
+    /// <summary>The Data Lake: the layers, the tables' rows, who reads them, other plugins' tables read (Lake.cs).</summary>
+    public List<Layer> Layers { get; } = [];
+    public List<Type> LakeTables { get; } = [];
+    public List<(Type Table, Role[] Roles)> LakeReads { get; } = [];
+    public List<Type> LakeSystemReads { get; } = [];
+    public List<Type> LakeExports { get; } = [];
+    public List<Type> LakeModelExports { get; } = [];
+
+    /// <summary>
+    /// Other plugins' lake tables (<c>.LakeDependency&lt;T&gt;()</c>) and entities whose histories it reads
+    /// (<c>.HistoryDependency&lt;T&gt;()</c>), in the order declared: each dependency's <c>lake</c> lists them so.
+    /// </summary>
+    public List<Type> LakeDependencies { get; } = [];
+
+    /// <summary>The models of lake tables (<c>.Model(..)</c>): each its table, its query, whether it copies masked columns.</summary>
+    public List<(Type Table, System.Linq.Expressions.Expression Query, bool Unmasked)> LakeModels { get; } = [];
+
+    /// <summary>The loads of the entities stored in OLAP (<c>.Load&lt;T&gt;(..)</c>): each its entity and its query.</summary>
+    public List<(Type Entity, System.Linq.Expressions.Expression Query)> Loads { get; } = [];
+
+    /// <summary>Who reads the entities' histories (History.cs).</summary>
+    public List<(Type Entity, Role[] Roles)> HistoryReads { get; } = [];
+    public List<Type> HistorySystemReads { get; } = [];
+    public List<Type> HistoryExports { get; } = [];
+
     /// <summary>How many runs of its jobs a process runs at once (<c>.JobSlots</c>).</summary>
     public int JobSlots { get; set; } = DefaultJobSlots;
 
@@ -228,6 +256,156 @@ public sealed class Plugin
     public Plugin Bypass<T>(params Perm[] ops) where T : class
     {
         _def.Bypass.Add((typeof(T), [.. ops.Select(o => o.Name)]));
+        return this;
+    }
+
+    /// <summary>
+    /// An analytic view: a named query over the plugin's entities (a dependency's exported ones, the directory, its other
+    /// views) whose rows are <typeparamref name="T"/> (a <c>[View]</c> record), created by the platform in both engines
+    /// and read with <c>ctx.Query&lt;T&gt;()</c> or <c>ctx.Analytics().Query&lt;T&gt;()</c>. Its query is LINQ over
+    /// <see cref="Views.From{T}"/> ending in <c>select new T(..)</c>, each of the row's columns a column of a source (a
+    /// bucket too: <c>Query.Month(o.PaidAt)</c>) or, grouped, an aggregate:
+    /// <code>
+    /// .View(from l in Views.From&lt;OrderLine&gt;()
+    ///       join o in Views.From&lt;Order&gt;() on l.OrderId equals o.Id
+    ///       where o.PaidAt &gt;= Query.DaysAgo(730)
+    ///       select new Sales(Query.Day(o.PaidAt), o.CreatedBy, l.Amount))
+    /// </code>
+    /// Every row under a view passes its own entity's access rules and masks for whoever reads it.
+    /// </summary>
+    public Plugin View<T>(IQueryable<T> query) where T : class
+    {
+        _def.Views.Add((typeof(T), query.Expression));
+        return this;
+    }
+
+    /// <summary>A layer of the Data Lake its tables belong to: <c>.Layer(new("raw") { Title = "As it arrived" })</c>.</summary>
+    public Plugin Layer(Layer layer)
+    {
+        _def.Layers.Add(layer);
+        return this;
+    }
+
+    /// <summary>A lake table of the plugin (a <c>[LakeTable]</c> record), in a layer the plugin declares.</summary>
+    public Plugin LakeTable<T>() where T : class
+    {
+        _def.LakeTables.Add(typeof(T));
+        return this;
+    }
+
+    /// <summary>Who reads a lake table of the plugin: the holders of these roles, every row of it (<c>ctx.Lake().Query&lt;T&gt;()</c>).</summary>
+    public Plugin LakeRead<T>(params Role[] roles) where T : class
+    {
+        _def.LakeReads.Add((typeof(T), roles));
+        return this;
+    }
+
+    /// <summary>The plugin's own system context (<c>ctx.AsSystem(..)</c>) reads the lake table too.</summary>
+    public Plugin LakeReadAsSystem<T>() where T : class
+    {
+        _def.LakeSystemReads.Add(typeof(T));
+        return this;
+    }
+
+    /// <summary>Other plugins that declare it (<c>.LakeDependency&lt;T&gt;()</c>) read the lake table, for callers holding one of its read roles.</summary>
+    public Plugin LakeExport<T>() where T : class
+    {
+        _def.LakeExports.Add(typeof(T));
+        return this;
+    }
+
+    /// <summary>Another plugin's exported lake table this plugin reads (<c>[LakeTable(Plugin = "retail", Name = "stock")]</c>).</summary>
+    public Plugin LakeDependency<T>() where T : class
+    {
+        _def.LakeDependencies.Add(typeof(T));
+        return this;
+    }
+
+    /// <summary>
+    /// Other plugins that declare it (<c>.LakeDependency&lt;T&gt;()</c>) may copy the lake table into their own lake
+    /// tables with a model, where their own roles decide who reads the copy (every row of it). Apart from
+    /// <see cref="LakeExport{T}"/>; a later version that drops it stops further refreshes of the copies.
+    /// </summary>
+    public Plugin LakeExportToModels<T>() where T : class
+    {
+        _def.LakeModelExports.Add(typeof(T));
+        return this;
+    }
+
+    /// <summary>
+    /// How the platform computes the lake table <typeparamref name="T"/> of the plugin, when the plugin asks
+    /// (<c>ctx.Lake().RefreshAsync&lt;T&gt;()</c>): LINQ over <see cref="LakeModel.From{T}"/> (a lake table, or an entity or
+    /// an analytic view of the plugin; never both in one model) or <see cref="LakeModel.History{T}"/> ending in
+    /// <c>select new T(..)</c>, each of the table's columns a column of a source (a bucket, a parsed text:
+    /// <c>Query.Parse&lt;decimal&gt;(f.OnHand)</c>) or, grouped, an aggregate:
+    /// <code>
+    /// .LakeTable&lt;Stock&gt;()
+    /// .Model(from f in LakeModel.From&lt;StockFileRow&gt;()
+    ///        where f.Sku != ""
+    ///        select new Stock(f.LoadedOn, f.Sku, Query.Parse&lt;decimal&gt;(f.OnHand)))
+    /// </code>
+    /// <paramref name="unmasked"/>: the masked columns of the entities under it go to the lake as they are (the lake has
+    /// no masks; whoever reads the table reads every row of it).
+    /// </summary>
+    public Plugin Model<T>(IQueryable<T> query, bool unmasked = false) where T : class
+    {
+        _def.LakeModels.Add((typeof(T), query.Expression, unmasked));
+        return this;
+    }
+
+    /// <summary>
+    /// How the platform fills the entity stored in OLAP <typeparamref name="T"/> (<c>[Entity(Storage =
+    /// EntityStorage.Olap, OlapKey = [..])]</c>) from the lake, when the plugin asks for a snapshot that loads it: LINQ
+    /// over <see cref="LakeModel.From{T}"/> (a lake table the plugin's system context reads, or another plugin's whose
+    /// owner lets models copy it) or <see cref="LakeModel.History{T}"/>, ending in <c>select new { .. }</c> whose members
+    /// are the entity's properties (<c>Id</c> aside: it is made from the key; an optional one may be left out):
+    /// <code>
+    /// .Entity&lt;StoreMetric&gt;()
+    /// .Load&lt;StoreMetric&gt;(from m in LakeModel.From&lt;StoreMetricsMart&gt;()
+    ///                         where m.Day &gt;= Query.DaysAgo(400)
+    ///                         select new { m.Day, Store = m.StoreId, m.Metric, Value = Query.Parse&lt;decimal&gt;(m.Value) })
+    /// </code>
+    /// </summary>
+    public Plugin Load<T>(IQueryable query) where T : class
+    {
+        _def.Loads.Add((typeof(T), query.Expression));
+        return this;
+    }
+
+    /// <summary>
+    /// Who reads the history of an entity that keeps one (<c>[History("audit")]</c>): the holders of these roles, every row
+    /// of it (<c>ctx.Lake().History&lt;T&gt;()</c>), without the entity's access rules or masks.
+    /// </summary>
+    public Plugin HistoryRead<T>(params Role[] roles) where T : class
+    {
+        _def.HistoryReads.Add((typeof(T), roles));
+        return this;
+    }
+
+    /// <summary>The plugin's own system context (<c>ctx.AsSystem(..)</c>) reads the entity's history too (a model over it needs it).</summary>
+    public Plugin HistoryReadAsSystem<T>() where T : class
+    {
+        _def.HistorySystemReads.Add(typeof(T));
+        return this;
+    }
+
+    /// <summary>
+    /// Other plugins that declare it (<c>.HistoryDependency&lt;T&gt;()</c>) read the entity's history, for callers holding
+    /// one of its read roles.
+    /// </summary>
+    public Plugin HistoryExport<T>() where T : class
+    {
+        _def.HistoryExports.Add(typeof(T));
+        return this;
+    }
+
+    /// <summary>
+    /// Another plugin's exported history this plugin reads: its entity declared with its owner,
+    /// <c>[Entity(Plugin = "helpdesk")]</c> (the type's name in snake_case is the entity's name there).
+    /// </summary>
+    public Plugin HistoryDependency<T>() where T : class
+    {
+        _def.LakeDependencies.Add(typeof(T));
         return this;
     }
 

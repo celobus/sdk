@@ -62,6 +62,75 @@ public sealed class EntityAttribute : Attribute
 
     /// <summary>The property that names a row (<c>nameof(Number)</c>); default <c>Name</c>, <c>Title</c>, <c>Number</c>, else <c>Id</c>.</summary>
     public string? Label { get; set; }
+
+    /// <summary>
+    /// <see cref="EntityStorage.Olap"/>: the rows are kept in the analytic copy only, filled by the entity's load
+    /// (<c>.Load&lt;T&gt;(..)</c>) when the plugin asks (<c>ctx.Analytics().Snapshot().Load&lt;T&gt;().RequestAsync()</c>)
+    /// and read with <c>ctx.Analytics().Query&lt;T&gt;()</c> only (<c>ctx.Db&lt;T&gt;()</c> and <c>ctx.Query&lt;T&gt;()</c>
+    /// are refused: CELOBUS061 at compile time). Never written; no history, <c>SoftDelete</c>, <c>Version</c> nor
+    /// <c>AppendOnly</c>.
+    /// </summary>
+    public EntityStorage Storage { get; set; }
+
+    /// <summary>
+    /// With <see cref="EntityStorage.Olap"/>: the properties that key a row (<c>[nameof(Day), nameof(Store)]</c>: required
+    /// plain values), unique among the rows a load gives; the row's <c>Id</c> is a uuid made from their values.
+    /// </summary>
+    public string[] OlapKey { get; set; } = [];
+}
+
+/// <summary>Where an entity's rows are kept.</summary>
+public enum EntityStorage
+{
+    /// <summary>The workspace's database (and the analytic copy, as every entity).</summary>
+    Default,
+
+    /// <summary>The analytic copy only, filled by the entity's load from the Data Lake.</summary>
+    Olap,
+}
+
+/// <summary>
+/// The row of an analytic view of the plugin: a record whose public properties are its columns, declared with
+/// <c>.View(from x in Views.From&lt;T&gt;() .. select new Sales(..))</c> and read with <c>ctx.Query&lt;Sales&gt;()</c> or
+/// <c>ctx.Analytics().Query&lt;Sales&gt;()</c>, never written. Its name is the type's in snake_case unless
+/// <see cref="Name"/> sets it; its <c>[Describe]</c> is the view's description (an agent of the plugin reads it to pick
+/// the view).
+/// </summary>
+[AttributeUsage(AttributeTargets.Class, Inherited = false)]
+public sealed class ViewAttribute : Attribute
+{
+    /// <summary>The view's name (snake_case); null: the type's name in snake_case.</summary>
+    public string? Name { get; set; }
+}
+
+/// <summary>
+/// An entity's history in the workspace's Data Lake (History.cs). On the entity, <c>[History("audit")]</c>: it keeps its
+/// history in that layer of the lake (one the plugin declares with <c>.Layer(..)</c>): every change of its kept columns,
+/// each its own row with when it was made and by whom. On a column, <c>[History]</c>: the history keeps that column's
+/// changes. With <see cref="All"/> every column is kept, but the encrypted ones, the lists and messages and, unless
+/// <see cref="Unmasked"/> is said too, the masked ones. Who reads it: <c>.HistoryRead&lt;T&gt;(roles)</c>,
+/// <c>.HistoryReadAsSystem&lt;T&gt;()</c>, <c>.HistoryExport&lt;T&gt;()</c>.
+/// </summary>
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Property | AttributeTargets.Parameter, Inherited = false)]
+public sealed class HistoryAttribute : Attribute
+{
+    /// <summary>On a column: the entity's history keeps its changes.</summary>
+    public HistoryAttribute() { }
+
+    /// <summary>On the entity: the layer of the lake its history goes to.</summary>
+    public HistoryAttribute(string layer) => Layer = layer;
+
+    /// <summary>The layer (on the entity).</summary>
+    public string? Layer { get; }
+
+    /// <summary>
+    /// Every column is kept, the ones a later version adds too, but the encrypted ones, the lists and messages and,
+    /// unless <see cref="Unmasked"/>, the masked ones (<c>celobus plugin check</c> lists what it left out).
+    /// </summary>
+    public bool All { get; set; }
+
+    /// <summary>Masked columns may be kept: their values go to the lake as they are (the lake has no masks).</summary>
+    public bool Unmasked { get; set; }
 }
 
 /// <summary>An entity column whose values are unique (among the rows that are not deleted, on a soft-delete entity).</summary>

@@ -1,0 +1,123 @@
+{
+  "filter": {
+    "and": {
+      "items": [
+        {
+          "and": {
+            "items": [
+              {
+                "compare": {
+                  "left": {
+                    "column": {
+                      "field": "day",
+                      "source": "task_day"
+                    }
+                  },
+                  "op": "GE",
+                  "values": [
+                    {
+                      "stringValue": "2026-11-01"
+                    }
+                  ]
+                }
+              },
+              {
+                "compare": {
+                  "left": {
+                    "column": {
+                      "field": "day",
+                      "source": "task_day"
+                    }
+                  },
+                  "op": "LE",
+                  "values": [
+                    {
+                      "stringValue": "2026-11-30"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "compare": {
+            "left": {
+              "column": {
+                "field": "tasks",
+                "source": "task_day"
+              }
+            },
+            "op": "GT",
+            "values": [
+              {
+                "stringValue": "0"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "groupBy": [
+    {
+      "bucket": "MONTH",
+      "field": "day",
+      "source": "task_day"
+    },
+    {
+      "field": "stage",
+      "source": "task_day"
+    }
+  ],
+  "limit": 50,
+  "order": [
+    {
+      "term": {
+        "column": {
+          "field": "stage",
+          "source": "task_day"
+        }
+      }
+    }
+  ],
+  "select": [
+    {
+      "column": {
+        "bucket": "MONTH",
+        "field": "day",
+        "source": "task_day"
+      }
+    },
+    {
+      "column": {
+        "field": "stage",
+        "source": "task_day"
+      }
+    },
+    {
+      "aggregate": {
+        "column": {
+          "field": "tasks",
+          "source": "task_day"
+        },
+        "fn": "SUM"
+      }
+    },
+    {
+      "aggregate": {
+        "column": {
+          "field": "hours",
+          "source": "task_day"
+        },
+        "fn": "SUM"
+      }
+    }
+  ],
+  "sources": [
+    {
+      "alias": "task_day",
+      "entity": "task_day"
+    }
+  ]
+}

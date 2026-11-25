@@ -1,0 +1,1454 @@
+{
+  "about": "The lake calls of jobsdemo, the same from every SDK: each step is a request (`endpoint`, `body`) or a job's run (`job`, `run`, `attempt`, `payload`) a fake platform sends, and what the plugin must send and answer (`expect`): its answer, each LakeWrite chunk (its members, its rows counted, the first and last row as JSON, a text over 64 bytes as its length), each query (`query/lake.json`: the shared tree) and each LakeRefresh (its table and partition filter). The fake answers a chunk with write 41 and the rows so far, commits with `last`, skips an append keyed `seen` and refuses one keyed `busy` with lake_busy and one keyed `partitions` with lake_partitions_limit; it answers a refresh of partitions with 2 stale partitions; it answers a refresh of task_hours, budget_copy and a whole open_by_day, refuses a refresh whose filter names no partition (invalid), and refuses the others each with a code of its own (lake_model_rows_limit, lake_model_parse, lake_model_changed, unavailable); it answers a history read with two changes of a task as objects; it answers a request for loads with the ticket t-1, pending, and follows a ticket by its id (t-1 is building until it is asked twice, then done; rows, time, dup, invalid, failed and blank failed with that code or none; busy and gone are refused), each request and ticket's state listed under `loads`; a step's `refuse` is the code the fake refuses its request for loads and its queries with. sdk/conformance/jobs/rust/tests/lake.rs runs it.",
+  "steps": [
+    {
+      "body": {
+        "key": "",
+        "mode": "replace",
+        "rows": 25001,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "body": {
+            "rows": "25001",
+            "skipped": false
+          },
+          "status": 200
+        },
+        "writes": [
+          {
+            "filter": {
+              "condition": {
+                "field": "loaded_on",
+                "op": "EQ",
+                "values": [
+                  {
+                    "stringValue": "2026-11-20"
+                  }
+                ]
+              }
+            },
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "",
+            "last": false,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t9999"
+            },
+            "mode": "REPLACE",
+            "rows": 10000,
+            "table": "task_load",
+            "write": "0"
+          },
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t10000"
+            },
+            "key": "",
+            "last": false,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t19999"
+            },
+            "mode": "REPLACE",
+            "rows": 10000,
+            "table": "task_load",
+            "write": "41"
+          },
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t20000"
+            },
+            "key": "",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t25000"
+            },
+            "mode": "REPLACE",
+            "rows": 5001,
+            "table": "task_load",
+            "write": "41"
+          }
+        ]
+      },
+      "name": "a replace goes in chunks of 10,000 rows, its filter on the first"
+    },
+    {
+      "body": {
+        "key": "",
+        "mode": "replace",
+        "rows": 9,
+        "width": 1048576
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "body": {
+            "rows": "9",
+            "skipped": false
+          },
+          "status": 200
+        },
+        "writes": [
+          {
+            "filter": {
+              "condition": {
+                "field": "loaded_on",
+                "op": "EQ",
+                "values": [
+                  {
+                    "stringValue": "2026-11-20"
+                  }
+                ]
+              }
+            },
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "<1048578 bytes>"
+            },
+            "key": "",
+            "last": false,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "<1048578 bytes>"
+            },
+            "mode": "REPLACE",
+            "rows": 3,
+            "table": "task_load",
+            "write": "0"
+          },
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "<1048578 bytes>"
+            },
+            "key": "",
+            "last": false,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "<1048578 bytes>"
+            },
+            "mode": "REPLACE",
+            "rows": 3,
+            "table": "task_load",
+            "write": "41"
+          },
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "<1048578 bytes>"
+            },
+            "key": "",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "<1048578 bytes>"
+            },
+            "mode": "REPLACE",
+            "rows": 3,
+            "table": "task_load",
+            "write": "41"
+          }
+        ]
+      },
+      "name": "chunks of at most 4 MiB of rows"
+    },
+    {
+      "body": {
+        "key": "",
+        "mode": "merge",
+        "rows": 3,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "body": {
+            "rows": "3",
+            "skipped": false
+          },
+          "status": 200
+        },
+        "writes": [
+          {
+            "first": {
+              "day": "2026-11-20",
+              "hours": "2.25",
+              "stage": "s0",
+              "tasks": "0"
+            },
+            "key": "",
+            "last": true,
+            "lastRow": {
+              "day": "2026-11-20",
+              "hours": "2.25",
+              "stage": "s2",
+              "tasks": "2"
+            },
+            "mode": "MERGE",
+            "rows": 3,
+            "table": "task_day",
+            "write": "0"
+          }
+        ]
+      },
+      "name": "a merge of a keyed table"
+    },
+    {
+      "body": {
+        "key": "tasks-2026-11-20",
+        "mode": "append",
+        "rows": 2,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "body": {
+            "rows": "2",
+            "skipped": false
+          },
+          "status": 200
+        },
+        "writes": [
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "tasks-2026-11-20",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t1"
+            },
+            "mode": "APPEND",
+            "rows": 2,
+            "table": "task_load",
+            "write": "0"
+          }
+        ]
+      },
+      "name": "an append with its key"
+    },
+    {
+      "body": {
+        "key": "seen",
+        "mode": "append",
+        "rows": 1,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "body": {
+            "rows": "1",
+            "skipped": true
+          },
+          "status": 200
+        },
+        "writes": [
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "seen",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "mode": "APPEND",
+            "rows": 1,
+            "table": "task_load",
+            "write": "0"
+          }
+        ]
+      },
+      "name": "an append whose key was written: skipped"
+    },
+    {
+      "body": {
+        "key": "",
+        "mode": "append",
+        "rows": 1,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "code": "invalid",
+          "status": 400
+        },
+        "writes": []
+      },
+      "name": "an append outside a job's run without a key is refused before sending"
+    },
+    {
+      "body": {
+        "key": "   ",
+        "mode": "append",
+        "rows": 1,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "code": "invalid",
+          "status": 400
+        },
+        "writes": []
+      },
+      "name": "a key of spaces is no key"
+    },
+    {
+      "body": {
+        "key": "",
+        "mode": "replace",
+        "rows": 1000001,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "code": "lake_rows_limit",
+          "status": 422
+        },
+        "writes": []
+      },
+      "name": "more than 1,000,000 rows are refused before sending"
+    },
+    {
+      "body": {
+        "key": "",
+        "mode": "replace",
+        "rows": 1,
+        "width": 5242880
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "code": "bulk_limit",
+          "status": 422
+        },
+        "writes": []
+      },
+      "name": "a row over 4 MiB is refused before sending"
+    },
+    {
+      "body": {
+        "key": "",
+        "mode": "replace",
+        "rows": 0,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "body": {
+            "rows": "0",
+            "skipped": false
+          },
+          "status": 200
+        },
+        "writes": [
+          {
+            "filter": {
+              "condition": {
+                "field": "loaded_on",
+                "op": "EQ",
+                "values": [
+                  {
+                    "stringValue": "2026-11-20"
+                  }
+                ]
+              }
+            },
+            "first": null,
+            "key": "",
+            "last": true,
+            "lastRow": null,
+            "mode": "REPLACE",
+            "rows": 0,
+            "table": "task_load",
+            "write": "0"
+          }
+        ]
+      },
+      "name": "an empty write is one chunk"
+    },
+    {
+      "body": {
+        "key": "busy",
+        "mode": "append",
+        "rows": 1,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "code": "lake_busy",
+          "status": 503
+        },
+        "writes": [
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "busy",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "mode": "APPEND",
+            "rows": 1,
+            "table": "task_load",
+            "write": "0"
+          }
+        ]
+      },
+      "name": "the lake's refusal keeps its status"
+    },
+    {
+      "body": {
+        "key": "partitions",
+        "mode": "append",
+        "rows": 1,
+        "width": 0
+      },
+      "endpoint": "LoadTasks",
+      "expect": {
+        "answer": {
+          "code": "lake_partitions_limit",
+          "status": 422
+        },
+        "writes": [
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "partitions",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "mode": "APPEND",
+            "rows": 1,
+            "table": "task_load",
+            "write": "0"
+          }
+        ]
+      },
+      "name": "a write past 1,000 partitions: 422 lake_partitions_limit"
+    },
+    {
+      "attempt": 1,
+      "expect": {
+        "answer": {
+          "done": "ok"
+        },
+        "writes": [
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "run-7#1",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t1"
+            },
+            "mode": "APPEND",
+            "rows": 2,
+            "table": "task_load",
+            "write": "0"
+          },
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "batch-run-7",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t1"
+            },
+            "mode": "APPEND",
+            "rows": 2,
+            "table": "task_load",
+            "write": "0"
+          },
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "run-7#3",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t1"
+            },
+            "mode": "APPEND",
+            "rows": 2,
+            "table": "task_load",
+            "write": "0"
+          }
+        ]
+      },
+      "job": "task_batch",
+      "name": "a run's appends: its default keys, a key of its own, the system context's next default key",
+      "payload": {
+        "rows": 2
+      },
+      "run": "run-7"
+    },
+    {
+      "attempt": 2,
+      "expect": {
+        "answer": {
+          "done": "ok"
+        },
+        "writes": [
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "run-7#1",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t1"
+            },
+            "mode": "APPEND",
+            "rows": 2,
+            "table": "task_load",
+            "write": "0"
+          },
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "batch-run-7",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t1"
+            },
+            "mode": "APPEND",
+            "rows": 2,
+            "table": "task_load",
+            "write": "0"
+          },
+          {
+            "first": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t0"
+            },
+            "key": "run-7#3",
+            "last": true,
+            "lastRow": {
+              "hours": "1.5",
+              "loadedOn": "2026-11-20",
+              "title": "t1"
+            },
+            "mode": "APPEND",
+            "rows": 2,
+            "table": "task_load",
+            "write": "0"
+          }
+        ]
+      },
+      "job": "task_batch",
+      "name": "the run's next attempt sends the same keys",
+      "payload": {
+        "rows": 2
+      },
+      "run": "run-7"
+    },
+    {
+      "body": {},
+      "endpoint": "TaskDays",
+      "expect": {
+        "answer": {
+          "body": {
+            "groups": 1
+          },
+          "status": 200
+        },
+        "queries": [
+          {
+            "engine": "LAKE",
+            "mode": "ALL",
+            "query": "query/lake.json"
+          }
+        ],
+        "writes": []
+      },
+      "name": "the lake query"
+    },
+    {
+      "body": {
+        "day": false,
+        "every": false,
+        "table": "task_hours"
+      },
+      "endpoint": "RefreshTables",
+      "expect": {
+        "answer": {
+          "body": {
+            "asOf": "0",
+            "rows": "25",
+            "stalePartitions": "0"
+          },
+          "status": 200
+        },
+        "refreshes": [
+          {
+            "table": "task_hours"
+          }
+        ],
+        "writes": []
+      },
+      "name": "a refresh of a whole table: its rows, no time for a model over lake tables"
+    },
+    {
+      "body": {
+        "day": true,
+        "every": false,
+        "table": "task_hours"
+      },
+      "endpoint": "RefreshTables",
+      "expect": {
+        "answer": {
+          "body": {
+            "asOf": "0",
+            "rows": "5",
+            "stalePartitions": "2"
+          },
+          "status": 200
+        },
+        "refreshes": [
+          {
+            "filter": {
+              "condition": {
+                "field": "day",
+                "op": "EQ",
+                "values": [
+                  {
+                    "stringValue": "2026-11-20"
+                  }
+                ]
+              }
+            },
+            "table": "task_hours"
+          }
+        ],
+        "writes": []
+      },
+      "name": "a refresh of a partition sends its filter"
+    },
+    {
+      "body": {
+        "day": false,
+        "every": false,
+        "table": "budget_copy"
+      },
+      "endpoint": "RefreshTables",
+      "expect": {
+        "answer": {
+          "body": {
+            "asOf": "1795000000000",
+            "rows": "3",
+            "stalePartitions": "0"
+          },
+          "status": 200
+        },
+        "refreshes": [
+          {
+            "table": "budget_copy"
+          }
+        ],
+        "writes": []
+      },
+      "name": "a refresh of a model over an entity answers when its data is from"
+    },
+    {
+      "body": {
+        "day": false,
+        "every": false,
+        "table": "open_by_day"
+      },
+      "endpoint": "RefreshTables",
+      "expect": {
+        "answer": {
+          "body": {
+            "asOf": "1795000060000",
+            "rows": "2",
+            "stalePartitions": "0"
+          },
+          "status": 200
+        },
+        "refreshes": [
+          {
+            "table": "open_by_day"
+          }
+        ],
+        "writes": []
+      },
+      "name": "a refresh of a model over a history"
+    },
+    {
+      "body": {
+        "day": true,
+        "every": false,
+        "table": "open_by_day"
+      },
+      "endpoint": "RefreshTables",
+      "expect": {
+        "answer": {
+          "code": "lake_model_changed",
+          "status": 409
+        },
+        "refreshes": [
+          {
+            "filter": {
+              "condition": {
+                "field": "day",
+                "op": "EQ",
+                "values": [
+                  {
+                    "stringValue": "2026-11-20"
+                  }
+                ]
+              }
+            },
+            "table": "open_by_day"
+          }
+        ],
+        "writes": []
+      },
+      "name": "a refusal earlier platforms sent keeps its status: 409 lake_model_changed"
+    },
+    {
+      "body": {
+        "day": false,
+        "every": false,
+        "table": "issue_week"
+      },
+      "endpoint": "RefreshTables",
+      "expect": {
+        "answer": {
+          "code": "lake_model_rows_limit",
+          "status": 422
+        },
+        "refreshes": [
+          {
+            "table": "issue_week"
+          }
+        ],
+        "writes": []
+      },
+      "name": "a refresh of too many rows: 422 lake_model_rows_limit"
+    },
+    {
+      "body": {
+        "day": true,
+        "every": false,
+        "table": "issue_week"
+      },
+      "endpoint": "RefreshTables",
+      "expect": {
+        "answer": {
+          "code": "lake_model_parse",
+          "status": 422
+        },
+        "refreshes": [
+          {
+            "filter": {
+              "condition": {
+                "field": "week",
+                "op": "EQ",
+                "values": [
+                  {
+                    "stringValue": "2026-11-20"
+                  }
+                ]
+              }
+            },
+            "table": "issue_week"
+          }
+        ],
+        "writes": []
+      },
+      "name": "a refresh whose text does not parse: 422 lake_model_parse"
+    },
+    {
+      "body": {
+        "day": false,
+        "every": false,
+        "table": "long_estimate_copy"
+      },
+      "endpoint": "RefreshTables",
+      "expect": {
+        "answer": {
+          "code": "unavailable",
+          "status": 503
+        },
+        "refreshes": [
+          {
+            "table": "long_estimate_copy"
+          }
+        ],
+        "writes": []
+      },
+      "name": "a refresh while the analytic copy is not ready: 503 unavailable"
+    },
+    {
+      "body": {
+        "eachDay": false
+      },
+      "endpoint": "TaskTrail",
+      "expect": {
+        "answer": {
+          "body": {
+            "change": "insert",
+            "changedByKind": "person",
+            "changedByPlugin": "jobsdemo",
+            "day": "",
+            "rows": 2,
+            "status": "new",
+            "validFrom": "1795082400000",
+            "validTo": "1795249800000"
+          },
+          "status": 200
+        },
+        "queries": [
+          {
+            "engine": "LAKE",
+            "mode": "ALL",
+            "query": {
+              "filter": {
+                "compare": {
+                  "left": {
+                    "column": {
+                      "field": "status",
+                      "source": "task"
+                    }
+                  },
+                  "op": "NE",
+                  "values": [
+                    {
+                      "stringValue": ""
+                    }
+                  ]
+                }
+              },
+              "limit": 20,
+              "order": [
+                {
+                  "term": {
+                    "column": {
+                      "field": "valid_from",
+                      "source": "task"
+                    }
+                  }
+                }
+              ],
+              "sources": [
+                {
+                  "alias": "task",
+                  "entity": "task",
+                  "history": true
+                }
+              ]
+            }
+          }
+        ],
+        "writes": []
+      },
+      "name": "a history read: its changes as rows, the kept columns and who made each"
+    },
+    {
+      "body": {
+        "eachDay": true
+      },
+      "endpoint": "TaskTrail",
+      "expect": {
+        "answer": {
+          "body": {
+            "change": "insert",
+            "changedByKind": "person",
+            "changedByPlugin": "jobsdemo",
+            "day": "2026-11-19",
+            "rows": 2,
+            "status": "new",
+            "validFrom": "1795082400000",
+            "validTo": "1795249800000"
+          },
+          "status": 200
+        },
+        "queries": [
+          {
+            "engine": "LAKE",
+            "mode": "ALL",
+            "query": {
+              "filter": {
+                "compare": {
+                  "left": {
+                    "column": {
+                      "field": "status",
+                      "source": "task"
+                    }
+                  },
+                  "op": "NE",
+                  "values": [
+                    {
+                      "stringValue": ""
+                    }
+                  ]
+                }
+              },
+              "limit": 20,
+              "order": [
+                {
+                  "term": {
+                    "column": {
+                      "field": "day",
+                      "source": "task"
+                    }
+                  }
+                }
+              ],
+              "sources": [
+                {
+                  "alias": "task",
+                  "eachDay": true,
+                  "entity": "task",
+                  "history": true
+                }
+              ]
+            }
+          }
+        ],
+        "writes": []
+      },
+      "name": "a history read per day"
+    },
+    {
+      "body": {
+        "step": "request",
+        "ticket": ""
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "body": {
+            "code": "",
+            "entities": [
+              "stage_day"
+            ],
+            "generation": "0",
+            "rows": "0",
+            "state": "pending",
+            "ticket": "t-1"
+          },
+          "status": 200
+        },
+        "loads": [
+          {
+            "request": [
+              "stage_day"
+            ]
+          }
+        ],
+        "writes": []
+      },
+      "name": "a request for loads answers its ticket at once"
+    },
+    {
+      "body": {
+        "step": "request",
+        "ticket": ""
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "code": "analytic_load_limit",
+          "status": 429
+        },
+        "loads": [
+          {
+            "request": [
+              "stage_day"
+            ]
+          }
+        ],
+        "writes": []
+      },
+      "name": "a request refused past the bounds of loads: 429 analytic_load_limit",
+      "refuse": "analytic_load_limit"
+    },
+    {
+      "body": {
+        "step": "status",
+        "ticket": "t-1"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "body": {
+            "code": "",
+            "entities": [
+              "stage_day"
+            ],
+            "generation": "0",
+            "rows": "0",
+            "state": "building",
+            "ticket": "t-1"
+          },
+          "status": 200
+        },
+        "loads": [
+          {
+            "ticket": "t-1",
+            "waitMs": 0
+          }
+        ],
+        "writes": []
+      },
+      "name": "a ticket's state asked now"
+    },
+    {
+      "body": {
+        "step": "wait",
+        "ticket": "t-1"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "body": {
+            "code": "",
+            "entities": [
+              "stage_day"
+            ],
+            "generation": "7",
+            "rows": "4",
+            "state": "done",
+            "ticket": "t-1"
+          },
+          "status": 200
+        },
+        "loads": [
+          {
+            "ticket": "t-1",
+            "waitMs": 27000
+          },
+          {
+            "ticket": "t-1",
+            "waitMs": 27000
+          }
+        ],
+        "writes": []
+      },
+      "name": "a wait asks until the ticket ends"
+    },
+    {
+      "body": {
+        "step": "wait",
+        "ticket": "rows"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "code": "analytic_load_rows_limit",
+          "status": 422
+        },
+        "loads": [
+          {
+            "ticket": "rows",
+            "waitMs": 27000
+          }
+        ],
+        "writes": []
+      },
+      "name": "a load over its rows: 422 analytic_load_rows_limit"
+    },
+    {
+      "body": {
+        "step": "wait",
+        "ticket": "time"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "code": "analytic_load_time_limit",
+          "status": 422
+        },
+        "loads": [
+          {
+            "ticket": "time",
+            "waitMs": 27000
+          }
+        ],
+        "writes": []
+      },
+      "name": "a load past its time: 422 analytic_load_time_limit"
+    },
+    {
+      "body": {
+        "step": "wait",
+        "ticket": "dup"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "code": "analytic_load_duplicate",
+          "status": 422
+        },
+        "loads": [
+          {
+            "ticket": "dup",
+            "waitMs": 27000
+          }
+        ],
+        "writes": []
+      },
+      "name": "a load giving a key twice: 422 analytic_load_duplicate"
+    },
+    {
+      "body": {
+        "step": "wait",
+        "ticket": "invalid"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "code": "analytic_load_invalid",
+          "status": 422
+        },
+        "loads": [
+          {
+            "ticket": "invalid",
+            "waitMs": 27000
+          }
+        ],
+        "writes": []
+      },
+      "name": "a load giving a row its entity cannot hold: 422 analytic_load_invalid"
+    },
+    {
+      "body": {
+        "step": "wait",
+        "ticket": "failed"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "code": "analytic_load_failed",
+          "status": 503
+        },
+        "loads": [
+          {
+            "ticket": "failed",
+            "waitMs": 27000
+          }
+        ],
+        "writes": []
+      },
+      "name": "a snapshot that could not be made: 503 analytic_load_failed"
+    },
+    {
+      "body": {
+        "step": "wait",
+        "ticket": "blank"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "code": "analytic_load_failed",
+          "status": 503
+        },
+        "loads": [
+          {
+            "ticket": "blank",
+            "waitMs": 27000
+          }
+        ],
+        "writes": []
+      },
+      "name": "a failure without a code"
+    },
+    {
+      "body": {
+        "step": "wait",
+        "ticket": "busy"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "code": "analytic_load_busy",
+          "status": 503
+        },
+        "loads": [
+          {
+            "ticket": "busy",
+            "waitMs": 27000
+          }
+        ],
+        "writes": []
+      },
+      "name": "too many waits of the plugin: 503 analytic_load_busy"
+    },
+    {
+      "body": {
+        "step": "status",
+        "ticket": "gone"
+      },
+      "endpoint": "LoadStageDays",
+      "expect": {
+        "answer": {
+          "code": "not_found",
+          "status": 404
+        },
+        "loads": [
+          {
+            "ticket": "gone",
+            "waitMs": 0
+          }
+        ],
+        "writes": []
+      },
+      "name": "a ticket the plugin was not given: 404 not_found"
+    },
+    {
+      "body": {},
+      "endpoint": "StageDays",
+      "expect": {
+        "answer": {
+          "code": "not_loaded",
+          "status": 409
+        },
+        "queries": [
+          {
+            "engine": "ANALYTIC",
+            "mode": "ALL",
+            "query": {
+              "filter": {
+                "compare": {
+                  "left": {
+                    "column": {
+                      "field": "tasks",
+                      "source": "stage_day"
+                    }
+                  },
+                  "op": "GT",
+                  "values": [
+                    {
+                      "stringValue": "0"
+                    }
+                  ]
+                }
+              },
+              "order": [
+                {
+                  "term": {
+                    "column": {
+                      "field": "day",
+                      "source": "stage_day"
+                    }
+                  }
+                }
+              ],
+              "select": [
+                {
+                  "column": {
+                    "field": "day",
+                    "source": "stage_day"
+                  }
+                },
+                {
+                  "column": {
+                    "field": "stage",
+                    "source": "stage_day"
+                  }
+                },
+                {
+                  "column": {
+                    "field": "tasks",
+                    "source": "stage_day"
+                  }
+                },
+                {
+                  "column": {
+                    "field": "hours",
+                    "source": "stage_day"
+                  }
+                }
+              ],
+              "sources": [
+                {
+                  "alias": "stage_day",
+                  "entity": "stage_day"
+                }
+              ]
+            }
+          }
+        ],
+        "writes": []
+      },
+      "name": "a read of an entity stored in OLAP before its load: 409 not_loaded",
+      "refuse": "not_loaded"
+    },
+    {
+      "body": {},
+      "endpoint": "StageDays",
+      "expect": {
+        "answer": {
+          "body": {
+            "rows": 1
+          },
+          "status": 200
+        },
+        "queries": [
+          {
+            "engine": "ANALYTIC",
+            "mode": "ALL",
+            "query": {
+              "filter": {
+                "compare": {
+                  "left": {
+                    "column": {
+                      "field": "tasks",
+                      "source": "stage_day"
+                    }
+                  },
+                  "op": "GT",
+                  "values": [
+                    {
+                      "stringValue": "0"
+                    }
+                  ]
+                }
+              },
+              "order": [
+                {
+                  "term": {
+                    "column": {
+                      "field": "day",
+                      "source": "stage_day"
+                    }
+                  }
+                }
+              ],
+              "select": [
+                {
+                  "column": {
+                    "field": "day",
+                    "source": "stage_day"
+                  }
+                },
+                {
+                  "column": {
+                    "field": "stage",
+                    "source": "stage_day"
+                  }
+                },
+                {
+                  "column": {
+                    "field": "tasks",
+                    "source": "stage_day"
+                  }
+                },
+                {
+                  "column": {
+                    "field": "hours",
+                    "source": "stage_day"
+                  }
+                }
+              ],
+              "sources": [
+                {
+                  "alias": "stage_day",
+                  "entity": "stage_day"
+                }
+              ]
+            }
+          }
+        ],
+        "writes": []
+      },
+      "name": "a read of an entity stored in OLAP"
+    },
+    {
+      "body": {
+        "day": false,
+        "every": true,
+        "table": "task_hours"
+      },
+      "endpoint": "RefreshTables",
+      "expect": {
+        "answer": {
+          "code": "invalid",
+          "status": 400
+        },
+        "refreshes": [
+          {
+            "filter": {},
+            "table": "task_hours"
+          }
+        ],
+        "writes": []
+      },
+      "name": "a refresh of partitions naming none sends an empty filter: refused, 400 invalid"
+    }
+  ]
+}

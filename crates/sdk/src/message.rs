@@ -40,6 +40,10 @@ pub trait Entity: Sized + Send + Sync + 'static {
     const ENTITY: &'static str;
     /// The plugin that owns it; `None` for this plugin's own entities.
     const PLUGIN: Option<&'static str>;
+    /// Its rows are kept in the analytic copy only (`#[entity(storage = olap, key(..))]`): read with
+    /// `ctx.analytics()`, filled by its load (`Plugin::load`), never written; `ctx.db()` and `ctx.query()` of it do
+    /// not compile.
+    const OLAP: bool = false;
 }
 
 /// A request message whose response type is known, so `ctx.call(plugin, &req)` is typed:
@@ -171,6 +175,8 @@ pub struct FieldInfo {
     pub(crate) inverse: &'static str,
     /// a ref's `on_delete` ("" when not declared: `restrict` within the plugin, `keep` across)
     pub(crate) on_delete: &'static str,
+    /// `#[col(history)]`: the entity's history keeps its changes
+    pub(crate) history: bool,
 }
 
 impl FieldInfo {
@@ -200,6 +206,20 @@ impl FieldInfo {
         self.on_delete = on_delete;
         self
     }
+
+    /// `#[col(history)]`: the entity's history keeps the column's changes.
+    pub fn history(mut self, history: bool) -> Self {
+        self.history = history;
+        self
+    }
+}
+
+/// An entity's `history(layer = .., all, unmasked)`.
+#[derive(Debug, Clone)]
+pub struct HistoryInfo {
+    pub layer: crate::lake::Layer,
+    pub all: bool,
+    pub unmasked: bool,
 }
 
 /// An index over several columns of an entity: `(column, desc)` in order.
@@ -231,6 +251,12 @@ pub struct EntityInfo {
     pub append_only: bool,
     pub fields: Vec<FieldInfo>,
     pub indexes: Vec<IndexInfo>,
+    /// `history(layer = ..)`: the entity keeps a history in that layer
+    pub history: Option<HistoryInfo>,
+    /// `storage = olap`: "olap"; else empty
+    pub storage: &'static str,
+    /// `key(..)` of an entity stored in OLAP
+    pub olap_key: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +316,7 @@ impl Registry {
             nav: "",
             inverse: "",
             on_delete: "",
+            history: false,
         }
     }
 

@@ -7,7 +7,7 @@
 // - messages: in order of first use while walking the endpoints as declared (each endpoint's input, then its
 //   output; a message's nested messages right after it, depth first, in field order), then the entities'
 //   messages in entity order, then the extra `messages`, then the jobs' payloads (in job order), then the topics'
-//   key messages;
+//   key messages, then the views' rows (in view order), then the lake tables' rows (in table order);
 // - dependencies and their reads: as declared;
 // - enums: in order of first use while walking those messages' fields, then the extra `enums`;
 // - fields: declaration order; an entity's message has `id` first, then its columns. `number` is the 1-based
@@ -19,8 +19,25 @@ import { cronError } from "./cron.js";
 import { EndpointDef, JobDef, RoleDef, describedEndpoints, durationMs, type EndpointOptions, type JobOptions, type PluginOptions } from "./declare.js";
 import { NotificationKind } from "./notify.js";
 import { jsonName, humanize, pascal, snake } from "./names.js";
-import { EntityDef, EnumDef, Field, MessageDef, PlatformEntity, entityNames as describedNames, foreignPlugin, navigations, type AnyField, type IoType, type Shape } from "./schema.js";
+import { EntityDef, EnumDef, Field, MessageDef, PlatformEntity, ViewDef, entityNames as describedNames, foreignPlugin, navigations, viewNames, type AnyField, type IoType, type Shape } from "./schema.js";
+import { describeLoad, describeModel, describeView, type DescribedLoad, type DescribedModel, type DescribedView } from "./query.js";
+import { LakeTableDef, LayerDef, lakeNames } from "./lake.js";
+import { givenUnknown, optionProblems, type Helper } from "./keys.js";
 import { TopicDecl, TopicDef, UiDoc, invalidationJson, resolveUi, topicDecl, type TopicLike } from "./ui.js";
+
+/** A layer's or a lake table's name: snake_case, at most 32 characters. */
+const LAKE_NAME = /^[a-z][a-z0-9_]{0,31}$/;
+
+/** The columns every history has besides the entity's `id` and its kept ones: no kept column takes their names. */
+const HISTORY_COLUMNS = ["valid_from", "valid_to", "change", "changed_by", "changed_by_kind", "changed_by_plugin", "day", "seq"];
+
+/** The scalar types a lake column holds. */
+const LAKE_SCALARS = ["string", "bool", "int32", "int64", "double", "decimal", "uuid", "timestamp", "date", "bytes", "json"];
+
+/** Whether a field is of a type a lake column holds: a single scalar, enum or ref (never a list or a message). */
+function lakeType(f: DescriptorField): boolean {
+  return !f.repeated && (LAKE_SCALARS.includes(f.type) || f.type.startsWith("enum:") || f.type.startsWith("ref:"));
+}
 
 export interface DescriptorField {
   name: string;
@@ -37,6 +54,8 @@ export interface DescriptorField {
   nav?: string;
   inverse?: string;
   on_delete?: string;
+  /** The entity's history keeps the column's changes; entity columns only, written only when set. */
+  history?: true;
 }
 
 /** `on_delete` of a ref within the plugin, and of one to another plugin or the directory. */
@@ -84,7 +103,13 @@ export interface Descriptor {
   /** Written only when declared. */
   connections?: { name: string; kind: string; title?: string; description?: string }[];
   /** `reads`: written only when declared. */
-  dependencies: { plugin: string; calls: string[]; reads?: { entity: string; fields: { name: string; type: string }[] }[] }[];
+  dependencies: {
+    plugin: string;
+    calls: string[];
+    reads?: { entity: string; fields: { name: string; type: string }[] }[];
+    /** The dependency's exported lake tables read; written only when declared. */
+    lake?: string[];
+  }[];
   enums: { name: string; values: string[] }[];
   /** `kind`: `job` for a job's payload. */
   messages: { name: string; kind: "message" | "job"; description: string; fields: DescriptorField[] }[];
@@ -101,6 +126,12 @@ export interface Descriptor {
     indexes?: { columns: { name: string; desc?: true }[]; unique?: true }[];
     /** The access rules; written only when declared. */
     access?: Record<string, unknown>;
+    /** The history in the Data Lake; written only when declared, each optional member only when set. */
+    history?: DescribedHistory;
+    /** `olap`: its rows are kept in the analytic copy only; written only when declared. */
+    storage?: "olap";
+    /** The fields that key a row of an entity stored in OLAP; written only when declared. */
+    olap_key?: string[];
   }[];
   endpoints: {
     name: string;
@@ -146,6 +177,40 @@ export interface Descriptor {
     timeout_ms?: number;
     concurrency?: number;
   }[];
+  /** The analytic views; written only when declared. */
+  views?: DescribedView[];
+  /** The layers of the Data Lake; written only when declared, `title` only when set. */
+  layers?: { name: string; title?: string }[];
+  /** The lake tables; written only when declared, each optional member only when set. */
+  lake_tables?: DescribedLakeTable[];
+  /** The models of lake tables; written only when declared. */
+  lake_models?: DescribedModel[];
+  /** The loads of the entities stored in OLAP; written only when declared. */
+  loads?: DescribedLoad[];
+}
+
+/** An entity's history as the descriptor has it. */
+export interface DescribedHistory {
+  layer: string;
+  all?: true;
+  unmasked?: true;
+  read?: string[];
+  system_read?: true;
+  export?: true;
+}
+
+/** A lake table as the descriptor has it. */
+export interface DescribedLakeTable {
+  name: string;
+  layer: string;
+  message: string;
+  description?: string;
+  partition?: string[];
+  key?: string[];
+  read?: string[];
+  system_read?: true;
+  export?: true;
+  export_models?: true;
 }
 
 /** A definition error: `error[E_CODE] at <path>: <message>`. */
@@ -260,6 +325,15 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
     if (errors.length < MAX_ERRORS) errors.push(help ? { code, path, message, help } : { code, path, message });
   };
   const id = options.id;
+  // options this SDK does not know: given to a helper (noted on what it returned) or within the plugin's own
+  const optionsOf = (helper: Helper, value: unknown, path: string) => {
+    for (const p of optionProblems(helper, value)) err("E_OPTION_UNKNOWN", `${path}.${p.key}`, p.message, p.help);
+  };
+  const noted = (def: unknown, path: string) => {
+    if (typeof def !== "object" || def === null) return;
+    for (const p of givenUnknown.get(def) ?? []) err("E_OPTION_UNKNOWN", `${path}.${p.key}`, p.message, p.help);
+  };
+  optionsOf("plugin", options, "plugin");
 
   // --- plugin -------------------------------------------------------------------------------------
   if (typeof id !== "string" || !/^[a-z][a-z0-9]{1,15}$/.test(id)) {
@@ -281,6 +355,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
       err("E_SCHEMA", path, "not a role (use role({...}))");
       continue;
     }
+    noted(r, path);
     const name = snake(key);
     if (!/^[a-z][a-z0-9_]{1,31}$/.test(name)) err("E_ROLE_NAME", path, `\`${name}\` is not a role name`, "2–32 characters: a-z, 0-9, _");
     if (roles.some((x) => x.name === name) || roleNames.has(r)) err("E_ROLE_DUP", path, `role \`${name}\` is declared twice`);
@@ -313,6 +388,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
   for (const [key, s] of Object.entries(options.scopes ?? {})) {
     const name = snake(key);
     const path = `scopes.${key}`;
+    optionsOf("scope", s, path);
     if (!/^[a-z][a-z0-9_]{0,31}$/.test(name)) err("E_SCOPE_NAME", path, `\`${name}\` is not a scope name`);
     if (scopes.some((x) => x.name === name)) err("E_SCOPE_DUP", path, `scope \`${name}\` is declared twice`);
     scopes.push({ name, title: s?.title ?? "", description: s?.description ?? "", sensitive: s?.sensitive ?? false });
@@ -323,6 +399,10 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
   for (const [name, c] of Object.entries(options.capabilities ?? {})) {
     const path = `capabilities.${JSON.stringify(name)}`;
     const reason = typeof c === "string" ? c : c?.reason ?? "";
+    if (typeof c !== "string") {
+      optionsOf("capability", c, path);
+      (c?.on ?? []).forEach((b, i) => optionsOf("bypass", b, `${path}.on[${i}]`));
+    }
     if (!CAPABILITIES.includes(name)) err("E_CAPABILITY_UNKNOWN", path, `\`${name}\` is not a capability`, `capabilities: ${CAPABILITIES.join(", ")}`);
     if (!reason.trim()) err("E_CAPABILITY_REASON", path, "a capability needs a reason");
     capabilities.push({ name, reason });
@@ -331,6 +411,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
   const permissions = [...(options.permissions ?? [])];
 
   const agents: Descriptor["agents"] = Object.entries(options.agents ?? {}).map(([key, a]) => {
+    optionsOf("agent", a, `agents.${key}`);
     const seconds = a?.timeout === undefined ? undefined : agentTimeoutSeconds(a.timeout);
     if (a?.timeout !== undefined && seconds === undefined)
       err("E_AGENT_TIMEOUT_RANGE", `agents.${key}.timeout`, `${JSON.stringify(a.timeout)} is not a time`, "whole seconds as '90s', '15m' or '2h'");
@@ -357,6 +438,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
     };
   });
 
+  for (const [key, c] of Object.entries(options.connections ?? {})) optionsOf("connection", c, `connections.${key}`);
   const connections: NonNullable<Descriptor["connections"]> = Object.entries(options.connections ?? {}).map(([key, c]) => ({
     name: snake(key),
     kind: c?.kind ?? "",
@@ -373,6 +455,10 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
       dep.reads = d.reads.map((r) => ({ entity: r.entity, fields: (r.fields ?? []).map((f) => ({ name: f.name, type: f.type })) }));
     }
     const path = `dependencies[${i}]`;
+    if (typeof d !== "string") {
+      optionsOf("dependency", d, path);
+      (d.reads ?? []).forEach((r, j) => optionsOf("dependencyRead", r, `${path}.reads[${j}]`));
+    }
     if (dep.plugin === id) err("E_DEP_SELF", path, "a plugin cannot depend on itself");
     if (dependencies.some((x) => x.plugin === dep.plugin)) err("E_DEP_DUP", path, `\`${dep.plugin}\` is listed twice`);
     dependencies.push(dep);
@@ -387,6 +473,11 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
       err("E_SCHEMA", path, "not an entity (use entity({...}))");
       continue;
     }
+    noted(e, path);
+    if (e.options.history !== undefined) optionsOf("history", e.options.history, `${path}.history`);
+    (e.options.indexes ?? []).forEach((ix: unknown, i) => {
+      if (!Array.isArray(ix)) optionsOf("index", ix, `${path}.indexes[${i}]`);
+    });
     if (foreignPlugin(e)) {
       err("E_SCHEMA", path, `\`${foreignPlugin(e)}.${e.options.name ?? ""}\` is another plugin's entity`,
         "read it with ctx.query() and list its reads in the dependency");
@@ -404,6 +495,25 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
     entityNames.set(e, name);
     describedNames.set(e, name);
     entityList.push([key, e]);
+  }
+
+  // --- views: names first, so queries and endpoints can name them ---------------------------------
+  const viewList: [string, string, ViewDef<any>][] = []; // [key, name, view]
+  for (const [key, v] of Object.entries(options.views ?? {})) {
+    const path = `views.${key}`;
+    if (!(v instanceof ViewDef)) {
+      err("E_SCHEMA", path, "not a view (use view({...}))");
+      continue;
+    }
+    noted(v, path);
+    const name = v.options.name ?? snake(key);
+    if (!/^[a-z][a-z0-9_]{0,62}$/.test(name)) err("E_VIEW_NAME", path, `\`${name}\` is not a view name`, "snake_case, at most 63 characters");
+    if (viewList.some(([, n, x]) => n === name || x === v)) {
+      err("E_VIEW_DUP", path, `view \`${name}\` is declared twice`);
+    }
+    if ([...entityNames.values()].includes(name)) err("E_VIEW_CLASH", path, `\`${name}\` is the name of an entity of the plugin`);
+    viewNames.set(v, name);
+    viewList.push([key, name, v]);
   }
 
   // --- messages and enums -------------------------------------------------------------------------
@@ -474,10 +584,15 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
     }
   };
 
-  const describeFields = (source: MessageDef<any> | EntityDef<any>, path: string): DescriptorField[] => {
+  const describeFields = (source: MessageDef<any> | EntityDef<any> | ViewDef<any> | LakeTableDef<any, any>, path: string): DescriptorField[] => {
     const seen = new Set<string>();
     return messageFields(source).map((f, i) => {
       const fpath = `${path}.${f.key}`;
+      // the options of a `t.ref`, also of one inside `t.array`
+      const inner = f.field.spec.kind === "array" ? f.field.spec.inner : undefined;
+      for (const p of [...(f.field.column.unknownOptions ?? []), ...(inner?.column.unknownOptions ?? [])]) {
+        err("E_OPTION_UNKNOWN", `${fpath}.${p.key}`, p.message, p.help);
+      }
       if (!/^[a-z][a-zA-Z0-9]*$/.test(f.key) || jsonName(f.name) !== f.key) {
         err("E_FIELD_NAME", fpath, `\`${f.key}\` is not a lowerCamelCase field name`);
       }
@@ -502,21 +617,36 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
     });
   };
 
-  // Registers a message (or an entity's message) at its first use and returns its name.
-  function visitMessage(source: MessageDef<any> | EntityDef<any>, path: string): string {
+  // Registers a message (an entity's message, a view's row) at its first use and returns its name.
+  function visitMessage(source: MessageDef<any> | EntityDef<any> | ViewDef<any> | LakeTableDef<any, any>, path: string): string {
+    if (source instanceof LakeTableDef) return visitLakeRow(source, path);
     const isEntity = source instanceof EntityDef;
-    const name = isEntity ? pascal(entityNames.get(source) ?? "") : source.name;
+    const isView = source instanceof ViewDef;
+    const name = isEntity ? pascal(entityNames.get(source) ?? "") : isView ? pascal(viewNames.get(source) ?? "") : source.name;
     if (visited.has(source)) return name;
     if (!claimType(name, source, path, "E_MSG_DUP")) return name;
     const desc: Descriptor["messages"][number] = {
       name,
       kind: "message",
-      description: isEntity ? source.options.description ?? "" : source.messageDescription,
+      description: isEntity || isView ? source.options.description ?? "" : source.messageDescription,
       fields: [],
     };
     visited.set(source, desc);
     messages.push(desc);
-    desc.fields = describeFields(source, isEntity ? `entities.${entityNames.get(source)}.columns` : `messages.${name}`);
+    if (source instanceof MessageDef) noted(source, `messages.${name}`);
+    desc.fields = describeFields(source, isEntity ? `entities.${entityNames.get(source)}.columns` : isView ? `views.${viewNames.get(source)}.columns` : `messages.${name}`);
+    return name;
+  }
+
+  // A lake table's row: its message, named apart from the table (`TaskLoadRow` of `task_load`).
+  function visitLakeRow(source: LakeTableDef<any, any>, path: string): string {
+    const name = source.messageName();
+    if (visited.has(source)) return name;
+    if (!claimType(name, source, path, "E_MSG_DUP")) return name;
+    const desc: Descriptor["messages"][number] = { name, kind: "message", description: source.options.description ?? "", fields: [] };
+    visited.set(source, desc);
+    messages.push(desc);
+    desc.fields = describeFields(source, `${path}.columns`);
     return name;
   }
 
@@ -541,6 +671,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
       err("E_SCHEMA", path, "not an endpoint (use endpoint({...}))");
       continue;
     }
+    noted(ep.root, path);
     const o = ep.options;
     const name = pascal(key);
     if (!TYPE_NAME.test(name)) err("E_ENDPOINT_NAME", path, `\`${name}\` is not an endpoint name`);
@@ -712,6 +843,26 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
       return out;
     });
     if (indexes.length > 0) decl.indexes = indexes;
+    // stored in OLAP: its key's fields by their descriptor names
+    const storage = (e.options as { storage?: unknown }).storage;
+    if (storage !== undefined) {
+      if (storage === "olap") decl.storage = "olap";
+      else err("E_OLAP_STORAGE", `${path}.storage`, `${JSON.stringify(storage)} is not a storage`, "storage: 'olap' keeps the rows in the analytic copy only");
+    }
+    const olapKey = e.options.olapKey ?? [];
+    if (olapKey.length > 0) {
+      if (storage !== "olap") err("E_OLAP_KEY", `${path}.olapKey`, "olapKey keys an entity stored in OLAP: declare storage: 'olap'");
+      decl.olap_key = olapKey.map((k) => {
+        if (!(k in e.columns)) err("E_OLAP_KEY", `${path}.olapKey`, `\`${k}\` is not a column of ${name}`);
+        return snake(k);
+      });
+    }
+    if (storage === "olap" && e.options.load === undefined) {
+      err("E_OLAP_LOAD", `${path}.load`, `${name} is stored in OLAP: its load fills it`, "load: (l) => l.from(lakeTable)..columns({..})");
+    }
+    if (storage !== "olap" && e.options.load !== undefined) {
+      err("E_LOAD_ENTITY", `${path}.load`, `${name} is not stored in OLAP: only such an entity has a load`, "storage: 'olap'");
+    }
     if (e.options.access) {
       decl.access = describeAccess(e.options.access, {
         role: roleName,
@@ -751,6 +902,8 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
       err("E_SCHEMA", path, "not a job (use job({...}))");
       continue;
     }
+    noted(j, path);
+    if (j.options.retry !== undefined) optionsOf("retry", j.options.retry, `${path}.retry`);
     const o = j.options;
     const name = o.name ?? snake(key);
     if (typeof name !== "string" || !JOB_NAME.test(name)) {
@@ -866,6 +1019,184 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
       err("E_AGENT_TOPIC_UNKNOWN", `agents.${key}.topic`, `topic \`${named}\` is not declared`, "list it in plugin({ topics })");
   }
 
+  // --- views: their rows follow the topics' keys; their queries are built now that every name is known ----------
+  const views: DescribedView[] = [];
+  for (const [key, name, v] of viewList) {
+    const message = visitMessage(v, `views.${key}`);
+    const d = describeView(v, name, message);
+    if (typeof d === "string") err("E_VIEW_DEFINE", `views.${key}`, d);
+    else views.push(d);
+  }
+
+  // --- the lake: layers, the tables (their rows follow the views'), other plugins' tables read -----------------
+  const layers: NonNullable<Descriptor["layers"]> = [];
+  const layerNames = new Map<LayerDef, string>();
+  for (const [key, l] of Object.entries(options.layers ?? {})) {
+    const path = `layers.${key}`;
+    if (!(l instanceof LayerDef)) {
+      err("E_SCHEMA", path, "not a layer (use layer({...}))");
+      continue;
+    }
+    noted(l, path);
+    const name = snake(key);
+    if (!LAKE_NAME.test(name)) err("E_LAKE_LAYER_NAME", path, `\`${name}\` is not a layer name`, "snake_case, at most 32 characters");
+    if (layers.some((x) => x.name === name)) err("E_LAKE_LAYER_DUP", path, `layer \`${name}\` is declared twice`);
+    layerNames.set(l, name);
+    layers.push(l.options.title ? { name, title: l.options.title } : { name });
+  }
+  const lakeTables: DescribedLakeTable[] = [];
+  const viewNameList = viewList.map(([, n]) => n);
+  for (const [key, tbl] of Object.entries(options.lakeTables ?? {})) {
+    const path = `lakeTables.${key}`;
+    if (!(tbl instanceof LakeTableDef)) {
+      err("E_SCHEMA", path, "not a lake table (use lakeTable({...}))");
+      continue;
+    }
+    noted(tbl, path);
+    if (tbl.options.plugin) {
+      err("E_LAKE_DEFINE", path, `\`${tbl.sourceName()}\` is another plugin's lake table`, "list it in plugin({ lakeDependencies })");
+      continue;
+    }
+    const name = tbl.options.name ?? snake(key);
+    if (!LAKE_NAME.test(name) || name.includes("__") || name.endsWith("_")) {
+      err("E_LAKE_TABLE_NAME", path, `\`${name}\` is not a lake table name`, "snake_case, at most 32 characters, no `__`, not ending in `_`");
+    }
+    if (lakeTables.some((x) => x.name === name)) err("E_LAKE_TABLE_DUP", path, `lake table \`${name}\` is declared twice`);
+    if ([...entityNames.values()].includes(name) || viewNameList.includes(name)) {
+      err("E_LAKE_TABLE_CLASH", path, `\`${name}\` is the name of an entity or a view of the plugin`);
+    }
+    lakeNames.set(tbl, name);
+    const layer = tbl.options.layer instanceof LayerDef ? layerNames.get(tbl.options.layer) : undefined;
+    if (layer === undefined) err("E_LAKE_TABLE_LAYER", `${path}.layer`, "the layer is not in plugin({ layers })");
+    const columns = (list: readonly string[] | undefined, what: "partition" | "key", code: string): string[] =>
+      (list ?? []).flatMap((c) => {
+        if (!(c in tbl.columns)) {
+          err(code, `${path}.${what}`, `\`${c}\` is not a column of ${name}`);
+          return [];
+        }
+        return [snake(c)];
+      });
+    const out: DescribedLakeTable = { name, layer: layer ?? "", message: visitMessage(tbl, path) };
+    if (tbl.options.description) out.description = tbl.options.description;
+    const partition = columns(tbl.options.partition, "partition", "E_LAKE_PARTITION");
+    if (partition.length) out.partition = partition;
+    const keyColumns = columns(tbl.options.key, "key", "E_LAKE_KEY");
+    if (keyColumns.length) out.key = keyColumns;
+    const read: string[] = [];
+    (tbl.options.read ?? []).forEach((r, i) => {
+      const role = r instanceof RoleDef ? roleNames.get(r) : undefined;
+      if (role === undefined) {
+        err("E_LAKE_ROLE", `${path}.read[${i}]`, "the role is not in plugin({ roles })", "a lake table is read by the plugin's own roles");
+      } else if (!read.includes(role)) read.push(role); // each once, where first named (a history's alike)
+    });
+    if (read.length) out.read = read;
+    if (tbl.options.systemRead) out.system_read = true;
+    if (tbl.options.export) out.export = true;
+    if (tbl.options.exportToModels) out.export_models = true;
+    lakeTables.push(out);
+  }
+  // the models, in the order of their tables, once every table has its name
+  const lakeModels: DescribedModel[] = [];
+  for (const [key, tbl] of Object.entries(options.lakeTables ?? {})) {
+    if (!(tbl instanceof LakeTableDef) || tbl.options.plugin || tbl.options.model === undefined) continue;
+    const name = lakeNames.get(tbl) ?? "";
+    if (typeof tbl.options.model !== "function") {
+      err("E_LAKE_MODEL_DEFINE", `lakeTables.${key}.model`, "not a model (model: (m) => m.from(..)..columns({..}))");
+      continue;
+    }
+    const d = describeModel(name, tbl.columns, tbl.options.model as never);
+    if (typeof d === "string") err("E_LAKE_MODEL_DEFINE", `lakeTables.${key}.model`, d);
+    else lakeModels.push(d);
+  }
+  (options.lakeDependencies ?? []).forEach((tbl, i) => {
+    const path = `lakeDependencies[${i}]`;
+    if (!(tbl instanceof LakeTableDef) || !tbl.options.plugin || !tbl.options.name) {
+      err("E_LAKE_DEFINE", path, "not another plugin's lake table", "lakeTable({ plugin: 'retail', name: 'stock', columns })");
+      return;
+    }
+    noted(tbl, path);
+    let dep = dependencies.find((d) => d.plugin === tbl.options.plugin);
+    if (!dep) {
+      dep = { plugin: tbl.options.plugin, calls: [] };
+      dependencies.push(dep);
+    }
+    dep.lake ??= [];
+    if (!dep.lake.includes(tbl.options.name)) dep.lake.push(tbl.options.name);
+  });
+  (options.historyDependencies ?? []).forEach((e, i) => {
+    const path = `historyDependencies[${i}]`;
+    const owner = e instanceof EntityDef ? foreignPlugin(e) : undefined;
+    if (!owner || !e.options.name) {
+      err("E_LAKE_DEFINE", path, "not another plugin's entity", "entity({ plugin: 'helpdesk', name: 'ticket', columns }): another plugin's entity, by its owner and name");
+      return;
+    }
+    noted(e, path);
+    let dep = dependencies.find((d) => d.plugin === owner);
+    if (!dep) {
+      dep = { plugin: owner, calls: [] };
+      dependencies.push(dep);
+    }
+    dep.lake ??= [];
+    if (!dep.lake.includes(e.options.name)) dep.lake.push(e.options.name);
+  });
+
+  // --- the loads of the entities stored in OLAP, in entity order, once every lake table has its name ----------
+  const loads: DescribedLoad[] = [];
+  for (const [key, e] of entityList) {
+    if (e.options.storage !== "olap" || e.options.load === undefined) continue;
+    if (typeof e.options.load !== "function") {
+      err("E_LOAD_DEFINE", `entities.${key}.load`, "not a load (load: (l) => l.from(..)..columns({..}))");
+      continue;
+    }
+    const d = describeLoad(entityNames.get(e) ?? "", e.columns, e.options.load as never);
+    if ("code" in d) err(d.code, `entities.${key}.load`, d.message);
+    else loads.push(d);
+  }
+
+  // --- the entities' histories, now that the layers have their names ------------------------------
+  for (const [key, e] of entityList) {
+    const decl = entities.find((x) => x.name === entityNames.get(e));
+    if (!decl) continue;
+    const path = `entities.${key}`;
+    const kept = (k: string) => (e.columns[k] as AnyField | undefined)?.column.history === true;
+    for (const f of decl.fields) {
+      const k = Object.keys(e.columns).find((c) => snake(c) === f.name);
+      if (f.name !== "id" && k !== undefined && kept(k)) f.history = true;
+    }
+    const h = e.options.history;
+    if (h === undefined) {
+      const f = decl.fields.find((x) => x.history);
+      if (f) err("E_HISTORY_LAYER", `${path}.columns.${f.name}`, `${decl.name}.${f.name} is kept, but the entity keeps no history`, "history: { layer } on the entity");
+      continue;
+    }
+    const layer = h.layer instanceof LayerDef ? layerNames.get(h.layer) : undefined;
+    if (layer === undefined) err("E_HISTORY_LAYER", `${path}.history.layer`, "the layer is not in plugin({ layers })");
+    const history: DescribedHistory = { layer: layer ?? "" };
+    if (h.all) history.all = true;
+    if (h.unmasked) history.unmasked = true;
+    const read: string[] = [];
+    (h.read ?? []).forEach((r, i) => {
+      const role = r instanceof RoleDef ? roleNames.get(r) : undefined;
+      if (role === undefined) {
+        err("E_HISTORY_ROLE", `${path}.history.read[${i}]`, "the role is not in plugin({ roles })", "a history is read by the plugin's own roles");
+      } else if (!read.includes(role)) read.push(role); // each once, where first named (a lake table's alike)
+    });
+    if (read.length) history.read = read;
+    if (h.systemRead) history.system_read = true;
+    if (h.export) history.export = true;
+    decl.history = history;
+    // `all`: the flag on every column it covers, by the platform's rule (the encrypted ones, the lists and messages,
+    // the history's own column names and, without `unmasked`, the masked ones left out)
+    if (h.all) {
+      const masked = new Set(((decl.access?.masks ?? []) as { field: string }[]).map((m) => m.field));
+      for (const f of decl.fields) {
+        if (f.name === "id" || f.encrypted || HISTORY_COLUMNS.includes(f.name) || !lakeType(f)) continue;
+        if (!h.unmasked && masked.has(f.name)) continue;
+        f.history = true;
+      }
+    }
+  }
+
   (options.enums ?? []).forEach((en, i) => {
     if (en instanceof EnumDef) visitEnum(en, `enums[${i}]`);
     else err("E_SCHEMA", `enums[${i}]`, "not an enum (use t.enum(...))");
@@ -899,6 +1230,11 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
     }
   }
   if (topics.length > 0) descriptor.topics = topics;
+  if (views.length > 0) descriptor.views = views;
+  if (layers.length > 0) descriptor.layers = layers;
+  if (lakeTables.length > 0) descriptor.lake_tables = lakeTables;
+  if (lakeModels.length > 0) descriptor.lake_models = lakeModels;
+  if (loads.length > 0) descriptor.loads = loads;
   // --- notification kinds: written only when declared; they need push:send
   const kinds = options.notifications ?? [];
   if (kinds.length > 0 && !capabilities.some((c) => c.name === "push:send")) {
@@ -911,6 +1247,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
       err("E_SCHEMA", path, "not a notification kind (use notification(name, {..}))");
       return;
     }
+    noted(k, path);
     if (typeof k.name !== "string" || !/^[a-z][a-z0-9_]{0,31}$/.test(k.name)) {
       err("E_NOTIFY_KIND_NAME", path, `\`${k.name}\` must match ^[a-z][a-z0-9_]{0,31}$`);
     } else if (notifications.some((x) => x.name === k.name)) {
@@ -949,6 +1286,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
   }
   if (options.ui !== undefined) {
     if (options.ui instanceof UiDoc) {
+      noted(options.ui, "ui");
       descriptor.ui = resolveUi(options.ui, {
         endpoint: endpointName,
         entity: (e, path) => {

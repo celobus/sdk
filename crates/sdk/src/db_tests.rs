@@ -159,6 +159,7 @@ async fn find_filters_orders_and_pages() {
         syscall::Call::DbFind(_) => Ok(rows(&[])),
         syscall::Call::DbCount(_) => Ok(syscall_result::Result::DbCount(pb::DbCountResult {
             count: 3,
+            ..Default::default()
         })),
         _ => Err(("invalid: no".into(), None)),
     });
@@ -382,6 +383,7 @@ async fn a_system_context_names_its_reason_on_every_call() {
         syscall::Call::TxBegin(_) => Ok(syscall_result::Result::TxBegun(pb::TxBegun { tx: 9 })),
         syscall::Call::DbCount(_) => Ok(syscall_result::Result::DbCount(pb::DbCountResult {
             count: 3,
+            ..Default::default()
         })),
         syscall::Call::TxCommit(_) => Ok(syscall_result::Result::Ok(pb::Empty {})),
         syscall::Call::DbDelete(_) => Err(("permission_denied: not yours".into(), None)),
@@ -441,6 +443,7 @@ async fn query_reads_a_dependencys_entity_by_its_provider() {
         }
         syscall::Call::DbCount(_) => Ok(syscall_result::Result::DbCount(pb::DbCountResult {
             count: 1,
+            ..Default::default()
         })),
         _ => Err(("invalid: no".into(), None)),
     });
@@ -791,6 +794,7 @@ async fn update_where_and_upsert() {
     let (ctx, seen) = ctx_with(|call| match call {
         syscall::Call::DbUpdateWhere(_) => Ok(syscall_result::Result::DbCount(pb::DbCountResult {
             count: 3,
+            ..Default::default()
         })),
         syscall::Call::DbUpsert(_) => Ok(rows(&[json!({ "id": "4", "label": "x", "weight": 2,
             "noteId": "1", "createdAt": "2026-11-12T10:00:00Z", "updatedAt": "2026-11-12T10:00:00Z" })])),
@@ -843,6 +847,7 @@ async fn row_locks_are_reads_of_a_transaction() {
         syscall::Call::DbGet(_) | syscall::Call::DbFind(_) => Ok(rows(&[stored(1, "a", 1)])),
         syscall::Call::DbCount(_) => Ok(syscall_result::Result::DbCount(pb::DbCountResult {
             count: 1,
+            ..Default::default()
         })),
         _ => Ok(syscall_result::Result::Ok(pb::Empty {})),
     });

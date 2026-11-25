@@ -1,4 +1,4 @@
-//! The plugin's UI document (`ui` in the descriptor; `reviews/plugin-ui-v2/proposal.md`): contributions (sidebar
+//! The plugin's UI document (`ui` in the descriptor): contributions (sidebar
 //! groups, home widgets, palette commands, record menus), screens and overlays built from the catalog's primitives,
 //! queries of the plugin's `ui` endpoints, topics they follow, state, and action chains of closed steps. It is data:
 //! no client runs plugin code, and nothing here styles anything (tones, emphasis and density are meanings).

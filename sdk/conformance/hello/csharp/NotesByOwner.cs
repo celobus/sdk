@@ -11,7 +11,7 @@ namespace Hello;
 [Message] public sealed partial record NoteTally(Id<Platform.User> OwnerId, long Notes);
 
 /// <summary>
-/// Counts the notes of each owner the caller may read: SQL over the notes' secure view (<c>hello_note</c>), run as the
+/// Counts the notes of each owner the caller may read: SQL over the notes (<c>hello_note</c>), run as the
 /// caller through the notes' read rules (the caller's own, or every owner's for a manager).
 /// </summary>
 public sealed class NotesByOwner : Endpoint<NotesByOwnerRequest, NotesByOwnerReply>

@@ -176,8 +176,14 @@ dependencies = [
 name = "celobus-conformance-jobs"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "celobus-proto",
  "celobus-sdk",
+ "serde_json",
+ "tempfile",
  "tokio",
+ "tokio-stream",
+ "tonic",
  "tracing",
 ]
 
@@ -197,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "celobus-descriptor"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "celobus-manifest",
  "chrono",
@@ -212,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "celobus-manifest"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "celobus-proto",
  "hex",
@@ -224,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "celobus-proto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "prost",
  "protox",
@@ -235,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "celobus-sdk"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -261,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "celobus-sdk-derive"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -1,4 +1,4 @@
-// UI declarations (reviews/plugin-ui-v2/proposal.md): a plugin's sidebar, screens, overlays, home widgets and
+// UI declarations: a plugin's sidebar, screens, overlays, home widgets and
 // commands, built from the platform's catalog of primitives and bound to the plugin's own endpoints and topics. It
 // is data in the descriptor (`ui`): every client renders it with its own components, and every read and action is
 // the member's own call. Nothing here styles anything: tones, emphasis and density are meanings.
@@ -15,6 +15,7 @@
 // The builders make a tree that still holds what only the plugin knows when it resolves (endpoint names come from
 // the keys of `plugin({ endpoints })`); `resolveUi` turns it into the descriptor's JSON (`crates/descriptor/src/ui.rs`
 // is its schema) and collects the `ui.text(key, en)` texts into `texts.en`.
+import { noted } from "./keys.js";
 import type { RoleLike } from "./ctx.js";
 import { Decimal } from "./decimal.js";
 import type { EndpointDef } from "./declare.js";
@@ -2856,7 +2857,7 @@ function define(options: UiOptions): UiDoc {
     overlays: some((options.overlays ?? []).map((o) => o.json())),
     search: some(options.search ?? []),
   };
-  return new UiDoc(tree, Object.fromEntries(Object.entries(options.texts ?? {}).map(([k, v]) => [k, { ...v }])));
+  return noted(new UiDoc(tree, Object.fromEntries(Object.entries(options.texts ?? {}).map(([k, v]) => [k, { ...v }]))), "ui", options);
 }
 
 /** @internal The document as the descriptor carries it: deferred parts resolved, texts collected. */

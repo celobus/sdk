@@ -116,7 +116,7 @@ internal sealed class FakeCelld : Celld.CelldBase
 
 public sealed class SessionTests : IAsyncLifetime
 {
-    private readonly string _socket = Path.Combine(Path.GetTempPath(), $"celld-{Guid.NewGuid():N}"[..20] + ".sock");
+    private readonly string _socket = Path.Combine(Path.GetTempPath(), $"plugin-{Guid.NewGuid():N}"[..20] + ".sock");
     private readonly FakeCelld _celld = new();
     private WebApplication? _app;
 

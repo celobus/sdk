@@ -2,9 +2,30 @@ using Celobus.Sdk;
 
 namespace Jobsdemo;
 
-// Status: new, then processed
+// Status: new, then processed. Its history keeps the changes of its status
+[Entity, History("audit")]
+public sealed partial record Task(Id<Task> Id, string Title, [History] string Status);
+
+// A stage of the work: the title of a task's status (`new`, `processed`)
 [Entity]
-public sealed partial record Task(Id<Task> Id, string Title, string Status);
+public sealed partial record Stage(Id<Stage> Id, string Name, string Title);
+
+// An estimate of some work, in hours (a decimal)
+[Entity]
+public sealed partial record Estimate(Id<Estimate> Id, string Title, decimal Hours);
+
+// The hours planned for some work: its history keeps every column but the list, the encrypted and the masked one
+[Entity, History("audit", All = true)]
+public sealed partial record Budget(Id<Budget> Id, string Title, decimal? Hours, List<string> Tags, [Encrypted] string? Secret, string? Notes);
+
+[View(Name = "recent_task"), Describe("The titled tasks of the last 30 days, a row each, with the title of their stage.")]
+public sealed partial record RecentTask(DateOnly Day, string Title, string? Stage);
+
+[View, Describe("The recent tasks by week and stage, where a stage had more than one.")]
+public sealed partial record TasksByWeek(DateOnly Week, string? Stage, long Tasks);
+
+[View, Describe("The estimates of more than 12.50 hours.")]
+public sealed partial record LongEstimate(string Title, decimal Hours);
 
 // Fail true: the request fails after the enqueue, and the task and its run roll back together
 [Message] public sealed partial record CreateTaskRequest(string Title, bool Fail);

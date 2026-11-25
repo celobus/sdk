@@ -1,9 +1,12 @@
 // Declarations of data: field builders (`t.*`), messages, enums and entities, with the TypeScript types they
 // infer. Builders are immutable: `.optional()` and `.describe()` return a new field, so one enum or message may
 // be used in several places with different modifiers.
+import { noted, optionProblems } from "./keys.js";
 import { encodeFieldValue } from "./codec.js";
 import type { Decimal } from "./decimal.js";
 import { snake } from "./names.js";
+import type { RoleLike } from "./ctx.js";
+import type { LayerDef } from "./lake.js";
 
 /** The descriptor's scalar types. */
 export type ScalarType =
@@ -51,6 +54,10 @@ export interface ColumnSpec {
   inverse?: string;
   /** what a ref does when its target is deleted for good */
   onDelete?: OnDelete;
+  /** the entity's history keeps the column's changes */
+  history?: boolean;
+  /** @internal the options of `t.ref(target, options)` it does not know */
+  unknownOptions?: import("./keys.js").OptionProblem[];
 }
 
 /**
@@ -128,6 +135,15 @@ export class Field<T, O extends boolean = false, R = unknown> {
     return new Field<T, O>(this.spec, this.isOptional, this.description, { ...this.column, encrypted: true });
   }
 
+  /**
+   * An entity column whose changes the entity's history keeps (`entity({ history: { layer } })`): each change a row of
+   * the history with the column as it was after it. A kept column is a scalar, an enum or a ref; never encrypted, and
+   * masked only when the history says `unmasked`.
+   */
+  history(): Field<T, O, R> {
+    return new Field<T, O, R>(this.spec, this.isOptional, this.description, { ...this.column, history: true });
+  }
+
   /** @internal A use of this field with its own identity (messages and entities copy their fields). */
   use(): Field<T, O, R> {
     return new Field<T, O, R>(this.spec, this.isOptional, this.description, this.column);
@@ -186,31 +202,32 @@ export class FieldRef<M, T, R = unknown, O extends boolean = boolean> {
   }
 
   /** @internal A comparison with another column (`eqCol` and the others). */
-  private cmpCol(op: string, other: FieldRef<any, any, any, any> | ColumnLike): ColCmp {
+  private cmpCol(op: string, other: FieldRef<any, any, any, any> | ColumnLike | DaysAgo): ColCmp {
     return new ColCmp(this, op, other);
   }
 
   /**
-   * In a query (`ctx.query(..)`): this column equals another of the same type (a key and a ref to its entity, two
-   * refs to one entity, two strings); also what `joinOn` joins on.
+   * In a query (`ctx.query(..)`) or a view: this column equals another of the same type (a key and a ref to its
+   * entity, two refs to one entity, two plain columns such as two strings); also what `joinOn` joins on. A date or
+   * timestamp column also compares with `daysAgo(n)`.
    */
-  eqCol(other: ColumnOf<T, R>): ColCmp {
+  eqCol(other: ColumnOf<T, R> | DayOf<T>): ColCmp {
     return this.cmpCol("EQ", other);
   }
   /** Not equal (a null is not equal to a value). */
-  neCol(other: ColumnOf<T, R>): ColCmp {
+  neCol(other: ColumnOf<T, R> | DayOf<T>): ColCmp {
     return this.cmpCol("NE", other);
   }
-  ltCol(other: ColumnOf<T, R>): ColCmp {
+  ltCol(other: ColumnOf<T, R> | DayOf<T>): ColCmp {
     return this.cmpCol("LT", other);
   }
-  leCol(other: ColumnOf<T, R>): ColCmp {
+  leCol(other: ColumnOf<T, R> | DayOf<T>): ColCmp {
     return this.cmpCol("LE", other);
   }
-  gtCol(other: ColumnOf<T, R>): ColCmp {
+  gtCol(other: ColumnOf<T, R> | DayOf<T>): ColCmp {
     return this.cmpCol("GT", other);
   }
-  geCol(other: ColumnOf<T, R>): ColCmp {
+  geCol(other: ColumnOf<T, R> | DayOf<T>): ColCmp {
     return this.cmpCol("GE", other);
   }
 
@@ -261,11 +278,61 @@ export class FieldRef<M, T, R = unknown, O extends boolean = boolean> {
   desc(): Order<M> {
     return new Order<M>(this.name, true, this.owner);
   }
+
+  /** Between `from` and `to`, both included (`ge(from)` and `le(to)`). */
+  between(from: T, to: T): Filter<M> {
+    return and(this.ge(from), this.le(to));
+  }
+
+  private bucket(unit: BucketUnit): Bucket<M, O> {
+    const scalar = this.field.spec.scalar;
+    if (this.field.spec.kind !== "scalar" || (scalar !== "date" && scalar !== "timestamp")) {
+      throw new TypeError(`${this.name}.${unit.toLowerCase()}(): ${this.name} is not a date or a timestamp`);
+    }
+    return new Bucket<M, O>(this, unit);
+  }
+  /**
+   * The day (in the workspace's time zone) of a timestamp or a date column: a `date` (`YYYY-MM-DD`) wherever a column
+   * stands in a query or a view (filtered, grouped, selected, ordered, joined).
+   */
+  day(this: FieldRef<M, Date | string, R, O>): Bucket<M, O> {
+    return this.bucket("DAY");
+  }
+  /** The first day of the week the moment or day falls in, from the workspace's first day of the week. */
+  week(this: FieldRef<M, Date | string, R, O>): Bucket<M, O> {
+    return this.bucket("WEEK");
+  }
+  /** The first day of the month. */
+  month(this: FieldRef<M, Date | string, R, O>): Bucket<M, O> {
+    return this.bucket("MONTH");
+  }
+  /** The first day of the quarter. */
+  quarter(this: FieldRef<M, Date | string, R, O>): Bucket<M, O> {
+    return this.bucket("QUARTER");
+  }
+  /** The first day of the year. */
+  year(this: FieldRef<M, Date | string, R, O>): Bucket<M, O> {
+    return this.bucket("YEAR");
+  }
+
+  /**
+   * The column's text, without the spaces around it, read as another type (a lake table's text column, in a model or
+   * a lake query only): `stockFile.f.onHand.parse('decimal')`. A text that does not read so fails the query (a
+   * model's refresh: 422 `lake_model_parse`, naming the column; nothing is written). A decimal reads only within the
+   * lake's digits (20 before the point, 18 after), never rounded; an integer only as digits; a bool as `true` or
+   * `false`; a date as `YYYY-MM-DD`; a timestamp as RFC 3339 with its offset. An absent text stays absent.
+   */
+  parse<K extends ParseKind>(this: FieldRef<M, string, R, O>, kind: K): Parsed<M, ParseValue[K], O> {
+    return new Parsed<M, ParseValue[K], O>(this, kind);
+  }
 }
 
-/** @internal A column of a query that is not a field handle: an alias's column (`query.ts`). */
+/** @internal A column of a query as the session carries it: a source's alias, a field, its bucket. */
+export type WColumn = { source: string; field: string; bucket?: BucketUnit; parse?: ParseWire };
+
+/** @internal A column of a query that is not a field handle: an alias's column, a bucket (`query.ts`). */
 export interface ColumnLike {
-  /** @internal */ readonly queryColumn: () => { source: string; field: string };
+  /** @internal */ readonly queryColumn: () => WColumn;
   /** @internal */ readonly field: AnyField;
 }
 
@@ -274,13 +341,252 @@ export type ColumnOf<T, R> =
   | FieldRef<any, T, R extends UntypedRef ? any : R | UntypedRef, any>
   | (ColumnLike & { readonly __value: T });
 
-/** Two columns compared (`a.eqCol(b)`): a query's condition, and what `joinOn` joins on. */
+/** What a date or timestamp column also compares with: a day relative to the day the query runs. */
+export type DayOf<T> = [T] extends [Date] ? DaysAgo : [T] extends [string] ? DaysAgo : never;
+
+/** Two columns compared (`a.eqCol(b)`), or a column and `daysAgo(n)`: a query's condition, and what `joinOn` joins on. */
 export class ColCmp {
   constructor(
     /** @internal */ readonly left: FieldRef<any, any, any, any> | ColumnLike,
     /** @internal */ readonly op: string,
-    /** @internal */ readonly right: FieldRef<any, any, any, any> | ColumnLike,
+    /** @internal */ readonly right: FieldRef<any, any, any, any> | ColumnLike | DaysAgo,
   ) {}
+}
+
+/**
+ * A day relative to the day the query runs: today in the workspace's time zone less `days` days, worked out when the
+ * query runs (so a view of "the last 30 days" moves with the calendar). Compared with a date column or a bucket as
+ * that day, with a timestamp column as the first moment of that day: `order.f.paidAt.geCol(daysAgo(30))`.
+ */
+export class DaysAgo {
+  constructor(/** how many days before today */ readonly days: number) {
+    if (!Number.isInteger(days) || days < -2_147_483_648 || days > 2_147_483_647) {
+      throw new TypeError(`daysAgo(${days}): a whole number of days`);
+    }
+  }
+}
+
+/** `daysAgo(n)`: today in the workspace's time zone less `n` days, worked out when the query runs. */
+export function daysAgo(n: number): DaysAgo {
+  return new DaysAgo(n);
+}
+
+// --- query conditions and orders beyond one entity's filter ----------------------------------------------------
+
+/** @internal A query's term as the session carries it: a column, an aggregate, a relative day. */
+export type WTerm = { column?: WColumn; aggregate?: { fn: string; column?: WColumn }; daysAgo?: number };
+/** @internal A query's condition as the session carries it. */
+export type WExpr =
+  | { and: { items: WExpr[] } }
+  | { or: { items: WExpr[] } }
+  | { not: WExpr }
+  | { compare: { left: WTerm; op: string; values?: Record<string, unknown>[]; right?: WTerm } }
+  | { exists: { source: { entity: string; alias: string }; filter?: WExpr } };
+
+/** A condition of a query beyond one entity's filter: `exists`, a column against a column, an aggregate's comparison,
+ * a bucket's, and the `and`, `or`, `not` of conditions of any entities. */
+export class QCond {
+  constructor(/** @internal */ readonly expr: WExpr | undefined) {}
+}
+
+/** An order of a query: a field handle's (`order.f.total.desc()`), an alias column's, a bucket's, an aggregate's. */
+export class QOrder {
+  constructor(/** @internal */ readonly wire: { term: WTerm; desc: boolean }) {}
+}
+
+/** The periods a bucket names. */
+export type BucketUnit = "DAY" | "WEEK" | "MONTH" | "QUARTER" | "YEAR";
+
+/**
+ * The period a date or timestamp column falls in (`order.f.paidAt.month()`): the first day of its day, week, month,
+ * quarter or year in the workspace's time zone, a `date` (`YYYY-MM-DD`; `undefined` where the column is null). It
+ * stands wherever a column does in a query or a view: compared (`eq`, `ge`, `between`, `in`, `geCol(daysAgo(30))`),
+ * grouped, selected, ordered, joined.
+ */
+export class Bucket<M, O extends boolean = boolean> implements ColumnLike {
+  declare readonly __message: (m: M) => M;
+  declare readonly __value: string;
+  declare readonly __optional: O;
+  /** @internal what its value is read as: a date */
+  readonly field: AnyField;
+
+  constructor(
+    /** @internal */ readonly ref: FieldRef<M, any, any, O>,
+    /** @internal */ readonly unit: BucketUnit,
+  ) {
+    const date = new Field<string, false>({ kind: "scalar", scalar: "date" });
+    this.field = ref.field.isOptional ? date.optional() : date;
+  }
+
+  /** @internal */
+  readonly queryColumn = (): WColumn => {
+    if (!this.ref.owner) throw new TypeError(`query: the column ${this.ref.name} is not an entity's or a view's`);
+    return { source: defaultAlias(this.ref.owner), field: this.ref.name, bucket: this.unit };
+  };
+
+  private compare(op: string, values: readonly string[]): QCond {
+    const encoded = values.map((v) => dbValue(encodeFieldValue(this.field, v, this.ref.name)));
+    return new QCond({ compare: { left: { column: this.queryColumn() }, op, values: encoded } });
+  }
+  eq(v: string): QCond {
+    return this.compare("EQ", [v]);
+  }
+  ne(v: string): QCond {
+    return this.compare("NE", [v]);
+  }
+  lt(v: string): QCond {
+    return this.compare("LT", [v]);
+  }
+  le(v: string): QCond {
+    return this.compare("LE", [v]);
+  }
+  gt(v: string): QCond {
+    return this.compare("GT", [v]);
+  }
+  ge(v: string): QCond {
+    return this.compare("GE", [v]);
+  }
+  /** Between `from` and `to` (`YYYY-MM-DD`), both included. */
+  between(from: string, to: string): QCond {
+    return new QCond({ and: { items: [this.ge(from).expr!, this.le(to).expr!] } });
+  }
+  /** Any of the days. */
+  in(values: readonly string[]): QCond {
+    return this.compare("IN", values);
+  }
+  isNull(): QCond {
+    return this.compare("IS_NULL", []);
+  }
+  isNotNull(): QCond {
+    return this.compare("IS_NOT_NULL", []);
+  }
+  /** Equals another date column or bucket (also what `joinOn` joins on), or `daysAgo(n)`. */
+  eqCol(other: ColumnOf<string, unknown> | DaysAgo): ColCmp {
+    return new ColCmp(this, "EQ", other);
+  }
+  neCol(other: ColumnOf<string, unknown> | DaysAgo): ColCmp {
+    return new ColCmp(this, "NE", other);
+  }
+  ltCol(other: ColumnOf<string, unknown> | DaysAgo): ColCmp {
+    return new ColCmp(this, "LT", other);
+  }
+  leCol(other: ColumnOf<string, unknown> | DaysAgo): ColCmp {
+    return new ColCmp(this, "LE", other);
+  }
+  gtCol(other: ColumnOf<string, unknown> | DaysAgo): ColCmp {
+    return new ColCmp(this, "GT", other);
+  }
+  geCol(other: ColumnOf<string, unknown> | DaysAgo): ColCmp {
+    return new ColCmp(this, "GE", other);
+  }
+  asc(): QOrder {
+    return new QOrder({ term: { column: this.queryColumn() }, desc: false });
+  }
+  desc(): QOrder {
+    return new QOrder({ term: { column: this.queryColumn() }, desc: true });
+  }
+}
+
+/** The types a lake table's text column is parsed as (`f.parse('decimal')`). */
+export type ParseKind = "decimal" | "int32" | "int64" | "double" | "bool" | "date" | "timestamp" | "uuid";
+
+/** What a parsed text is in TypeScript, by the type it is parsed as. */
+export interface ParseValue {
+  decimal: Decimal;
+  int32: number;
+  int64: bigint;
+  double: number;
+  bool: boolean;
+  date: string;
+  timestamp: Date;
+  uuid: string;
+}
+
+/** @internal A parse on the wire (`QueryColumn.parse`). */
+export type ParseWire = `PARSE_${Uppercase<ParseKind>}`;
+
+const PARSE_SCALARS: Record<ParseKind, ScalarType> = {
+  decimal: "decimal",
+  int32: "int32",
+  int64: "int64",
+  double: "double",
+  bool: "bool",
+  date: "date",
+  timestamp: "timestamp",
+  uuid: "uuid",
+};
+
+/**
+ * A lake table's text column read as another type (`stockFile.f.onHand.parse('decimal')`): a column of that type
+ * wherever a column stands in a model of the lake or a lake query (compared, grouped, selected, ordered, a model's
+ * column).
+ */
+export class Parsed<M, V, O extends boolean = boolean> implements ColumnLike {
+  declare readonly __message: (m: M) => M;
+  declare readonly __value: V;
+  declare readonly __optional: O;
+  /** @internal what its value is read as */
+  readonly field: AnyField;
+
+  constructor(
+    /** @internal */ readonly ref: FieldRef<M, any, any, O>,
+    /** @internal */ readonly kind: ParseKind,
+  ) {
+    const scalar = PARSE_SCALARS[kind];
+    if (scalar === undefined) throw new TypeError(`parse: ${JSON.stringify(kind)} is not decimal, int32, int64, double, bool, date, timestamp or uuid`);
+    const f = new Field<V, false>({ kind: "scalar", scalar });
+    this.field = ref.field.isOptional ? f.optional() : f;
+  }
+
+  /** @internal */
+  readonly queryColumn = (): WColumn => {
+    if (!this.ref.owner) throw new TypeError(`query: the column ${this.ref.name} is not a lake table's`);
+    const spec = this.ref.field.spec;
+    if (spec.kind !== "scalar" || spec.scalar !== "string") throw new TypeError(`parse: ${this.ref.name} is not a text column`);
+    return { source: defaultAlias(this.ref.owner), field: this.ref.name, parse: `PARSE_${this.kind.toUpperCase()}` as ParseWire };
+  };
+
+  private compare(op: string, values: readonly V[]): QCond {
+    const encoded = values.map((v) => dbValue(encodeFieldValue(this.field, v, this.ref.name)));
+    return new QCond({ compare: { left: { column: this.queryColumn() }, op, values: encoded } });
+  }
+  eq(v: V): QCond {
+    return this.compare("EQ", [v]);
+  }
+  ne(v: V): QCond {
+    return this.compare("NE", [v]);
+  }
+  lt(v: V): QCond {
+    return this.compare("LT", [v]);
+  }
+  le(v: V): QCond {
+    return this.compare("LE", [v]);
+  }
+  gt(v: V): QCond {
+    return this.compare("GT", [v]);
+  }
+  ge(v: V): QCond {
+    return this.compare("GE", [v]);
+  }
+  /** Between `from` and `to`, both included. */
+  between(from: V, to: V): QCond {
+    return new QCond({ and: { items: [this.ge(from).expr!, this.le(to).expr!] } });
+  }
+  in(values: readonly V[]): QCond {
+    return this.compare("IN", values);
+  }
+  isNull(): QCond {
+    return this.compare("IS_NULL", []);
+  }
+  isNotNull(): QCond {
+    return this.compare("IS_NOT_NULL", []);
+  }
+  asc(): QOrder {
+    return new QOrder({ term: { column: this.queryColumn() }, desc: false });
+  }
+  desc(): QOrder {
+    return new QOrder({ term: { column: this.queryColumn() }, desc: true });
+  }
 }
 
 /** @internal A filter tree as the session carries it (`DbFilter`). */
@@ -364,7 +670,8 @@ export type FieldRefs<M, S extends Shape> = {
   readonly [K in keyof S & string]: FieldRef<M, ValueOf<S[K]>, TargetOf<S[K]>, OptionalOf<S[K]>>;
 };
 
-function fieldRefs(shape: Shape, owner?: object): Record<string, FieldRef<unknown, unknown>> {
+/** @internal */
+export function fieldRefs(shape: Shape, owner?: object): Record<string, FieldRef<unknown, unknown>> {
   const out: Record<string, FieldRef<unknown, unknown>> = {};
   for (const [key, field] of Object.entries(shape)) out[key] = new FieldRef(snake(key), field, owner);
   return out;
@@ -384,7 +691,8 @@ export const navigations = new WeakMap<object, Map<string, NavInfo>>();
 /** Maps fields to the descriptor path they were declared under, for `invalid(..).field(handle, ..)`. */
 export const fieldKeys = new WeakMap<AnyField, string>();
 
-function copyFields<S extends Shape>(shape: S): S {
+/** @internal */
+export function copyFields<S extends Shape>(shape: S): S {
   const out: Shape = {};
   for (const [key, field] of Object.entries(shape)) {
     if (!(field instanceof Field)) throw new TypeError(`field ${key}: not a t.* builder`);
@@ -481,6 +789,54 @@ export interface EntityOptions<C extends Shape> {
    * Who reads, creates, changes and deletes the rows (`./access.ts`); without it no one but a system context does.
    */
   access?: (a: import("./access.js").AccessBuilder) => void;
+  /**
+   * `'olap'`: the entity's rows are kept in the analytic copy only (gigabytes of facts computed in the lake, read by
+   * reports and joined with the plugin's other entities under the same rules). Its `load` fills it when the plugin asks
+   * (`ctx.analytics().snapshot().load(e).request()`); `ctx.analytics().query(e)` reads it; `ctx.db(e)` and
+   * `ctx.query(e)` are type errors (and refused at run time). Never written; no history, `softDelete`, `version` nor
+   * `appendOnly`. Before its first load (and after the analytic copy was made anew, a reinstall, a changed load or
+   * entity) a query of it is 409 `not_loaded`.
+   */
+  storage?: "olap";
+  /**
+   * With `storage: 'olap'`: the columns that key a row (`['day', 'store', 'metric']`: required plain values), unique
+   * among the rows a load gives; the row's `id` is a uuid made from their values.
+   */
+  olapKey?: readonly (keyof C & string)[];
+  /**
+   * With `storage: 'olap'`: how the platform fills it from the lake, a view's query over the plugin's lake tables and
+   * entities' histories (each read by its system context) and other plugins' lake tables exported to models, whose
+   * columns are the entity's (`id` aside; an optional one may be left out):
+   * `(l) => l.from(storeMetrics).where(..).columns({ day: storeMetrics.f.day, .. })`.
+   */
+  load?: (l: import("./query.js").LoadStart<C>) => import("./query.js").LoadDecl<C>;
+  /**
+   * The entity keeps its history in the workspace's Data Lake (`ctx.lake().history(e)`): every change of the columns
+   * marked `.history()` (or, with `all`, of every column), each its own row with when it was made and by whom.
+   */
+  history?: HistoryOptions;
+}
+
+/**
+ * How an entity keeps its history: the layer of the lake it goes to, which columns, who reads it. Whoever reads it
+ * reads every row of it, every version, without the entity's access rules or masks.
+ */
+export interface HistoryOptions {
+  /** A layer of the plugin (one of `plugin({ layers })`). */
+  layer: LayerDef;
+  /**
+   * Every column is kept, the ones a later version adds too, but the encrypted ones, the lists and messages and,
+   * unless `unmasked` is said too, the masked ones (`celobus plugin check` lists what it left out).
+   */
+  all?: boolean;
+  /** Masked columns may be kept: their values go to the lake as they are (the lake has no masks). */
+  unmasked?: boolean;
+  /** The plugin's roles whose holders read the history, every row of it. None: no member reads it. */
+  read?: readonly RoleLike[];
+  /** The plugin's own system context (`ctx.asSystem(..)`) reads it too (a model over it needs this). */
+  systemRead?: boolean;
+  /** Other plugins that declare it (`historyDependencies`) read it, for callers holding one of its read roles. */
+  export?: boolean;
 }
 
 type SystemColumn = "id" | "createdAt" | "updatedAt" | "deletedAt" | "version";
@@ -500,15 +856,19 @@ export interface ForeignEntityOptions<C extends Shape> {
   key?: KeyType;
   softDelete?: boolean;
   version?: boolean;
+  /** `'olap'`: the provider keeps its rows in the analytic copy only; `ctx.analytics().query(e)` reads it. */
+  storage?: "olap";
   columns: C;
 }
 
 /**
  * An entity: one of the plugin's (`ctx.db(e)`), or a dependency's it reads (`ctx.query(e)`; `F` is `true`).
  */
-export class EntityDef<C extends Shape, F extends boolean = boolean> {
+export class EntityDef<C extends Shape, F extends boolean = boolean, O extends boolean = boolean> {
   /** @internal `true`: another plugin's entity (`ctx.query`), never this plugin's (`ctx.db`). */
   declare readonly __foreign: F;
+  /** @internal `true`: stored in OLAP (`storage: 'olap'`), read with `ctx.analytics()` only. */
+  declare readonly __olap: O;
   readonly columns: C;
   readonly key: KeyType;
   /**
@@ -527,6 +887,103 @@ export class EntityDef<C extends Shape, F extends boolean = boolean> {
   }
 }
 
+/**
+ * A view's query, as `view({ query })` builds it (`query.ts`): `(q) => q.from(orderLine).join(..).where(..).columns({..})`.
+ */
+export interface ViewOptions<C extends Shape> {
+  /** The view's name (snake_case); by default its key in `plugin({ views })`, in snake_case. */
+  name?: string;
+  /** What a row is (an agent of the plugin reads it to pick the view); also its row message's description. */
+  description?: string;
+  /** The row's columns, each of the type its value has (`t.date()` for a bucket, `t.bigint()` for a count). */
+  columns: C;
+  /**
+   * The view's query, run when the plugin is described: its root (`q.from(entity)`), joins, `where`, `groupBy`,
+   * `having`, and its `columns`, each a column of a source (a bucket too) or, grouped, an aggregate.
+   */
+  query: (q: import("./query.js").ViewStart<C>) => import("./query.js").ViewDecl<C>;
+}
+
+/**
+ * An analytic view of the plugin (`view({..})`): a named, typed query over its entities (a dependency's exported
+ * entities, the directory, its other views) whose rows are its `columns`. The platform creates it in both engines;
+ * `ctx.query(v)` reads it from the workspace's data, `ctx.analytics().query(v)` from the analytic copy. A view has no
+ * rules of its own: every row under it passes its own entity's access rules and masks for the caller. It is read,
+ * never written (`ctx.db(v)` is refused).
+ */
+export class ViewDef<C extends Shape = Shape> {
+  readonly columns: C;
+  /** Typed handles of the view's columns (`sales.f.day`, `sales.f.day.month()`). */
+  readonly f: FieldRefs<Simplify<Infer<C>>, C>;
+
+  constructor(readonly options: ViewOptions<C>) {
+    this.columns = copyFields(options.columns);
+    this.f = fieldRefs(this.columns, this) as never;
+  }
+}
+
+/** Declares an analytic view: `view({ description, columns: { day: t.date(), .. }, query: (q) => q.from(..)..columns({..}) })`. */
+export function view<C extends Shape>(options: ViewOptions<C>): ViewDef<C> {
+  return noted(new ViewDef(options), "view", options);
+}
+
+/** @internal The name each view has in its plugin's descriptor, set when the plugin is described. */
+export const viewNames = new WeakMap<object, string>();
+
+/** A row of a view: its columns. */
+export type ViewRow<V> = V extends ViewDef<infer C> ? Simplify<Infer<C>> : never;
+
+/**
+ * @internal A lake table (`lakeTable({..})`, `lake.ts`) as a query names it: its name in the plugin (`stock`), or
+ * `<plugin>.<table>` for another plugin's.
+ */
+export interface LakeSource {
+  readonly __lake: true;
+  readonly columns: Shape;
+  sourceName(): string;
+}
+
+/** @internal Whether `e` is a lake table. */
+export function isLakeSource(e: unknown): e is LakeSource {
+  return typeof e === "object" && e !== null && (e as { __lake?: unknown }).__lake === true;
+}
+
+/** @internal An entity's history (`historyOf(e)`, `history.ts`) as a query names it: the entity's own name. */
+export interface HistorySource {
+  readonly __history: true;
+  readonly entity: EntityDef<any>;
+}
+
+/** @internal Whether `e` is an entity's history. */
+export function isHistorySource(e: unknown): e is HistorySource {
+  return typeof e === "object" && e !== null && (e as { __history?: unknown }).__history === true;
+}
+
+/** The name of an entity (or a view, or a lake table) in a query: `order`, `crm.customer`, `platform.user`, `sales`. */
+export function canonicalOf(e: object): string {
+  if (isLakeSource(e)) return e.sourceName();
+  if (isHistorySource(e)) return canonicalOf(e.entity);
+  if (e instanceof PlatformEntity) return e.ref;
+  if (e instanceof EntityDef) {
+    const provider = foreignPlugin(e);
+    if (provider) return `${provider}.${e.options.name}`;
+    const name = entityNames.get(e) ?? e.options.name;
+    if (!name) throw new TypeError("ctx.query(): the entity is not in plugin({ entities })");
+    return name;
+  }
+  if (e instanceof ViewDef) {
+    const name = viewNames.get(e) ?? e.options.name;
+    if (!name) throw new TypeError("ctx.query(): the view is not in plugin({ views })");
+    return name;
+  }
+  throw new TypeError("ctx.query(): not an entity, a view or a lake table");
+}
+
+/** The alias of an entity (or a view) unless it is given one: its name with `_` for `.` (`crm_customer`). */
+export function defaultAlias(e: object): string {
+  return canonicalOf(e).replace(".", "_");
+}
+
 type SystemFields = {
   createdAt: Field<Date, false>;
   updatedAt: Field<Date, false>;
@@ -538,10 +995,12 @@ type SystemFields = {
  * Declares an entity: `entity({ key: 'i64', version: true, label: 'title', columns: { title: t.text() } })`; with
  * `plugin` and `name`, a dependency's entity this plugin reads (generated by `celobus plugin add`).
  */
-export function entity<C extends Shape>(options: ForeignEntityOptions<C>): EntityDef<C, true>;
-export function entity<C extends Shape>(options: EntityOptions<C> & { plugin?: undefined }): EntityDef<C, false>;
+export function entity<C extends Shape>(options: ForeignEntityOptions<C> & { storage: "olap" }): EntityDef<C, true, true>;
+export function entity<C extends Shape>(options: ForeignEntityOptions<C>): EntityDef<C, true, false>;
+export function entity<C extends Shape>(options: EntityOptions<C> & { plugin?: undefined; storage: "olap" }): EntityDef<C, false, true>;
+export function entity<C extends Shape>(options: EntityOptions<C> & { plugin?: undefined }): EntityDef<C, false, false>;
 export function entity<C extends Shape>(options: EntityOptions<C>): EntityDef<C> {
-  return new EntityDef(options);
+  return noted(new EntityDef(options), options.plugin ? "foreignEntity" : "entity", options);
 }
 
 /** @internal The provider of a dependency's entity; `undefined` for an entity of this plugin. */
@@ -634,7 +1093,7 @@ export const t = {
    * enum, and an optional field that has a value, are still written), which trims the views a screen reads often.
    */
   message: <S extends Shape>(name: string, fields: S, options?: { description?: string; omitDefaults?: boolean }): MessageDef<S> =>
-    new MessageDef(name, fields, options?.description ?? "", options?.omitDefaults ?? false),
+    noted(new MessageDef(name, fields, options?.description ?? "", options?.omitDefaults ?? false), "message", options),
   /** `t.enum('Name', [...values])` declares an enum; `t.enum(def)` is a field of it. */
   enum: enumBuilder,
 };
@@ -650,6 +1109,9 @@ function refBuilder(target: RefTarget, options: RefOptions = {}): Field<string, 
   if (options.nav) column.nav = options.nav;
   if (options.inverse) column.inverse = options.inverse;
   if (options.onDelete) column.onDelete = options.onDelete;
+  // the options it does not know go with the column, whatever modifiers follow
+  const unknown = optionProblems("ref", options);
+  if (unknown.length > 0) column.unknownOptions = unknown;
   return new Field<string, false>({ kind: "ref", ref: target }, false, "", column);
 }
 

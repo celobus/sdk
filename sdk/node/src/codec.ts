@@ -10,7 +10,10 @@
 // invalid. Output emits every field that has a value, defaults included, except in an `omitDefaults` message.
 import { Decimal } from "./decimal.js";
 import { jsonName, snake } from "./names.js";
-import { EntityDef, Field, MessageDef, PlatformEntity, type AnyField, type KeyType, type RefTarget } from "./schema.js";
+import { EntityDef, Field, MessageDef, PlatformEntity, type AnyField, type KeyType, type LakeSource, type RefTarget, type ViewDef } from "./schema.js";
+
+/** What has fields the codec reads and writes: a message, an entity's message, a view's or a lake table's row. */
+export type RowSource = MessageDef<any> | EntityDef<any> | ViewDef<any> | LakeSource;
 
 /** One field of a message as the codec sees it. */
 export interface CodecField {
@@ -27,8 +30,8 @@ function modelOf(key: string, field: AnyField): CodecField {
   return { key, name, json: jsonName(name), field };
 }
 
-/** The fields of a message, or of an entity's message (`id` first, then the columns). */
-export function messageFields(source: MessageDef<any> | EntityDef<any>): CodecField[] {
+/** The fields of a message, of an entity's message (`id` first, then the columns), of a view's or a lake table's row. */
+export function messageFields(source: RowSource): CodecField[] {
   let fields = models.get(source);
   if (!fields) {
     if (source instanceof EntityDef) {
@@ -36,6 +39,8 @@ export function messageFields(source: MessageDef<any> | EntityDef<any>): CodecFi
       // a column named `id` is a definition error (E_COL_RESERVED); the implied id stands
       const columns = Object.entries(source.columns).filter(([k]) => k !== "id");
       fields = [modelOf("id", id), ...columns.map(([k, f]) => modelOf(k, f as AnyField))];
+    } else if (!(source instanceof MessageDef)) {
+      fields = Object.entries(source.columns).map(([k, f]) => modelOf(k, f as AnyField));
     } else {
       fields = Object.entries(source.fields).map(([k, f]) => modelOf(k, f as AnyField));
     }
@@ -70,7 +75,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 
 /** Decodes a JSON object into a message's TypeScript value; problems go to `errors`. */
 export function decodeMessage(
-  source: MessageDef<any> | EntityDef<any>,
+  source: RowSource,
   json: unknown,
   path: string,
   errors: FieldErrors,
@@ -241,7 +246,7 @@ export class OutputError extends Error {
 }
 
 /** Encodes a handler's output value as a JSON object. */
-export function encodeMessage(source: MessageDef<any> | EntityDef<any>, value: unknown, path = ""): Record<string, unknown> {
+export function encodeMessage(source: RowSource, value: unknown, path = ""): Record<string, unknown> {
   if (!isObject(value)) throw new OutputError(path || "$", "expected an object");
   const out: Record<string, unknown> = {};
   // `omitDefaults`: a field at its protobuf default is left out (an optional one is written whenever it has a value)

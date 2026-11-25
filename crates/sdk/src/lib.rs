@@ -40,10 +40,19 @@ mod db_tests;
 pub mod descriptor;
 pub mod endpoint;
 pub mod error;
+#[cfg(test)]
+mod history_tests;
 pub mod identity;
 pub mod jobs;
 #[cfg(test)]
 mod jobs_tests;
+pub mod lake;
+#[cfg(test)]
+mod lake_model_tests;
+#[cfg(test)]
+mod lake_tests;
+#[cfg(test)]
+mod load_tests;
 pub mod message;
 pub mod notify;
 #[cfg(test)]
@@ -61,7 +70,7 @@ pub use agents::{
     AgentActor, AgentEvent, AgentEvents, AgentPartial, AgentPartialMessage, AgentRun,
     AgentRunError, AgentRunStatus, AvailableAgent, RunChange, RunOptions,
 };
-pub use celobus_sdk_derive::{Entity, Message};
+pub use celobus_sdk_derive::{Entity, LakeTable, Message, View};
 pub use ctx::{Caller, CallerKind, Ctx, PluginInfo, RequestInfo};
 pub use db::{
     Aggregate, Db, Filter, Find, Get, Grouped, Include, Inverse, Nav, Order, Page, Patch, Row, Tx,
@@ -74,6 +83,10 @@ pub use identity::{
     Agent, AgentEngine, Capability, Connection, ConnectionKind, DefaultFor, Role, Scope,
 };
 pub use jobs::{Enqueued, Job, JobInfo, Jobs, Retry, RunState};
+pub use lake::{
+    Lake, Layer, Load, Loaded, Model, Refresh, Refreshed, Snapshot, Ticket, TicketState,
+    TicketStatus, Written,
+};
 pub use message::{Call, Entity, Enum, FieldValue, Message};
 pub use notify::Notifications;
 pub use plugin::Plugin;
@@ -96,24 +109,28 @@ pub mod prelude {
         Agent, AgentEngine, Capability, Connection, ConnectionKind, DefaultFor, Role, Scope,
     };
     pub use crate::jobs::{Job, Retry};
+    pub use crate::lake::{LakeTable, Layer, Load, Model};
     pub use crate::message::{Call, Entity, Enum, Message};
     pub use crate::platform;
     pub use crate::plugin::Plugin;
-    pub use crate::query::ColumnCompare;
+    pub use crate::query::{ColumnCompare, View, days_ago};
     pub use crate::sql::{Exported, Read, Sql};
     pub use crate::types::{Date, Decimal, Id, Json, Timestamp, Uuid};
-    pub use celobus_sdk_derive::{Entity, Message};
+    pub use celobus_sdk_derive::{Entity, LakeTable, Message, View};
 }
 
 /// Used by the code the derives generate; not a public API.
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::db::Row;
     pub use crate::error::{Error, Result};
+    pub use crate::lake::{LakeTable, Layer};
     pub use crate::message::{
-        Call, Entity, EntityInfo, Enum, FieldType, FieldValue, IndexInfo, Message, MessageInfo,
-        Registry, decode_enum, decode_field, encode_field, encode_field_trimmed, object,
+        Call, Entity, EntityInfo, Enum, FieldType, FieldValue, HistoryInfo, IndexInfo, Message,
+        MessageInfo, Registry, decode_enum, decode_field, encode_field, encode_field_trimmed,
+        object,
     };
-    pub use crate::query::{Nullable, Queryable};
+    pub use crate::query::{Nullable, QueryRow, Queryable};
     pub use crate::types::{Id, Uuid};
     pub use serde;
     pub use serde_json::{Map, Value};

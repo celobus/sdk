@@ -205,6 +205,14 @@ internal static partial class Descriptor
             if (!Schema.IsMessage(p.Topics[i].KeyType))
                 Error("E_MSG_NAME", $"topics[{i}].key", $"`{p.Topics[i].KeyType.Name}` has no [Message] attribute");
             else walk.Message(p.Topics[i].KeyType);
+        // then the views' rows
+        for (var i = 0; i < p.Views.Count; i++)
+            if (!Schema.IsView(p.Views[i].Row))
+                Error("E_VIEW_DEFINE", $"views[{i}]", $"`{p.Views[i].Row.Name}` has no [View] attribute");
+            else walk.Message(p.Views[i].Row);
+        // then the lake tables' rows (another plugin's table is not a message of this plugin)
+        foreach (var t in p.LakeTables)
+            if (Schema.IsLakeTable(t) && Schema.LakeOwner(t) is null) walk.Message(t);
 
         // --- messages and enums
         var messages = new JsonArray();
@@ -290,8 +298,19 @@ internal static partial class Descriptor
             if (indexes.Count > 0) entity["indexes"] = indexes;
             // the access rules, written only when declared
             if (p.Accesses.FirstOrDefault(x => x.Entity == t).Rules is { } rules) entity["access"] = rules.DeepClone();
+            History(p, t, schema, entity, roleNames, path, Error);
+            Olap(p, t, a, schema, entity, path, Error);
             entities.Add(entity);
         }
+        foreach (var (what, list) in new[]
+                 {
+                     ("HistoryRead", p.HistoryReads.Select(x => x.Entity)), ("HistoryReadAsSystem", p.HistorySystemReads),
+                     ("HistoryExport", p.HistoryExports),
+                 })
+            foreach (var t in list.Distinct())
+                if (!Schema.IsEntity(t) || System.Reflection.CustomAttributeExtensions.GetCustomAttribute<HistoryAttribute>(t, false) is null)
+                    Error("E_HISTORY_DECLARE", $"entities.{Names.Snake(t.Name)}.history",
+                        $".{what}<{t.Name}>() names an entity that keeps no history: declare [History(\"<layer>\")] on it");
         foreach (var (t, _) in p.Accesses)
             if (!p.Entities.Contains(t))
                 Error("E_ACCESS_ENTITY", $"access.{t.Name}", $"access rules for `{t.Name}`, which is not an entity of the plugin (.Entity<..>())");
@@ -322,6 +341,13 @@ internal static partial class Descriptor
                 if (c.Description.Length > 0) connection["description"] = c.Description;
                 return (JsonNode)connection;
             })]);
+        var (layers, lakeTables) = Lake(p, roleNames, entityNames, dependencies, Error);
+        if (layers.Count > 0) json["layers"] = layers;
+        if (lakeTables.Count > 0) json["lake_tables"] = lakeTables;
+        var lakeModels = LakeModels(p, Error);
+        if (lakeModels.Count > 0) json["lake_models"] = lakeModels;
+        var loads = Loads(p, Error);
+        if (loads.Count > 0) json["loads"] = loads;
         if (p.Topics.Count > 0) json["topics"] = new JsonArray([.. p.Topics.Select(t => (JsonNode)t.ToJson())]);
         if (p.Ui is not null) json["ui"] = p.Ui.Build();
 
@@ -350,7 +376,422 @@ internal static partial class Descriptor
         // the background jobs: written only when declared
         var jobs = Jobs(p, Error);
         if (jobs.Count > 0) json["jobs"] = jobs;
+        // the analytic views: written only when declared
+        var views = Views(p, entityNames, Error);
+        if (views.Count > 0) json["views"] = views;
         return (json, errors);
+    }
+
+    /// <summary>
+    /// The <c>views</c> entries: each view's query tree as the descriptor writes it (lowercase operators, buckets,
+    /// joins and functions; values as JSON), its columns in the order of its row's fields. The platform checks the rest
+    /// (<c>E_VIEW_*</c>, <c>celobus plugin check</c>).
+    /// </summary>
+    /// <summary>
+    /// The Data Lake's part of the descriptor: <c>layers</c>, <c>lake_tables</c> (each optional member only when set)
+    /// and each dependency's <c>lake</c> (the tables of it read, on its entry, made after the declared ones when none).
+    /// </summary>
+    private static (JsonArray Layers, JsonArray Tables) Lake(PluginDefinition p, HashSet<string> roleNames,
+        HashSet<string> entityNames, JsonArray dependencies, Action<string, string, string> error)
+    {
+        var layers = new JsonArray();
+        var layerNames = new HashSet<string>();
+        for (var i = 0; i < p.Layers.Count; i++)
+        {
+            var l = p.Layers[i];
+            if (!LakeName().IsMatch(l.Name)) error("E_LAKE_LAYER_NAME", $"layers[{i}].name", $"`{l.Name}` is not a layer name (snake_case, at most 32 characters)");
+            if (!layerNames.Add(l.Name)) error("E_LAKE_LAYER_DUP", $"layers[{i}]", $"layer `{l.Name}` is declared twice");
+            var layer = new JsonObject { ["name"] = l.Name };
+            if (l.Title.Length > 0) layer["title"] = l.Title;
+            layers.Add(layer);
+        }
+        var viewNames = p.Views.Where(v => Schema.IsView(v.Row)).Select(v => Schema.ViewName(v.Row)).ToHashSet();
+        var tables = new JsonArray();
+        var names = new HashSet<string>();
+        foreach (var t in p.LakeTables)
+        {
+            var path = $"lake_tables.{t.Name}";
+            if (Schema.LakeOf(t) is not { } a)
+            {
+                error("E_LAKE_DEFINE", path, $"`{t.Name}` has no [LakeTable] attribute");
+                continue;
+            }
+            if (a.Plugin is not null)
+            {
+                error("E_LAKE_DEFINE", path, $"`{t.Name}` is a lake table of {a.Plugin}: declare its read with .LakeDependency<{t.Name}>()");
+                continue;
+            }
+            var name = Schema.LakeName(t);
+            if (!LakeName().IsMatch(name) || name.Contains("__", StringComparison.Ordinal) || name.EndsWith('_'))
+                error("E_LAKE_TABLE_NAME", path, $"`{name}` is not a lake table name (snake_case, at most 32 characters, no `__`, not ending in `_`)");
+            if (!names.Add(name)) error("E_LAKE_TABLE_DUP", path, $"lake table `{name}` is declared twice");
+            if (entityNames.Contains(name) || viewNames.Contains(name))
+                error("E_LAKE_TABLE_CLASH", path, $"`{name}` is the name of an entity or a view of the plugin");
+            if (a.Layer is null || !layerNames.Contains(a.Layer))
+                error("E_LAKE_TABLE_LAYER", $"{path}.layer", $"`{a.Layer}` is not a layer the plugin declares (.Layer(..))");
+            var schema = MessageSchema.For(t);
+            JsonArray Columns(string[] list, string what, string code)
+            {
+                var out_ = new JsonArray();
+                foreach (var c in list)
+                {
+                    var column = Names.Snake(c);
+                    if (schema.Fields.All(f => f.Name != column)) error(code, $"{path}.{what}", $"`{c}` is not a field of {t.Name}");
+                    else out_.Add(column);
+                }
+                return out_;
+            }
+            var table = new JsonObject { ["name"] = name, ["layer"] = a.Layer ?? "", ["message"] = schema.Name };
+            if (schema.Description.Length > 0) table["description"] = schema.Description;
+            if (Columns(a.Partition, "partition", "E_LAKE_PARTITION") is { Count: > 0 } partition) table["partition"] = partition;
+            if (Columns(a.Key, "key", "E_LAKE_KEY") is { Count: > 0 } key) table["key"] = key;
+            var read = new JsonArray();
+            foreach (var r in p.LakeReads.Where(x => x.Table == t).SelectMany(x => x.Roles))
+                if (r.IsPlatform || !roleNames.Contains(r.Name))
+                    error("E_LAKE_ROLE", $"{path}.read", $"role `{r.Name}` is not a role of the plugin (.Role(..))");
+                else if (read.All(x => (string?)x != r.Name)) read.Add(r.Name); // each once, where first named
+            if (read.Count > 0) table["read"] = read;
+            if (p.LakeSystemReads.Contains(t)) table["system_read"] = true;
+            if (p.LakeExports.Contains(t)) table["export"] = true;
+            if (p.LakeModelExports.Contains(t)) table["export_models"] = true;
+            tables.Add(table);
+        }
+        foreach (var t in p.LakeReads.Select(x => x.Table).Concat(p.LakeSystemReads).Concat(p.LakeExports)
+                     .Concat(p.LakeModelExports).Distinct())
+            if (!p.LakeTables.Contains(t))
+                error("E_LAKE_DEFINE", $"lake_tables.{t.Name}", $"`{t.Name}` is not a lake table of the plugin: declare it with .LakeTable<{t.Name}>() first");
+        foreach (var t in p.LakeDependencies)
+        {
+            // another plugin's lake table, or its entity whose history is read (.HistoryDependency<T>())
+            var owner = Schema.LakeOwner(t) ?? (Schema.IsLakeTable(t) ? null : Schema.ForeignPlugin(t));
+            if (owner is null)
+            {
+                error("E_LAKE_DEFINE", $"dependencies.lake.{t.Name}",
+                    $"`{t.Name}` is not another plugin's lake table or entity: .LakeDependency<T>() names one ([LakeTable(Plugin = .., Name = ..)]), .HistoryDependency<T>() one of [Entity(Plugin = ..)]");
+                continue;
+            }
+            var dep = dependencies.Select(d => d!.AsObject()).FirstOrDefault(d => (string?)d["plugin"] == owner);
+            if (dep is null)
+            {
+                dep = new JsonObject { ["plugin"] = owner, ["calls"] = new JsonArray() };
+                dependencies.Add(dep);
+            }
+            if (dep["lake"] is not JsonArray lake) dep["lake"] = lake = new JsonArray();
+            var table = Schema.IsLakeTable(t) ? Schema.LakeName(t) : Names.Snake(t.Name);
+            if (lake.All(x => (string?)x != table)) lake.Add(table);
+        }
+        return (layers, tables);
+    }
+
+    private static JsonArray Views(PluginDefinition p, HashSet<string> entityNames, Action<string, string, string> error)
+    {
+        var views = new JsonArray();
+        var names = new HashSet<string>();
+        for (var i = 0; i < p.Views.Count; i++)
+        {
+            var (row, query) = p.Views[i];
+            if (!Schema.IsView(row)) continue;
+            var name = Schema.ViewName(row);
+            var path = $"views[{i}]";
+            if (!SqlName().IsMatch(name)) error("E_VIEW_NAME", path, $"`{name}` must match ^[a-z][a-z0-9_]{{0,62}}$");
+            if (!names.Add(name)) error("E_VIEW_DUP", path, $"view `{name}` is declared twice");
+            if (entityNames.Contains(name)) error("E_VIEW_CLASH", path, $"`{name}` is the name of an entity of the plugin");
+            Celobus.V1.Query tree;
+            List<(string Name, Celobus.V1.QueryTerm Term)> columns;
+            try
+            {
+                (tree, columns) = Translator.TranslateView(query, row);
+            }
+            catch (NotSupportedException e)
+            {
+                error("E_VIEW_DEFINE", path, e.Message);
+                continue;
+            }
+            var schema = MessageSchema.For(row);
+            var out_ = new JsonArray();
+            foreach (var c in columns)
+                if (schema.Fields.All(f => f.Name != c.Name))
+                    error("E_VIEW_DEFINE", path, $"{c.Name} is not a column of {row.Name}");
+            foreach (var f in schema.Fields)
+            {
+                var c = columns.FirstOrDefault(x => x.Name == f.Name);
+                if (c.Term is null)
+                {
+                    error("E_VIEW_DEFINE", path, $"the column {f.Name} is not given");
+                    continue;
+                }
+                out_.Add(new JsonObject { ["name"] = f.Name, ["value"] = ViewTerm(c.Term) });
+            }
+            var view = new JsonObject
+            {
+                ["name"] = name,
+                ["message"] = schema.Name,
+                ["description"] = schema.Description,
+                ["sources"] = ViewSources(tree),
+            };
+            if (tree.Filter is not null) view["filter"] = ViewExpr(tree.Filter);
+            if (tree.GroupBy.Count > 0) view["group_by"] = new JsonArray([.. tree.GroupBy.Select(c => (JsonNode)ViewColumn(c))]);
+            if (tree.Having is not null) view["having"] = ViewExpr(tree.Having);
+            view["columns"] = out_;
+            views.Add(view);
+        }
+        return views;
+    }
+
+    private static JsonArray ViewSources(Celobus.V1.Query tree) => new([.. tree.Sources.Select(s =>
+    {
+        var src = new JsonObject { ["entity"] = s.Entity, ["alias"] = s.Alias };
+        if (s.Join != Celobus.V1.QuerySource.Types.Join.Root) src["join"] = s.Join.ToString().ToLowerInvariant();
+        if (s.Left is not null) src["left"] = ViewColumn(s.Left);
+        if (s.Right is not null) src["right"] = ViewColumn(s.Right);
+        if (s.History) src["history"] = true;
+        if (s.EachDay) src["each_day"] = true;
+        return (JsonNode)src;
+    })]);
+
+    private static JsonObject ViewColumn(Celobus.V1.QueryColumn c)
+    {
+        var o = new JsonObject { ["source"] = c.Source, ["field"] = c.Field };
+        if (c.Bucket != Celobus.V1.QueryColumn.Types.Bucket.None) o["bucket"] = c.Bucket.ToString().ToLowerInvariant();
+        // `PARSE_DECIMAL` on the wire, `decimal` in the descriptor
+        if (c.Parse != Celobus.V1.QueryColumn.Types.Parse.None) o["parse"] = c.Parse.ToString().ToLowerInvariant();
+        return o;
+    }
+
+    /// <summary>
+    /// The <c>lake_models</c> entries, in the order declared: each model's query tree as a view's, its columns in the
+    /// order of its table's fields. The platform checks the rest (<c>E_LAKE_MODEL_*</c>, <c>celobus plugin check</c>).
+    /// </summary>
+    private static JsonArray LakeModels(PluginDefinition p, Action<string, string, string> error)
+    {
+        var models = new JsonArray();
+        for (var i = 0; i < p.LakeModels.Count; i++)
+        {
+            var (table, query, unmasked) = p.LakeModels[i];
+            var path = $"lake_models[{i}]";
+            if (!p.LakeTables.Contains(table) || Schema.LakeOf(table) is not { Plugin: null })
+            {
+                error("E_LAKE_MODEL_TABLE", path, $"`{table.Name}` is not a lake table of the plugin: declare it with .LakeTable<{table.Name}>() first");
+                continue;
+            }
+            // lake tables (or a history) with entities or views in one model: the platform's own code for it
+            var roots = Translator.Roots(query);
+            if (roots.Any(Schema.IsLakeSource) && roots.Any(r => !Schema.IsLakeSource(r)))
+            {
+                error("E_LAKE_MODEL_MIXED", path,
+                    $"the model of {Schema.LakeName(table)} reads lake tables ({string.Join(", ", roots.Where(Schema.IsLakeSource).Select(r => r.Name))}) "
+                    + $"and entities or views ({string.Join(", ", roots.Where(r => !Schema.IsLakeSource(r)).Select(r => r.Name))}): a model reads one or the other");
+                continue;
+            }
+            Celobus.V1.Query tree;
+            List<(string Name, Celobus.V1.QueryTerm Term)> columns;
+            try
+            {
+                (tree, columns) = Translator.TranslateView(query, table);
+            }
+            catch (NotSupportedException e)
+            {
+                error("E_LAKE_MODEL_DEFINE", path, e.Message);
+                continue;
+            }
+            var schema = MessageSchema.For(table);
+            var out_ = new JsonArray();
+            foreach (var f in schema.Fields)
+            {
+                var c = columns.FirstOrDefault(x => x.Name == f.Name);
+                if (c.Term is null) error("E_LAKE_MODEL_DEFINE", path, $"the column {f.Name} is not given");
+                else out_.Add(new JsonObject { ["name"] = f.Name, ["value"] = ViewTerm(c.Term) });
+            }
+            var model = new JsonObject { ["table"] = Schema.LakeName(table), ["sources"] = ViewSources(tree) };
+            if (tree.Filter is not null) model["filter"] = ViewExpr(tree.Filter);
+            if (tree.GroupBy.Count > 0) model["group_by"] = new JsonArray([.. tree.GroupBy.Select(c => (JsonNode)ViewColumn(c))]);
+            if (tree.Having is not null) model["having"] = ViewExpr(tree.Having);
+            model["columns"] = out_;
+            if (unmasked) model["unmasked"] = true;
+            models.Add(model);
+        }
+        return models;
+    }
+
+    /// <summary>
+    /// An entity's <c>history</c> (<c>[History("layer")]</c>: its layer, <c>all</c>, <c>unmasked</c>, who reads it) and,
+    /// with <c>All</c>, the flag on every column it covers by the platform's rule: every column but <c>id</c>, the
+    /// encrypted ones, the lists and messages, the history's own column names and, without <c>Unmasked</c>, the masked
+    /// ones.
+    /// </summary>
+    private static void History(PluginDefinition p, Type t, MessageSchema schema, JsonObject entity, HashSet<string> roleNames,
+        string path, Action<string, string, string> error)
+    {
+        var fields = entity["fields"]!.AsArray();
+        var h = System.Reflection.CustomAttributeExtensions.GetCustomAttribute<HistoryAttribute>(t, false);
+        if (h is null)
+        {
+            if (schema.Fields.FirstOrDefault(f => f.History && f.Name != "id") is { } kept)
+                error("E_HISTORY_LAYER", $"{path}.fields.{kept.Name}.history",
+                    $"{entity["name"]}.{kept.Name} is kept, but the entity keeps no history: declare [History(\"<layer>\")] on it");
+            return;
+        }
+        if (h.Layer is null || p.Layers.All(l => l.Name != h.Layer))
+            error("E_HISTORY_LAYER", $"{path}.history.layer", $"`{h.Layer}` is not a layer the plugin declares (.Layer(..))");
+        var history = new JsonObject { ["layer"] = h.Layer ?? "" };
+        if (h.All) history["all"] = true;
+        if (h.Unmasked) history["unmasked"] = true;
+        var read = new JsonArray();
+        foreach (var r in p.HistoryReads.Where(x => x.Entity == t).SelectMany(x => x.Roles))
+            if (r.IsPlatform || !roleNames.Contains(r.Name))
+                error("E_HISTORY_ROLE", $"{path}.history.read", $"role `{r.Name}` is not a role of the plugin (.Role(..))");
+            else if (read.All(x => (string?)x != r.Name)) read.Add(r.Name); // each once, where first named
+        if (read.Count > 0) history["read"] = read;
+        if (p.HistorySystemReads.Contains(t)) history["system_read"] = true;
+        if (p.HistoryExports.Contains(t)) history["export"] = true;
+        entity["history"] = history;
+        if (!h.All) return;
+        var masked = (entity["access"]?["masks"] as JsonArray ?? [])
+            .Select(m => (string?)m?["field"]).OfType<string>().ToHashSet();
+        foreach (var node in fields)
+        {
+            var f = node!.AsObject();
+            var name = (string)f["name"]!;
+            var type = (string)f["type"]!;
+            var keepable = !(bool)f["repeated"]! && (LakeScalars.Contains(type) || type.StartsWith("enum:", StringComparison.Ordinal)
+                                                       || type.StartsWith("ref:", StringComparison.Ordinal));
+            if (name == "id" || f["encrypted"] is not null || Schema.HistoryColumns.Contains(name) || !keepable) continue;
+            if (!h.Unmasked && masked.Contains(name)) continue;
+            f["history"] = true;
+        }
+    }
+
+    /// <summary>
+    /// An entity stored in OLAP: <c>storage</c> and <c>olap_key</c> (each written only when declared), and the SDK's own
+    /// checks of its declaration (<c>E_OLAP_KEY</c>, <c>E_OLAP_LOAD</c>); the platform checks the rest.
+    /// </summary>
+    private static void Olap(PluginDefinition p, Type t, EntityAttribute a, MessageSchema schema, JsonObject entity, string path,
+        Action<string, string, string> error)
+    {
+        var olap = a.Storage == EntityStorage.Olap;
+        if (olap) entity["storage"] = "olap";
+        else if (a.Storage != EntityStorage.Default)
+            error("E_OLAP_STORAGE", $"{path}.storage", $"`{a.Storage}` is not a storage");
+        if (a.OlapKey.Length > 0)
+        {
+            if (!olap) error("E_OLAP_KEY", $"{path}.olap_key", "OlapKey keys an entity stored in OLAP: declare Storage = EntityStorage.Olap");
+            var key = new JsonArray();
+            foreach (var k in a.OlapKey)
+            {
+                var name = Names.Snake(k);
+                if (schema.Fields.All(f => f.Name != name)) error("E_OLAP_KEY", $"{path}.olap_key", $"`{k}` is not a field of {t.Name}");
+                key.Add(name);
+            }
+            entity["olap_key"] = key;
+        }
+        var loads = p.Loads.Count(l => l.Entity == t);
+        if (olap && loads == 0)
+            error("E_OLAP_LOAD", $"{path}.load", $"{t.Name} is stored in OLAP: its load fills it (.Load<{t.Name}>(..))");
+        if (!olap && loads > 0)
+            error("E_LOAD_ENTITY", $"{path}.load", $"{t.Name} is not stored in OLAP: only such an entity has a load");
+    }
+
+    /// <summary>
+    /// The <c>loads</c> entries, in the order declared: each load's query tree as a view's, its columns in the order of
+    /// its entity's fields (<c>id</c> aside; an optional one left out reads absent).
+    /// </summary>
+    private static JsonArray Loads(PluginDefinition p, Action<string, string, string> error)
+    {
+        var loads = new JsonArray();
+        for (var i = 0; i < p.Loads.Count; i++)
+        {
+            var (entity, query) = p.Loads[i];
+            var path = $"loads[{i}]";
+            if (!Schema.IsEntity(entity) || !p.Entities.Contains(entity))
+            {
+                error("E_LOAD_ENTITY", path, $"`{entity.Name}` is not an entity of the plugin: declare it with .Entity<{entity.Name}>() first");
+                continue;
+            }
+            Celobus.V1.Query tree;
+            List<(string Name, Celobus.V1.QueryTerm Term)> columns;
+            try
+            {
+                (tree, columns) = Translator.TranslateLoad(query);
+            }
+            catch (NotSupportedException e)
+            {
+                error("E_LOAD_DEFINE", path, e.Message);
+                continue;
+            }
+            var schema = MessageSchema.For(entity);
+            foreach (var c in columns)
+                if (c.Name == "id") error("E_LOAD_COLUMN", path, "id is made from the key: a load does not give it");
+                else if (schema.Fields.All(f => f.Name != c.Name)) error("E_LOAD_COLUMN", path, $"{c.Name} is not a field of {entity.Name}");
+            var out_ = new JsonArray();
+            foreach (var f in schema.Fields.Where(f => f.Name != "id"))
+            {
+                var c = columns.FirstOrDefault(x => x.Name == f.Name);
+                if (c.Term is not null) out_.Add(new JsonObject { ["name"] = f.Name, ["value"] = ViewTerm(c.Term) });
+                else if (!f.Optional) error("E_LOAD_COLUMN", path, $"the column {f.Name} is not given (a required field of {entity.Name})");
+            }
+            var load = new JsonObject { ["entity"] = Names.Snake(entity.Name), ["sources"] = ViewSources(tree) };
+            if (tree.Filter is not null) load["filter"] = ViewExpr(tree.Filter);
+            if (tree.GroupBy.Count > 0) load["group_by"] = new JsonArray([.. tree.GroupBy.Select(c => (JsonNode)ViewColumn(c))]);
+            if (tree.Having is not null) load["having"] = ViewExpr(tree.Having);
+            load["columns"] = out_;
+            loads.Add(load);
+        }
+        return loads;
+    }
+
+    /// <summary>The scalar types a lake column holds.</summary>
+    private static readonly HashSet<string> LakeScalars =
+        ["string", "bool", "int32", "int64", "double", "decimal", "uuid", "timestamp", "date", "bytes", "json"];
+
+    private static JsonObject ViewAggregate(Celobus.V1.QueryAggregate a)
+    {
+        var o = new JsonObject { ["fn"] = Names.Snake(a.Fn.ToString()) };
+        if (a.Column is not null) o["column"] = ViewColumn(a.Column);
+        return o;
+    }
+
+    private static JsonObject ViewTerm(Celobus.V1.QueryTerm t) => t.KindCase switch
+    {
+        Celobus.V1.QueryTerm.KindOneofCase.Column => new JsonObject { ["column"] = ViewColumn(t.Column) },
+        Celobus.V1.QueryTerm.KindOneofCase.Aggregate => new JsonObject { ["aggregate"] = ViewAggregate(t.Aggregate) },
+        _ => new JsonObject { ["days_ago"] = t.DaysAgo },
+    };
+
+    private static JsonNode? ViewValue(Celobus.V1.DbValue v) => v.KindCase switch
+    {
+        Celobus.V1.DbValue.KindOneofCase.StringValue => v.StringValue,
+        Celobus.V1.DbValue.KindOneofCase.IntValue => v.IntValue,
+        Celobus.V1.DbValue.KindOneofCase.DoubleValue => v.DoubleValue,
+        Celobus.V1.DbValue.KindOneofCase.BoolValue => v.BoolValue,
+        _ => null,
+    };
+
+    private static JsonObject ViewExpr(Celobus.V1.QueryExpr e)
+    {
+        switch (e.NodeCase)
+        {
+            case Celobus.V1.QueryExpr.NodeOneofCase.And:
+                return new JsonObject { ["and"] = new JsonArray([.. e.And.Items.Select(x => (JsonNode)ViewExpr(x))]) };
+            case Celobus.V1.QueryExpr.NodeOneofCase.Or:
+                return new JsonObject { ["or"] = new JsonArray([.. e.Or.Items.Select(x => (JsonNode)ViewExpr(x))]) };
+            case Celobus.V1.QueryExpr.NodeOneofCase.Not:
+                return new JsonObject { ["not"] = ViewExpr(e.Not) };
+            case Celobus.V1.QueryExpr.NodeOneofCase.Compare:
+            {
+                var c = e.Compare;
+                var o = new JsonObject { ["left"] = ViewTerm(c.Left), ["op"] = Names.Snake(c.Op.ToString()) };
+                if (c.Values.Count > 0) o["values"] = new JsonArray([.. c.Values.Select(ViewValue)]);
+                if (c.Right is not null) o["right"] = ViewTerm(c.Right);
+                return new JsonObject { ["compare"] = o };
+            }
+            default:
+            {
+                var x = e.Exists;
+                var o = new JsonObject { ["entity"] = x.Source.Entity, ["alias"] = x.Source.Alias };
+                if (x.Filter is not null) o["filter"] = ViewExpr(x.Filter);
+                return new JsonObject { ["exists"] = o };
+            }
+        }
     }
 
     /// <summary>The <c>jobs</c> entries, each member written only when declared, and their rules (<c>E_JOB_*</c>).</summary>
@@ -463,6 +904,7 @@ internal static partial class Descriptor
             if (columns && !string.IsNullOrEmpty(f.Nav)) field["nav"] = f.Nav;
             if (columns && !string.IsNullOrEmpty(f.Inverse)) field["inverse"] = f.Inverse;
             if (columns && !string.IsNullOrEmpty(f.OnDelete)) field["on_delete"] = f.OnDelete;
+            if (columns && f.History && f.Name != "id") field["history"] = true;
             fields.Add(field);
         }
         return fields;
@@ -551,6 +993,9 @@ internal static partial class Descriptor
 
     [GeneratedRegex("^[a-z][a-z0-9_]{1,31}$")]
     private static partial Regex RoleName();
+
+    [GeneratedRegex("^[a-z][a-z0-9_]{0,31}$")]
+    private static partial Regex LakeName();
 
     [GeneratedRegex("^[a-z][a-z0-9_.]{0,62}$")]
     private static partial Regex ScopeName();

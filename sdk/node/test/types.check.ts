@@ -1,6 +1,6 @@
 // Static types: handlers get typed input and must return typed output. Compiled (not run) by `npm test`;
 // each `@ts-expect-error` must be an error.
-import { Decimal, endpoint, entity, job, plugin, remote, role, t, testCtx, type Ctx, type Dependency, type Enqueued, type Row, type SqlRow, type ValueOf } from '@celobus/sdk';
+import { Decimal, daysAgo, endpoint, entity, historyOf, job, lakeTable, layer, plugin, remote, role, t, testCtx, view, type Ctx, type Dependency, type Enqueued, type Row, type SqlRow, type ValueOf } from '@celobus/sdk';
 import * as platform from '@celobus/sdk/platform';
 import { alias, avg, count, exists, label, max, sum, type Label } from '@celobus/sdk/query';
 
@@ -167,6 +167,10 @@ endpoint({
     ctx.db(item).find(item.f.name.search('red').and(item.f.name.contains('re')));
     // @ts-expect-error search is a filter of text columns
     item.f.qty.search('1');
+    // a decimal compares with a Decimal (sent as its text, exact), never a binary number
+    ctx.db(item).find(item.f.price.gt(Decimal.from('1.50')));
+    // @ts-expect-error a number is not a Decimal: Decimal.from('1.50')
+    item.f.price.gt(1.5);
     // @ts-expect-error row locks exist only inside a transaction
     ctx.db(item).find().forUpdate();
     const locked = await ctx.transaction(async (tx) => tx.db(item).find().forUpdate().skipLocked().limit(5).page());
@@ -249,7 +253,13 @@ endpoint({
     ctx.query(sale).joinOn(buyer, sale.f.id.eqCol(buyer.f.id));
     const page = await ctx.query(platform.groupMember).join(platform.user, platform.groupMember.f.userId).select({ name: platform.user.f.displayName }).page();
     const first: string | undefined = page.rows[0]?.name;
-    void [number, name, managerName, by, revenue, lines, biggest, sure, first];
+    // the analytic copy: the same builder, and answers that say when their data is from
+    const sales = await ctx.analytics().query(saleLine).join(sale, saleLine.f.saleId).groupBy(sale.f.number)
+      .select({ number: sale.f.number, revenue: sum(saleLine.f.amount) }).allAsOf();
+    const salesRevenue: Decimal = sales.rows[0]!.revenue;
+    const salesAt: Date | undefined = sales.asOf;
+    const counted: { rows: number; asOf?: Date } = await ctx.analytics().query(sale).countAsOf();
+    void [number, name, managerName, by, revenue, lines, biggest, sure, first, salesRevenue, salesAt, counted];
     return { n: 0 };
   },
 });
@@ -291,3 +301,197 @@ testCtx(tested, { caller: { userId: 'u1', kind: 'system' } });
 // @ts-expect-error a run needs its attempts
 testCtx(tested, { run: { runId: 'run-1' } });
 void [asAuditor, key];
+
+// analytic views: a row type of their own, read never written, typed columns, buckets and relative days
+const visit = entity({ columns: { page: t.text(), at: t.timestamp(), ms: t.int() } });
+const visits = view({
+  description: 'One row per visit.',
+  columns: { day: t.date(), page: t.text(), ms: t.int() },
+  query: (q) =>
+    q.from(visit).where(visit.f.at.geCol(daysAgo(30))).columns({ day: visit.f.at.day(), page: visit.f.page, ms: visit.f.ms }),
+});
+view({
+  columns: { day: t.date(), ms: t.int() },
+  // @ts-expect-error every column of the row is given
+  query: (q) => q.from(visit).columns({ day: visit.f.at.day() }),
+});
+view({
+  columns: { page: t.text() },
+  // @ts-expect-error a column of another type than its field's
+  query: (q) => q.from(visit).columns({ page: visit.f.ms }),
+});
+// @ts-expect-error a number column has no buckets
+visit.f.ms.month();
+// @ts-expect-error a text column does not compare with a number column
+visit.f.page.eqCol(visit.f.ms);
+plugin({ id: 'viewed', entities: { visit }, views: { visits } });
+endpoint({
+  input: {},
+  output: { days: t.array(t.date()) },
+  async handler(ctx) {
+    const rows = await ctx.analytics().query(visits).where(visits.f.day.between('2026-01-01', '2026-12-31')).allAsOf();
+    const day: string = rows.rows[0]!.day;
+    const months = await ctx.query(visits).groupBy(visits.f.day.month()).select({ month: visits.f.day.month(), n: count() }).all();
+    const month: string = months[0]!.month;
+    // @ts-expect-error a view is read, never written
+    ctx.db(visits);
+    return { days: [day, month] };
+  },
+});
+
+// --- the Data Lake: an append outside a job's run names its key; a run's has a default ---------------------------
+const lakeRaw = layer({ title: 'As it arrived' });
+const loads = lakeTable({ layer: lakeRaw, columns: { day: t.date(), sku: t.text(), qty: t.bigint().optional() }, partition: ['day'] });
+const theirs = lakeTable({ plugin: 'erp', name: 'deliveries', columns: { day: t.date() } });
+// @ts-expect-error a partition column is one of the columns
+lakeTable({ layer: lakeRaw, columns: { day: t.date() }, partition: ['nope'] });
+
+endpoint({
+  input: {},
+  output: { rows: t.int() },
+  async handler(ctx) {
+    const rows = [{ day: '2026-11-20', sku: 'a' }];
+    // @ts-expect-error outside a job's run an append names its write key
+    await ctx.lake().table(loads).append(rows);
+    const w = await ctx.lake().table(loads).append(rows, { key: 'erp-2026-11-20' });
+    await ctx.lake().table(loads).replace(loads.f.day.eq('2026-11-20'), rows);
+    // @ts-expect-error a row has the table's columns
+    await ctx.lake().table(loads).merge([{ day: '2026-11-20', nope: 1 }]);
+    // @ts-expect-error a plugin writes only its own tables
+    ctx.lake().table(theirs);
+    // @ts-expect-error a lake table is read with ctx.lake().query()
+    ctx.query(loads);
+    const read: { day: string; sku: string; qty?: bigint }[] = await ctx.lake().query(loads).where(loads.f.sku.eq('a')).all();
+    const grouped: { month: string; n: number }[] = await ctx.lake().query(loads).groupBy(loads.f.day.month()).select({ month: loads.f.day.month(), n: count() }).all();
+    void [read, grouped, theirs];
+    return { rows: w.rows };
+  },
+});
+
+job({
+  payload: {},
+  async handler(ctx) {
+    // in a run: the run's id and the append's number
+    const w: { rows: number; skipped: boolean } = await ctx.lake().table(loads).append([{ day: '2026-11-20', sku: 'a' }]);
+    void w;
+  },
+});
+
+// a job's handler under test: testCtx with a run is the run's context
+{
+  const p = plugin({ id: 'jobtest', version: '1.0.0' });
+  const nightly = job({ payload: {}, async handler(ctx) { await ctx.lake().table(loads).append([]); } });
+  void nightly.options.handler(testCtx(p, { run: { runId: 'run-1', attempt: 1, maxAttempts: 3 } }), {});
+}
+
+// --- models of the lake and entities' histories -----------------------------------------------------------------
+{
+  const audit = layer({ title: 'History of records' });
+  const task = entity({ columns: { title: t.text(), status: t.text().history(), hours: t.decimal().optional() }, history: { layer: audit } });
+  const h = historyOf(task);
+  const file = lakeTable({ layer: lakeRaw, columns: { day: t.date(), qty: t.text() }, partition: ['day'] });
+  lakeTable({
+    layer: lakeRaw,
+    columns: { day: t.date(), qty: t.decimal() },
+    model: (m) => m.from(file).columns({ day: file.f.day, qty: file.f.qty.parse('decimal') }),
+  });
+  lakeTable({
+    layer: lakeRaw,
+    columns: { day: t.date(), qty: t.decimal() },
+    // @ts-expect-error a parsed column is of the type it is parsed as: an int64 is no decimal
+    model: (m) => m.from(file).columns({ day: file.f.day, qty: file.f.qty.parse('int64') }),
+  });
+  lakeTable({
+    layer: lakeRaw,
+    columns: { day: t.date(), qty: t.decimal() },
+    // @ts-expect-error every column of the table is given
+    model: (m) => m.from(file).columns({ day: file.f.day }),
+  });
+  // @ts-expect-error only a text is parsed
+  task.f.hours.parse('decimal');
+  // @ts-expect-error a parse names one of the lake's types
+  file.f.qty.parse('money');
+  lakeTable({
+    layer: lakeRaw,
+    columns: { day: t.date(), status: t.text().optional(), n: t.bigint() },
+    model: (m) =>
+      m
+        .fromHistory(task)
+        .eachDay()
+        .where(task.f.status.ne('done'), h.f.change.ne('delete'))
+        .groupBy(h.f.day, task.f.status)
+        .columns({ day: h.f.day, status: task.f.status, n: count() }),
+  });
+
+  endpoint({
+    input: {},
+    output: { rows: t.int() },
+    async handler(ctx) {
+      const r: { rows: number; asOf?: Date } = await ctx.lake().refresh(file, { partition: file.f.day.eq('2026-11-20') });
+      // @ts-expect-error a plugin refreshes only its own tables
+      await ctx.lake().refresh(theirs);
+      // @ts-expect-error the partition filter is of the table's columns
+      await ctx.lake().refresh(file, { partition: loads.f.day.eq('2026-11-20') });
+      const rows = await ctx.lake().history(task).where(task.f.status.eq('open')).orderBy(h.f.validFrom.desc()).all();
+      const first = rows[0]!;
+      // a kept column may be absent in a row of the history, whatever the field says
+      const status: string | undefined = first.status;
+      // @ts-expect-error not a string: it may be absent
+      const required: string = first.status;
+      const when: Date = first.validFrom;
+      const to: Date | undefined = first.validTo;
+      const change: 'baseline' | 'insert' | 'update' | 'delete' | 'restore' = first.change;
+      const perDay: { day: string; n: number }[] = await ctx.lake().history(task).eachDay().groupBy(h.f.day).select({ day: h.f.day, n: count() }).all();
+      // @ts-expect-error eachDay reads a history only
+      ctx.lake().query(file).eachDay();
+      // @ts-expect-error a history is not a lake table
+      ctx.lake().query(task);
+      void [status, required, when, to, change, perDay];
+      return { rows: r.rows };
+    },
+  });
+  // @ts-expect-error a dependency's history is another plugin's entity
+  plugin({ id: 'hist', version: '1.0.0', historyDependencies: [task] });
+}
+
+// --- entities stored in OLAP: read with ctx.analytics() only ---------------------------------------------------------
+{
+  const mart = layer({ title: 'For reports' });
+  const facts = lakeTable({ layer: mart, columns: { day: t.date(), visits: t.bigint(), note: t.text() }, partition: ['day'] });
+  const daily = entity({
+    storage: 'olap',
+    olapKey: ['day'],
+    columns: { day: t.date(), visits: t.bigint(), note: t.text().optional() },
+    load: (l) => l.from(facts).columns({ day: facts.f.day, visits: facts.f.visits }),
+  });
+  entity({
+    storage: 'olap',
+    olapKey: ['day'],
+    columns: { day: t.date(), visits: t.bigint() },
+    // @ts-expect-error a required column is given
+    load: (l) => l.from(facts).columns({ day: facts.f.day }),
+  });
+  entity({
+    storage: 'olap',
+    // @ts-expect-error the key names columns
+    olapKey: ['nope'],
+    columns: { day: t.date() },
+  });
+  endpoint({
+    input: {},
+    output: { rows: t.int() },
+    async handler(ctx) {
+      // @ts-expect-error an entity stored in OLAP is never read nor written with ctx.db
+      ctx.db(daily);
+      // @ts-expect-error nor read with ctx.query
+      ctx.query(daily);
+      const rows: { day: string; visits: bigint; note?: string }[] = await ctx.analytics().query(daily).all();
+      const ticket = await ctx.analytics().snapshot().load(daily).request();
+      // @ts-expect-error only an entity stored in OLAP is loaded
+      ctx.analytics().snapshot().load(note);
+      const done: 'pending' | 'building' | 'done' | 'failed' = (await ticket.wait()).state;
+      void done;
+      return { rows: rows.length };
+    },
+  });
+}

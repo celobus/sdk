@@ -7,11 +7,16 @@
 pub mod access;
 pub mod agent_files;
 pub mod cron;
+pub mod history;
+pub mod lake;
+pub mod lake_model;
+pub mod load;
 pub mod lock;
 pub mod proto;
 pub mod ui;
 pub mod ui_check;
 mod validate;
+pub mod view;
 pub mod viz_kinds;
 
 use celobus_manifest::Manifest;
@@ -80,7 +85,7 @@ pub struct Descriptor {
     pub entities: Vec<Entity>,
     #[serde(default)]
     pub endpoints: Vec<Endpoint>,
-    /// Channels the plugin announces changes on (`reviews/plugin-ui-v2`): invalidations only, never data.
+    /// Channels the plugin announces changes on: invalidations only, never data.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub topics: Vec<Topic>,
     /// The UI document: contributions, screens and overlays (`ui.rs`).
@@ -98,6 +103,24 @@ pub struct Descriptor {
     /// manifest: a job grants nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
+    /// The plugin's analytic views ([`view`]): named queries over its entities, created in both engines. Written only
+    /// when declared; not in the manifest: a view grants nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<view::View>,
+    /// The plugin's layers of the workspace's Data Lake ([`lake`]). Written only when declared; not in the manifest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<lake::Layer>,
+    /// The plugin's lake tables ([`lake`]). Written only when declared; not in the manifest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lake_tables: Vec<lake::LakeTable>,
+    /// How the platform computes some of the plugin's lake tables ([`lake_model`]), when the plugin asks. Written only
+    /// when declared; not in the manifest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lake_models: Vec<lake_model::LakeModel>,
+    /// How the platform fills the plugin's entities kept in the analytic copy only ([`load`]), from the Data Lake,
+    /// when the plugin asks for a snapshot. Written only when declared; not in the manifest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loads: Vec<load::Load>,
 }
 
 /// The most retries a job declares, and the default.
@@ -460,6 +483,11 @@ pub struct Dependency {
     /// dependency's contract had them when `celobus plugin add` generated its client. Written only when declared.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<DependencyRead>,
+    /// The dependency's exported lake tables this plugin reads (`ctx.lake().query()`), and its entities whose exported
+    /// histories it reads (`ctx.lake().history()`), by their names there. A plugin never names a lake table like one of
+    /// its entities (`E_LAKE_TABLE_CLASH`), so each name is one of the two. Written only when declared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lake: Vec<String>,
 }
 
 /// An entity of a dependency this plugin reads; the provider must export its `read`.
@@ -539,7 +567,23 @@ pub struct Entity {
     /// Written only when declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<access::Access>,
+    /// The entity's history in the Data Lake ([`history`]): its layer, who reads it; its kept columns carry
+    /// `history`. Written only when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<history::EntityHistory>,
+    /// Where its rows are kept: empty, the workspace's database (and the analytic copy, as every entity); `olap`, the
+    /// analytic copy only, filled by the entity's load from the Data Lake when the plugin asks for a snapshot
+    /// ([`load`]). Written only when declared.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub storage: String,
+    /// With `storage` `olap`: the fields that key a row (`key(day, store, metric)`), whose values are unique among the
+    /// rows a load gives; the row's `id` is made from them. Written only when declared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub olap_key: Vec<String>,
 }
+
+/// The `storage` of an entity whose rows are kept in the analytic copy only.
+pub const STORAGE_OLAP: &str = "olap";
 
 /// An index of an entity's table: its columns in order (fields or system columns), optionally unique.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -572,6 +616,11 @@ pub fn key_field_type(key: &str) -> Option<&'static str> {
 }
 
 impl Entity {
+    /// Whether its rows are kept in the analytic copy only (`storage` `olap`).
+    pub fn olap(&self) -> bool {
+        self.storage == STORAGE_OLAP
+    }
+
     /// The system columns this entity's table has: `created_at`, `updated_at`, and `deleted_at` / `version` when
     /// declared.
     pub fn system_columns(&self) -> Vec<&'static str> {
@@ -631,6 +680,9 @@ pub struct Field {
     /// default, [`Field::on_delete_or_default`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub on_delete: String,
+    /// An entity column whose changes its history keeps ([`history`]); written only when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history: bool,
 }
 
 /// `on_delete` of a ref to an entity of the same plugin: `restrict` (the default: the target is not deleted while
@@ -1124,6 +1176,16 @@ pub fn plugin_id_errors(id: &str, path: &str) -> Vec<Error> {
 }
 
 #[cfg(test)]
+mod history_tests;
+#[cfg(test)]
+mod lake_model_tests;
+#[cfg(test)]
+mod lake_tests;
+#[cfg(test)]
+mod load_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod ui_tests;
+#[cfg(test)]
+mod view_tests;

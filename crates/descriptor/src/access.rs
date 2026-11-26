@@ -500,7 +500,9 @@ impl Check<'_> {
         if !known {
             self.out.push(
                 Error::new("E_ACCESS_ROLE_UNKNOWN", path, format!("role {role:?} is not declared"))
-                    .help("a role of this plugin, or workspace.owner, workspace.admin, workspace.member, workspace.guest"),
+                    .help(
+                        "declare it in the plugin, or use a workspace role: workspace.owner, workspace.admin, workspace.member",
+                    ),
             );
         }
     }

@@ -20,6 +20,9 @@ internal interface ISyscalls
 
     /// <summary>Sends an <c>Invalidate</c> when the session is up; nothing is awaited.</summary>
     void Invalidate(string topic, string key);
+
+    /// <summary>What reads and writes files' bytes at the signed URLs the files syscalls answer.</summary>
+    HttpClient Http => FileTransfer.Client;
 }
 
 /// <summary>The context of one request or one job's run, created by the SDK for every request and every attempt.</summary>
@@ -43,10 +46,13 @@ public sealed class Ctx
 
     /// <summary>
     /// A context without the platform, for unit tests of handlers: the caller is the system (see
-    /// <see cref="WithCaller"/>) and every call to the platform answers 503 <c>unavailable</c>.
+    /// <see cref="WithCaller"/>) and every call to the platform answers 503 <c>unavailable</c>, but
+    /// <see cref="Files"/>: it works on an in-memory store of this context's own (kept by <see cref="WithCaller"/>,
+    /// <see cref="WithRun"/> and <see cref="AsSystem"/>), so a test makes a file with <c>ctx.Files.Create</c> and
+    /// hands it to the handler.
     /// </summary>
     public static Ctx Test(string plugin, string version) => new(
-        Detached.Instance,
+        new MemoryFiles(),
         new PluginInfo(plugin, version),
         new RequestInfo(0, "", DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30), null),
         new Caller(plugin, null),
@@ -65,16 +71,25 @@ public sealed class Ctx
         new(_syscalls, Plugin, Request, Caller, Log, Cancelled, Tx, System,
             new JobInfo("", runId, attempt, maxAttempts, DateTimeOffset.UtcNow));
 
-    /// <summary>No session: every syscall answers <c>unavailable</c> (<see cref="Test"/>).</summary>
-    private sealed class Detached : ISyscalls
-    {
-        public static readonly Detached Instance = new();
+    /// <summary>
+    /// The same context with these settings (unit tests): <c>ctx.WithSettings(new ChatSettings { Greeting = "Hi" })</c>;
+    /// <see cref="Settings{T}"/> reads them, the declared defaults filling what is null.
+    /// </summary>
+    public Ctx WithSettings<T>(T settings) where T : class =>
+        new(_syscalls, Plugin with { SettingsCache = new SettingsCache(null, JsonSerializer.SerializeToNode(settings, CelobusJson.Options) as JsonObject) },
+            Request, Caller, Log, Cancelled, Tx, System, Job);
 
-        public Task<SyscallResult> Call(Syscall call, CancellationToken ct) =>
-            Task.FromException<SyscallResult>(PluginError.Unavailable("the session with the platform is closed"));
-
-        public void Invalidate(string topic, string key) { }
-    }
+    /// <summary>
+    /// The plugin's settings (<c>Plugin.Settings&lt;T&gt;()</c>): what an owner or an admin saved, else the declared
+    /// defaults. Read from the process's memory (the platform sends each change), so it is cheap to call in every
+    /// handler; the value is shared, do not change it. A required setting no one has set yet is a 409
+    /// <c>settings_required</c> naming it (<c>details.fields</c>, <c>details.missing</c>): the plugin needs setup. A type
+    /// other than the declared one is a 500.
+    /// </summary>
+    public T Settings<T>() where T : class =>
+        (Plugin.SettingsCache ?? throw new PluginError(500, "internal",
+            $"no settings: the plugin declares none (Plugin.Settings<{typeof(T).Name}>()), or a test gave none (ctx.WithSettings(..))"))
+        .Get<T>();
 
     /// <summary>The declared transaction this context's repository calls are part of (0: none).</summary>
     internal ulong Tx { get; }
@@ -125,6 +140,16 @@ public sealed class Ctx
 
     /// <summary>The runs of this plugin's agents: start one, read it and its events, write to it, stop it.</summary>
     public Agents Agents => new(this);
+
+    /// <summary>
+    /// The plugin's files (Files.cs): <c>Open(file)</c> reads one as a <see cref="Stream"/>, <c>Create(name, type)</c>
+    /// writes a new one, <c>Head(file)</c> tells what is known of it. A plugin reaches only its own files: those it was
+    /// given (a request's or a job payload's <c>File</c> fields, a call's answer, a row) and those it made.
+    /// </summary>
+    public Files Files => new(this);
+
+    /// <summary>What reads and writes the bytes of files (<see cref="Files"/>).</summary>
+    internal HttpClient Http => _syscalls.Http;
 
     /// <summary>
     /// Calls an endpoint of a dependency (declared with <c>.DependsOn(plugin, endpoint)</c>) as this request's caller:
@@ -416,6 +441,18 @@ public sealed class Ctx
     private static readonly Dictionary<string, int> JobRefusals = new() { ["queue_full"] = 429, ["payload_too_large"] = 413, ["cancelled"] = 503 };
 
     /// <summary>
+    /// What the platform refuses a <c>files_*</c> syscall with: a file the plugin does not have (404), one collected
+    /// (410), too large (413), the workspace's storage full (507), a size other than declared or nothing written
+    /// (409), a file made in a read-only endpoint (409), a file of another plugin in a value the plugin sends (409).
+    /// </summary>
+    private static readonly Dictionary<string, int> FileRefusals = new()
+    {
+        ["file_gone"] = 410, ["file_too_large"] = 413, ["quota_exceeded"] = 507, ["file_size_mismatch"] = 409,
+        ["file_not_uploaded"] = 409, ["read_only"] = 409, ["file_unknown"] = 409, ["too_much_unattached"] = 507,
+        ["too_many_unattached"] = 429,
+    };
+
+    /// <summary>
     /// What the platform refuses a <c>Db*</c> or <c>Tx*</c> syscall with, and the status each code answers;
     /// <c>version_conflict</c> carries <c>details.current</c>, <c>unique_conflict</c> <c>details.column</c>.
     /// </summary>
@@ -437,7 +474,7 @@ public sealed class Ctx
         var i = error.IndexOf(": ", StringComparison.Ordinal);
         if (i > 0 && Denials.Contains(error[..i])) return PluginError.Domain(error[..i], 403, error[(i + 2)..]);
         if (i > 0 && (AgentRefusals.TryGetValue(error[..i], out var status) || NotifyRefusals.TryGetValue(error[..i], out status)
-                      || JobRefusals.TryGetValue(error[..i], out status)))
+                      || JobRefusals.TryGetValue(error[..i], out status) || FileRefusals.TryGetValue(error[..i], out status)))
             return new PluginError(status, error[..i], error[(i + 2)..]);
         if (i > 0 && DbRefusals.TryGetValue(error[..i], out var db))
         {
@@ -466,6 +503,9 @@ public sealed record PluginInfo(string Id, string Version)
 {
     /// <summary>The jobs' keys by payload type (null: every payload's job is its name in snake_case).</summary>
     internal IReadOnlyDictionary<Type, string>? JobKeys { get; init; }
+
+    /// <summary>The plugin's settings as the platform sent them (or a test gave); null: none.</summary>
+    internal SettingsCache? SettingsCache { get; init; }
 
     /// <summary>The key of the job that takes <paramref name="payload"/>; 400 <c>invalid</c> when none does.</summary>
     internal string JobFor(Type payload)
@@ -533,14 +573,19 @@ public sealed class Caller
 
     /// <summary>The same caller with these full role names added (<c>workspace.admin</c>, <c>&lt;plugin&gt;.&lt;role&gt;</c>); for tests.</summary>
     public Caller WithRoles(params string[] roles) =>
-        new(_plugin, UserId, Kind, DisplayName, [.. Roles, .. roles], Groups, Scopes);
+        new(_plugin, UserId, Kind, DisplayName, [.. Roles, .. roles], Groups, Scopes) { AgentRun = AgentRun };
 
     /// <summary>The same caller with these full scope names added (<c>&lt;plugin&gt;:&lt;scope&gt;</c>); for tests.</summary>
     public Caller WithScopes(params string[] scopes) =>
-        new(_plugin, UserId, Kind, DisplayName, Roles, Groups, [.. Scopes, .. scopes]);
+        new(_plugin, UserId, Kind, DisplayName, Roles, Groups, [.. Scopes, .. scopes]) { AgentRun = AgentRun };
+
+    /// <summary>The same caller as an agent working on this run; for tests.</summary>
+    public Caller WithAgentRun(string run) =>
+        new(_plugin, UserId, Kind, DisplayName, Roles, Groups, Scopes) { AgentRun = run };
 
     /// <summary>The same caller of this plugin (its roles and scopes read against it).</summary>
-    internal Caller For(string plugin) => new(plugin, UserId, Kind, DisplayName, Roles, Groups, Scopes);
+    internal Caller For(string plugin) =>
+        new(plugin, UserId, Kind, DisplayName, Roles, Groups, Scopes) { AgentRun = AgentRun };
 
     internal Caller(string plugin, Principal? p)
     {
@@ -557,6 +602,7 @@ public sealed class Caller
         Roles = [.. p.Roles];
         Groups = [.. p.Groups.Select(g => new Id<Platform.Group>(g))];
         Scopes = [.. p.Scopes];
+        AgentRun = string.IsNullOrEmpty(p.AgentRun) ? null : p.AgentRun;
     }
 
     /// <summary>The user, or null without one.</summary>
@@ -573,6 +619,11 @@ public sealed class Caller
 
     /// <summary>The token's scopes for this plugin, <c>&lt;plugin&gt;:&lt;scope&gt;</c>.</summary>
     public IReadOnlyList<string> Scopes { get; } = [];
+
+    /// <summary>When the caller is an agent working on a run: that run's id (null otherwise). An agent calls the
+    /// endpoints of the plugin whose code started its run only from that run, so a handler may tie what the agent
+    /// does to the record the run was started for.</summary>
+    public string? AgentRun { get; private init; }
 
     /// <summary>The user; 401 <c>unauthenticated</c> without one.</summary>
     public Id<Platform.User> User() => UserId ?? throw PluginError.Unauthenticated();

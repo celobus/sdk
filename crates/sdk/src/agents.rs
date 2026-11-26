@@ -54,9 +54,11 @@
 //! # }
 //! ```
 
+use std::future::IntoFuture;
 use std::time::Duration;
 
 use celobus_proto as pb;
+use futures::future::BoxFuture;
 use pb::{syscall, syscall_result};
 use serde_json::{Map, Value};
 
@@ -64,7 +66,7 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::identity::AgentEngine;
 use crate::platform::User;
-use crate::types::Id;
+use crate::types::{File, Id};
 
 /// Where a run is: `Starting` (the run is being set up) → `Running` ⇄ `Idle` (a session between turns) → one of
 /// the four ends.
@@ -354,9 +356,17 @@ pub struct RunOptions {
     notify_link: Option<crate::notify::Link>,
     topic: Option<String>,
     topic_key: String,
+    files: Vec<File>,
 }
 
 impl RunOptions {
+    /// Files the run is given: the plugin's own files (409 `file_unknown` otherwise), kept while the run lives. The
+    /// task lists them, a line each with the name, type, size and id; the agent downloads the ones it needs.
+    pub fn files(mut self, files: &[File]) -> Self {
+        self.files = files.to_vec();
+        self
+    }
+
     /// The run joins this group instead of founding one: the `group` of a run this plugin's code started
     /// without one. 404 `unknown_group` when the platform no longer remembers the group's first run or another
     /// plugin's code founded it, 409 `agent_in_group` when the agent has a live run there already, 409
@@ -490,8 +500,14 @@ impl<'a> Agents<'a> {
     /// started by this request's caller and founds a group (`AgentRun::group`). 404 `unknown_agent` when there is
     /// no such agent, 403 `forbidden` when the caller does not reach another plugin's agent's plugin or is the
     /// account of an agent.
-    pub async fn run(&self, agent: &str, input: impl Into<String>) -> Result<AgentRun> {
-        self.run_with(agent, input, RunOptions::default()).await
+    /// `.files(&[..])` gives the run files (`RunOptions::files`).
+    pub fn run(&self, agent: &str, input: impl Into<String>) -> StartRun<'a> {
+        StartRun {
+            ctx: self.ctx,
+            agent: agent.into(),
+            input: input.into(),
+            options: RunOptions::default(),
+        }
     }
 
     /// Starts a run with another engine, model, session or time than the agent declares, or in a group the
@@ -521,6 +537,7 @@ impl<'a> Agents<'a> {
             notify_link: options.notify_link.as_ref().map(crate::notify::Link::wire),
             topic: options.topic.unwrap_or_default(),
             topic_key: options.topic_key,
+            files: options.files.iter().map(file_to_pb).collect(),
         });
         self.run_of("agent_run", call).await
     }
@@ -623,16 +640,14 @@ impl<'a> Agents<'a> {
     }
 
     /// Sends a follow-up message to a run that has not ended, as this request's caller; the sequence number of
-    /// the input. 409 `run_ended` when the run is over.
-    pub async fn send(&self, run_id: &str, text: impl Into<String>) -> Result<u64> {
-        let call = syscall::Call::AgentSend(pb::AgentRunSend {
+    /// the input. `.files(&[..])` gives the run more files, as `RunOptions::files` does. 409 `run_ended` when the
+    /// run is over.
+    pub fn send(&self, run_id: &str, text: impl Into<String>) -> SendInput<'a> {
+        SendInput {
+            ctx: self.ctx,
             run_id: run_id.into(),
             text: text.into(),
-            request_id: self.ctx.request().id(),
-        });
-        match self.ctx.syscall(call).await? {
-            Some(syscall_result::Result::AgentInput(i)) => Ok(i.seq),
-            _ => Err(unexpected("agent_send")),
+            files: vec![],
         }
     }
 
@@ -650,5 +665,81 @@ impl<'a> Agents<'a> {
             run_id: run_id.into(),
         });
         self.run_of("agent_close", call).await
+    }
+}
+
+fn file_to_pb(f: &File) -> pb::File {
+    pb::File {
+        id: f.id.clone(),
+        name: f.name.clone(),
+        content_type: f.content_type.clone(),
+        size: f.size,
+    }
+}
+
+/// A run being started (`ctx.agents().run(agent, input)`); `.await` starts it.
+pub struct StartRun<'a> {
+    ctx: &'a Ctx,
+    agent: String,
+    input: String,
+    options: RunOptions,
+}
+
+impl StartRun<'_> {
+    /// Files the run is given (`RunOptions::files`).
+    pub fn files(mut self, files: &[File]) -> Self {
+        self.options = self.options.files(files);
+        self
+    }
+}
+
+impl<'a> IntoFuture for StartRun<'a> {
+    type Output = Result<AgentRun>;
+    type IntoFuture = BoxFuture<'a, Result<AgentRun>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            Agents::new(self.ctx)
+                .run_with(&self.agent, self.input, self.options)
+                .await
+        })
+    }
+}
+
+/// A follow-up message being sent to a run (`ctx.agents().send(run_id, text)`); `.await` sends it and answers the
+/// sequence number of the input.
+pub struct SendInput<'a> {
+    ctx: &'a Ctx,
+    run_id: String,
+    text: String,
+    files: Vec<File>,
+}
+
+impl SendInput<'_> {
+    /// Files the run is given with the message: the plugin's own files (409 `file_unknown` otherwise), kept while
+    /// the run lives.
+    pub fn files(mut self, files: &[File]) -> Self {
+        self.files = files.to_vec();
+        self
+    }
+}
+
+impl<'a> IntoFuture for SendInput<'a> {
+    type Output = Result<u64>;
+    type IntoFuture = BoxFuture<'a, Result<u64>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let call = syscall::Call::AgentSend(pb::AgentRunSend {
+                run_id: self.run_id,
+                text: self.text,
+                request_id: self.ctx.request().id(),
+                files: self.files.iter().map(file_to_pb).collect(),
+            });
+            match self.ctx.syscall(call).await? {
+                Some(syscall_result::Result::AgentInput(i)) => Ok(i.seq),
+                _ => Err(unexpected("agent_send")),
+            }
+        })
     }
 }

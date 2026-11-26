@@ -2,8 +2,10 @@
 //! A task is created and its processing enqueued in one transaction (a request that asks to fail rolls both back);
 //! a daily report is enqueued once per day (a singleton); a heartbeat runs every minute and logs a few lines; a flaky
 //! job fails its first attempt and succeeds on the second; a doomed job fails for good; a slow job works in steps of
-//! a second and stops when it is aborted (its timeout is 10 s). Its `--describe` must equal `../descriptor.json`, as
-//! the TypeScript and C# versions' must (`scripts/sdk-conformance.sh`).
+//! a second and stops when it is aborted (its timeout is 10 s). Files: a document keeps the files it was given (a
+//! field with a size limit and accepted types), its first file is imported by a job that reads it line by line, and
+//! an export answers a file it writes. Its `--describe` must equal `../descriptor.json`, as the TypeScript and C#
+//! versions' must (`scripts/sdk-conformance.sh`).
 
 use std::time::Duration;
 
@@ -56,6 +58,14 @@ pub struct Budget {
     #[col(encrypted)]
     pub secret: Option<String>,
     pub notes: Option<String>,
+}
+
+// A document and the files it was given
+#[derive(Entity, Clone, Debug, PartialEq)]
+pub struct Document {
+    pub id: Id<Document>,
+    pub title: String,
+    pub files: Vec<File>,
 }
 
 /// The titled tasks of the last 30 days, a row each, with the title of their stage.
@@ -148,6 +158,38 @@ pub struct CancelRunReply {
 }
 
 #[derive(Message, Clone, Debug)]
+pub struct AddDocumentRequest {
+    pub title: String,
+    #[field(max_size = "1 GiB", accept = ["text/csv", "image/*"])]
+    pub files: Vec<File>,
+}
+
+#[derive(Message, Clone, Debug)]
+pub struct AddDocumentReply {
+    pub document: Id<Document>,
+    // the import of its first file; empty: it has none
+    pub run_id: String,
+}
+
+#[derive(Message, Clone, Debug)]
+pub struct ExportTasksRequest {
+    // 2026-11-20
+    pub day: String,
+}
+
+#[derive(Message, Clone, Debug)]
+pub struct ExportTasksReply {
+    pub file: File,
+}
+
+#[derive(Message, Clone, Debug)]
+#[message(job)]
+pub struct ImportFile {
+    #[field(accept = ["text/csv"])]
+    pub file: File,
+}
+
+#[derive(Message, Clone, Debug)]
 #[message(job)]
 pub struct ProcessTask {
     pub task: Id<Task>,
@@ -224,6 +266,54 @@ pub async fn cancel_run(ctx: Ctx, req: CancelRunRequest) -> Result<CancelRunRepl
     })
 }
 
+/// Keeps a document with its files and enqueues the import of its first file.
+pub async fn add_document(ctx: Ctx, req: AddDocumentRequest) -> Result<AddDocumentReply> {
+    let first = req.files.first().cloned();
+    let doc = ctx
+        .db::<Document>()
+        .create(Document {
+            id: Id::none(),
+            title: req.title,
+            files: req.files,
+        })
+        .await?;
+    let run_id = match first {
+        Some(file) => ctx.jobs().enqueue(ImportFile { file }).await?.run_id,
+        None => String::new(),
+    };
+    Ok(AddDocumentReply {
+        document: doc.id,
+        run_id,
+    })
+}
+
+/// Writes the day's export and answers it: the caller downloads it.
+pub async fn export_tasks(ctx: Ctx, req: ExportTasksRequest) -> Result<ExportTasksReply> {
+    let mut w = ctx
+        .files()
+        .create(format!("tasks-{}.csv", req.day), "text/csv")
+        .await?;
+    w.write_all(b"day,title\n").await?;
+    w.write_all(format!("{},exported\n", req.day).as_bytes())
+        .await?;
+    Ok(ExportTasksReply {
+        file: w.finish().await?,
+    })
+}
+
+/// Reads the file line by line, never whole.
+async fn import_file(ctx: Ctx, p: ImportFile) -> Result<()> {
+    let mut lines = ctx.files().open(&p.file).await?.lines();
+    let mut n = 0;
+    while let Some(line) = lines.next_line().await? {
+        if !line.is_empty() {
+            n += 1;
+        }
+    }
+    tracing::info!("imported {n} lines of {}", p.file.name);
+    Ok(())
+}
+
 async fn process_task(ctx: Ctx, p: ProcessTask) -> Result<()> {
     let task = ctx.db::<Task>().get(&p.task).await?;
     tracing::info!("processing task {}", task.title);
@@ -297,6 +387,11 @@ pub fn plugin() -> Plugin {
             a.read(MEMBER);
             a.mask(Budget::notes, [MEMBER]);
         }))
+        .entity::<Document>()
+        .access::<Document>(Access::build(|a| {
+            a.read(MEMBER);
+            a.create(MEMBER);
+        }))
         .capability(
             Capability::AUTHZ_BYPASS,
             "The lake's models copy the estimates and the budgets",
@@ -318,7 +413,18 @@ pub fn plugin() -> Plugin {
                 .describe("Cancels a run.")
                 .roles([MEMBER]),
         )
+        .endpoint(
+            Endpoint::new(add_document)
+                .describe("Keeps a document with its files.")
+                .roles([MEMBER]),
+        )
+        .endpoint(
+            Endpoint::new(export_tasks)
+                .describe("Exports the day's tasks as a file.")
+                .roles([MEMBER]),
+        )
         .job(Job::new(process_task).describe("Marks a task processed"))
+        .job(Job::new(import_file).describe("Imports a file line by line"))
         .job(Job::new(daily_report).describe("Writes the day's report"))
         .job(
             Job::new(heartbeat)

@@ -4,8 +4,9 @@ use std::collections::HashSet;
 
 use crate::{
     AGENT_ENGINES, CAPABILITIES, Descriptor, Entity, Error, Field, FieldType, IMPLICIT_SCOPES,
-    MAX_NOTIFICATION_KINDS, MAX_SEARCHABLE, RESERVED_NOTIFICATION_KINDS,
-    RESERVED_NOTIFICATION_PREFIX, SEARCH_LANGUAGES, SYSTEM_COLUMNS, key_field_type,
+    MAX_ACCEPT, MAX_FILE_SIZE, MAX_NOTIFICATION_KINDS, MAX_SEARCHABLE, RESERVED_NOTIFICATION_KINDS,
+    RESERVED_NOTIFICATION_PREFIX, SEARCH_LANGUAGES, SYSTEM_COLUMNS, accept_pattern_ok,
+    key_field_type,
 };
 
 /// The longest endpoint timeout (600 s).
@@ -32,6 +33,7 @@ pub fn validate(d: &Descriptor) -> Vec<Error> {
     let types = v.types(d);
     v.storage(d);
     v.encrypted(d);
+    v.files(d);
     v.navigations(d);
     v.on_delete(d);
     v.endpoints(d, &types);
@@ -44,6 +46,7 @@ pub fn validate(d: &Descriptor) -> Vec<Error> {
     v.errors.extend(crate::lake_model::validate(d));
     v.errors.extend(crate::load::validate(d));
     v.errors.extend(crate::history::validate(d));
+    v.errors.extend(crate::settings::validate(d));
     v.errors
 }
 
@@ -97,9 +100,9 @@ fn job_name_ok(s: &str) -> bool {
 }
 
 /// The first field of message `name` that a payload read from `{}` cannot fill (`RemindUnpaid.since`): a single
-/// `timestamp` or `date` that is not optional, directly or in a message field that is not optional. Every other
-/// absent field reads as its default.
-fn required_without_default(d: &Descriptor, name: &str) -> Option<String> {
+/// `timestamp`, `date` or `file` that is not optional, directly or in a message field that is not optional. Every
+/// other absent field reads as its default.
+pub(crate) fn required_without_default(d: &Descriptor, name: &str) -> Option<String> {
     fn walk<'a>(d: &'a Descriptor, name: &'a str, seen: &mut Vec<&'a str>) -> Option<String> {
         if seen.contains(&name) {
             return None;
@@ -118,7 +121,7 @@ fn required_without_default(d: &Descriptor, name: &str) -> Option<String> {
             })?;
         for f in fields.iter().filter(|f| !f.optional && !f.repeated) {
             match FieldType::parse(&f.ty) {
-                Some(FieldType::Scalar("timestamp" | "date")) => {
+                Some(FieldType::Scalar("timestamp" | "date" | "file")) => {
                     return Some(format!("{name}.{}", f.name));
                 }
                 Some(FieldType::Message(m)) => {
@@ -423,7 +426,7 @@ impl V {
                         format!("{p}.kind"),
                         format!("there is no connection kind {:?}", c.kind),
                     )
-                    .help("llm (a language model provider for agents) or stt (speech recognition for dictation)"),
+                    .help("llm (a language model provider for agents), stt (speech recognition for dictation) or maps (a basemap provider for maps)"),
                 );
             }
             if c.title.chars().count() > 80 || c.description.chars().count() > 500 {
@@ -982,14 +985,14 @@ impl V {
                 let plain = !f.repeated
                     && !matches!(
                         ty,
-                        Some(FieldType::Message(_)) | Some(FieldType::Scalar("json"))
+                        Some(FieldType::Message(_)) | Some(FieldType::Scalar("json" | "file"))
                     );
                 if (f.unique || f.index) && !plain {
                     self.push(
                         Error::new(
                             "E_UNIQUE_TYPE",
                             fp,
-                            "a list, a message or json column cannot be unique or indexed",
+                            "a list, a message, json or file column cannot be unique or indexed",
                         )
                         .help("index a scalar column"),
                     );
@@ -1017,7 +1020,8 @@ impl V {
                             !f.repeated
                                 && !matches!(
                                     FieldType::parse(&f.ty),
-                                    Some(FieldType::Message(_)) | Some(FieldType::Scalar("json"))
+                                    Some(FieldType::Message(_))
+                                        | Some(FieldType::Scalar("json" | "file"))
                                 )
                         });
                     if !known || twice || !indexable {
@@ -1033,6 +1037,93 @@ impl V {
                             .help(format!("one of {}", columns.join(", "))),
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// The options of file fields (`E_FILE_OPTION`): `max_size` and `accept` belong to a `file` field, within their
+    /// limits. And a file is never kept encrypted (`E_FILE_ENCRYPTED`): an encrypted column is neither a `file` nor a
+    /// message holding one, at any depth, since a browser reads a file's bytes directly by its URL.
+    fn files(&mut self, d: &Descriptor) {
+        let lists = d
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (format!("messages[{}]", at(&m.name, i)), &m.fields))
+            .chain(
+                d.entities
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| (format!("entities[{}]", at(&e.name, i)), &e.fields)),
+            );
+        for (p, fields) in lists {
+            for (j, f) in fields.iter().enumerate() {
+                let fp = format!("{p}.fields[{}]", at(&f.name, j));
+                if !f.is_file() {
+                    if f.max_size.is_some() || !f.accept.is_empty() {
+                        self.push(
+                            Error::new(
+                                "E_FILE_OPTION",
+                                fp,
+                                format!(
+                                    "{} is not a file field: max_size and accept belong to one",
+                                    f.name
+                                ),
+                            )
+                            .help("declare the field as File or Vec<File>, or drop the options"),
+                        );
+                    }
+                    continue;
+                }
+                if let Some(n) = f.max_size
+                    && (n == 0 || n > MAX_FILE_SIZE)
+                {
+                    self.push(
+                        Error::new(
+                            "E_FILE_OPTION",
+                            format!("{fp}.max_size"),
+                            format!("max_size is {n} bytes: a file field takes 1 byte to 5 TiB"),
+                        )
+                        .help("a size such as \"1 GiB\" or \"500 MB\""),
+                    );
+                }
+                if f.accept.len() > MAX_ACCEPT {
+                    self.push(Error::new(
+                        "E_FILE_OPTION",
+                        format!("{fp}.accept"),
+                        format!(
+                            "accept lists {} types; at most {MAX_ACCEPT}",
+                            f.accept.len()
+                        ),
+                    ));
+                }
+                let mut seen = HashSet::new();
+                for (k, a) in f.accept.iter().enumerate() {
+                    if !accept_pattern_ok(a) || !seen.insert(a.as_str()) {
+                        self.push(
+                            Error::new(
+                                "E_FILE_OPTION",
+                                format!("{fp}.accept[{k}]"),
+                                format!("{a:?} is not a MIME type or pattern, or is listed twice"),
+                            )
+                            .help("lowercase type/subtype or type/*: text/csv, image/*, application/pdf"),
+                        );
+                    }
+                }
+            }
+        }
+        for (i, e) in d.entities.iter().enumerate() {
+            for (j, f) in e.fields.iter().enumerate().filter(|(_, f)| f.encrypted) {
+                if holds_file(d, f, &mut vec![]) {
+                    self.push(
+                        Error::new(
+                            "E_FILE_ENCRYPTED",
+                            format!("entities[{}].fields[{}]", at(&e.name, i), at(&f.name, j)),
+                            format!("{} holds files: a file column is never encrypted", f.name),
+                        )
+                        .help("drop encrypted: the files' bytes are read directly by their URLs"),
+                    );
                 }
             }
         }
@@ -1532,6 +1623,24 @@ impl V {
             }
         }
     }
+}
+
+/// Whether a field holds files: a `file` field, or a message with one at any depth.
+fn holds_file<'a>(d: &'a Descriptor, f: &'a Field, seen: &mut Vec<&'a str>) -> bool {
+    if f.is_file() {
+        return true;
+    }
+    let Some(FieldType::Message(m)) = FieldType::parse(&f.ty) else {
+        return false;
+    };
+    let Some(m) = d.messages.iter().find(|x| x.name == m) else {
+        return false;
+    };
+    if seen.contains(&m.name.as_str()) {
+        return false;
+    }
+    seen.push(&m.name);
+    m.fields.iter().any(|x| holds_file(d, x, seen))
 }
 
 /// Two field lists that describe the same message (names, numbers, types; not descriptions or column modifiers).

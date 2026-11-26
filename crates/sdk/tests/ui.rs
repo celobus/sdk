@@ -48,6 +48,8 @@ pub struct GetOrderRequest {
 pub struct CancelOrderRequest {
     pub id: Uuid,
     pub reason: String,
+    #[field(max_size = "10 MiB", accept = ["image/*", "application/pdf"])]
+    pub scans: Vec<File>,
 }
 
 #[derive(Message, Clone, Debug, Default)]
@@ -178,6 +180,7 @@ fn order_screen() -> Screen {
                 cancel_order,
                 |f| {
                     f.textarea(CancelOrderRequest::reason, "Why").required();
+                    f.upload(CancelOrderRequest::scans, "Scans");
                     f.cancel("Keep it");
                 },
                 "Cancel order",
@@ -253,6 +256,12 @@ fn a_plugin_ui_describes_and_validates() {
     assert_eq!(celobus_descriptor::ui_check::ui_warnings(&d), vec![]);
     // a sortable column names its request field; a filter with several values is a multi-select
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // an upload input carries its file field's options
+    assert_eq!(
+        v["ui"]["screens"][1]["overlays"][0]["layout"]["form"]["sections"][0]["inputs"][1],
+        serde_json::json!({ "name": "scans", "control": "upload", "label": "Scans", "multiple": true,
+                            "max_size": 10u64 << 20, "accept": ["image/*", "application/pdf"] })
+    );
     let children = &v["ui"]["screens"][0]["layout"]["stack"]["children"];
     assert_eq!(children[1]["table"]["columns"][2]["sort"], "sort_total");
     assert_eq!(
@@ -484,7 +493,7 @@ fn charts_and_figures_describe_and_validate() {
     let errors = celobus_descriptor::validate(&d);
     assert!(errors.is_empty(), "{errors:#?}\n{text}");
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(v["ui"]["catalog"], 3);
+    assert_eq!(v["ui"]["catalog"], 4);
     let nodes = &v["ui"]["screens"][1]["layout"]["stack"]["children"];
     // the contract's node, key for key
     assert_eq!(
@@ -814,4 +823,206 @@ fn a_report_head_has_defaults_a_range_switch_breadcrumbs_and_commands_with_args(
               "target": { "overlay": "note", "args": [{ "field": "kind", "value": { "lit": "plain" } }] } },
         ])
     );
+}
+
+// ------------------------------------------------------------------------------------------ catalog 4
+
+#[derive(Message, Clone, Debug, Default)]
+pub struct Quarter {
+    pub key: String,
+    pub label: String,
+    pub total: Decimal,
+    pub running: bool,
+}
+
+#[derive(Message, Clone, Debug, Default)]
+pub struct QuartersRequest {}
+
+#[derive(Message, Clone, Debug, Default)]
+pub struct QuartersResponse {
+    pub quarters: Vec<Quarter>,
+}
+
+#[derive(Message, Clone, Debug, Default)]
+pub struct Deal {
+    pub id: String,
+    pub name: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub price: Decimal,
+    pub outline: String,
+    pub ours: bool,
+}
+
+#[derive(Message, Clone, Debug, Default)]
+pub struct DealsRequest {
+    pub quarter: String,
+    pub window: i32,
+    pub area: String,
+    pub upto: i32,
+}
+
+#[derive(Message, Clone, Debug, Default)]
+pub struct DealsResponse {
+    pub deals: Vec<Deal>,
+}
+
+#[derive(Message, Clone, Debug, Default)]
+pub struct DealsParams {
+    pub quarter: Option<String>,
+    pub window: Option<i32>,
+    pub then: Option<String>,
+    pub area: Option<String>,
+    pub upto: Option<i32>,
+}
+
+pub const DEALS: ScreenKey<DealsParams> = ScreenKey::new("deals");
+
+async fn quarters(_: Ctx, _: QuartersRequest) -> Result<QuartersResponse> {
+    Ok(QuartersResponse::default())
+}
+async fn deals(_: Ctx, _: DealsRequest) -> Result<DealsResponse> {
+    Ok(DealsResponse::default())
+}
+
+fn deals_plugin() -> Plugin {
+    Plugin::new("broker", "1.0.0")
+        .connection(Connection::maps("maps").title("Maps"))
+        .endpoint(Endpoint::new(quarters).ui().read_only())
+        .endpoint(Endpoint::new(deals).ui().read_only())
+        .ui(Ui::new().screen(Screen::build(DEALS, |s| {
+            let quarter = s.param(DealsParams::quarter);
+            let window = s.param(DealsParams::window);
+            let then = s.param(DealsParams::then);
+            let area = s.param(DealsParams::area);
+            let upto = s.param(DealsParams::upto);
+            let picked = s.state("picked", String::new());
+            let periods = s.query(
+                "quarters",
+                Query::call(quarters).rows(QuartersResponse::quarters),
+            );
+            let list = s.query(
+                "deals",
+                Query::call(deals)
+                    .arg(DealsRequest::quarter, quarter.or_empty())
+                    .arg(DealsRequest::window, window.or_empty())
+                    .arg(DealsRequest::area, area.or_empty())
+                    .arg(DealsRequest::upto, upto.or_empty())
+                    .rows(DealsResponse::deals),
+            );
+            s.title("Deals");
+            board()
+                .half(
+                    viz::bar::bar()
+                        .title("Top deals")
+                        .rows(&list, (("name", Deal::name), ("value", Deal::price)))
+                        .time(
+                            Time::flow(&periods, Quarter::key, Quarter::label)
+                                .at(quarter)
+                                .track(Quarter::total)
+                                .partial(Quarter::running)
+                                .window(window)
+                                .compare(then)
+                                .compare_by(TimeCompare::Previous)
+                                .upto(upto)
+                                .control(TimeControl::Brush)
+                                .grain(TimeGrain::Quarter),
+                        ),
+                )
+                .half(
+                    viz::geo::map()
+                        .title("Deals")
+                        .connection("maps")
+                        .option("view", json!({ "center": [-118.28, 33.97], "zoom": 10 }))
+                        .layer(
+                            MapLayer::points(&list)
+                                .lat(Deal::lat)
+                                .lon(Deal::lon)
+                                .value(Deal::price)
+                                .name(Deal::name)
+                                .id(Deal::id)
+                                .title("Deals")
+                                .option("size", true)
+                                .select_state(&picked),
+                        )
+                        .layer(
+                            MapLayer::hex(&list)
+                                .lat(Deal::lat)
+                                .lon(Deal::lon)
+                                .value(Deal::price),
+                        )
+                        .layer(
+                            MapLayer::regions(&list)
+                                .shape(Deal::outline)
+                                .value(Deal::price),
+                        )
+                        .layer(
+                            MapLayer::share(&list)
+                                .lat(Deal::lat)
+                                .lon(Deal::lon)
+                                .ours(Deal::ours),
+                        )
+                        .layer(MapLayer::area().title("Drawn area").select_param(area))
+                        .time(Time::flow(&periods, Quarter::key, Quarter::label).at(quarter)),
+                )
+                .into()
+        })))
+}
+
+#[test]
+fn time_travel_and_maps_describe_and_validate() {
+    let text = deals_plugin().describe_json().expect("describes");
+    let d = celobus_descriptor::parse(text.as_bytes()).expect("parses");
+    assert_eq!(celobus_descriptor::validate(&d), vec![]);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        v["connections"],
+        json!([{ "name": "maps", "kind": "maps", "title": "Maps" }])
+    );
+    let items = &v["ui"]["screens"][0]["layout"]["board"]["children"];
+    assert_eq!(
+        items[0]["node"]["viz"]["time"],
+        json!({
+          "read": "flow", "control": "brush",
+          "periods": { "query": "quarters", "value": "key", "label": "label", "track": "total", "partial": "running" },
+          "at": { "param": "quarter" }, "window": { "param": "window" }, "then": { "param": "then" },
+          "compare": "previous", "upto": { "param": "upto" }, "grain": "quarter"
+        })
+    );
+    let map = &items[1]["node"]["viz"];
+    assert_eq!(
+        (map["family"].as_str(), map["kind"].as_str()),
+        (Some("geo"), Some("map"))
+    );
+    assert_eq!(map["connection"], "maps");
+    assert_eq!(
+        map["layers"][0],
+        json!({ "type": "points", "query": "deals", "title": "Deals",
+                "fields": { "lat": "lat", "lon": "lon", "value": "price", "name": "name", "id": "id" },
+                "options": { "size": true }, "select": { "state": "picked" } })
+    );
+    assert_eq!(
+        map["layers"][4],
+        json!({ "type": "area", "title": "Drawn area", "select": { "param": "area" } })
+    );
+    let r = celobus_descriptor::ui_check::requirements(d.ui.as_ref().unwrap());
+    assert_eq!(r["deals"].compat(3), "degraded");
+    assert_eq!(r["deals"].compat(4), "full");
+}
+
+#[test]
+#[should_panic(expected = ".at(..)")]
+fn time_travel_names_the_shown_period() {
+    let periods: Q<QuartersResponse, Quarter> = {
+        let mut q = None;
+        let _ = Screen::build(DEALS, |s| {
+            q = Some(s.query(
+                "quarters",
+                Query::call(quarters).rows(QuartersResponse::quarters),
+            ));
+            text("x")
+        });
+        q.unwrap()
+    };
+    let _ = viz::bar::bar().time(Time::flow(&periods, Quarter::key, Quarter::label));
 }

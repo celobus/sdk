@@ -20,11 +20,11 @@ import type { RoleLike } from "./ctx.js";
 import { Decimal } from "./decimal.js";
 import type { EndpointDef } from "./declare.js";
 import { snake } from "./names.js";
-import { EntityDef, FieldRef, MessageDef, PlatformEntity, type AnyField, type Infer, type IoType, type IoValue, type Shape, type ValueOf } from "./schema.js";
+import { EntityDef, FieldRef, MessageDef, PlatformEntity, type AnyField, type File, type Infer, type IoType, type IoValue, type Shape, type ValueOf } from "./schema.js";
 import { VIZ_KINDS } from "./viz-kinds.js";
 
-/** The catalog revision these builders write (2: charts and figures, `ui.viz`, and dashboards, `ui.board`; 3: the app-like primitives). */
-export const CATALOG = 3;
+/** The catalog revision these builders write (2: charts and figures, `ui.viz`, and dashboards, `ui.board`; 3: the app-like primitives; 4: time travel, `time`, and maps, `ui.viz.geo.map()`). */
+export const CATALOG = 4;
 
 export type Tone = "neutral" | "ok" | "attention" | "danger";
 export type Gap = "tight" | "normal" | "loose";
@@ -1003,6 +1003,16 @@ export class Chain {
     return this;
   }
 
+  /**
+   * Downloads the file the last call answered in `f` (a `t.file()` field of its answer, not a list), then goes on:
+   * `a.call(exportOrders, ..).download(exportOrdersReply.f.file)`. The person's browser saves it; an answer without
+   * the file stops the chain like a failed step (`onError` runs).
+   */
+  download(f: FieldRef<any, File | undefined>): this {
+    this.steps.push({ download: f.name });
+    return this;
+  }
+
   /** Puts the text into the composer of the item's stream (or the frame's primary composer), focused (catalog 3). */
   draft(t: Txt): this {
     this.steps.push({ draft: { text: txt(t) } });
@@ -1479,6 +1489,11 @@ export class TableB<R> extends Node {
     return this.column(f, title, formats.plain("mono"));
   }
 
+  /** A file column (a `t.file()` field): its icon, name and size; a click opens or downloads it. */
+  file<T>(f: FieldRef<R, T>, title: Txt): this {
+    return this.column(f, title, formats.plain("file"));
+  }
+
   number<T>(f: FieldRef<R, T>, title: Txt, decimals?: number): this {
     return this.column(f, title, formats.number(decimals), "end");
   }
@@ -1644,6 +1659,13 @@ export class ListB<R> extends Node {
   metaRelative<T>(f: FieldRef<R, T>): this {
     this.body.meta = f.name;
     this.body.meta_format = formats.plain("relative");
+    return this;
+  }
+
+  /** The meta is a file (a `t.file()` field): its icon, name and size. */
+  metaFile<T>(f: FieldRef<R, T>): this {
+    this.body.meta = f.name;
+    this.body.meta_format = formats.plain("file");
     return this;
   }
 
@@ -2097,7 +2119,288 @@ export class VizB extends Node {
     this.body.open = { screen: screen.id, args: some(args(a)) };
     return this;
   }
+
+  /**
+   * Time travel (catalog revision 4): the period the card shows, moved by a control at its foot, and a second period
+   * to compare with: `.time(ui.time.flow(quarters, quarter.f.key, quarter.f.label).at(q))`. The card's queries pass
+   * the shown period; the client reads them again when it moves.
+   */
+  time(t: TimeB): this {
+    this.body.time = t.build();
+    return this;
+  }
+
+  /** A map's basemap (`ui.viz.geo.map()`): the `maps` connection it comes from, `maps` or `<dependency>.<name>`. */
+  connection(name: string): this {
+    this.body.connection = name;
+    return this;
+  }
+
+  /** A layer of a map, drawn over the ones before it (at most 8): `.layer(ui.layer.points(deals).lat(deal.f.lat).lon(deal.f.lon))`. */
+  layer(l: MapLayerB<any>): this {
+    this.body.layers = [...((this.body.layers as unknown[] | undefined) ?? []), l.build()];
+    return this;
+  }
 }
+
+/** A state or a param, as a time control or a map layer names it. */
+function bindOf(to: StateRef<any> | ParamRef<any>): Record<string, string> {
+  return to instanceof StateRef ? { state: to.name } : { param: to.name };
+}
+
+/** What the numbers of a card with time travel are. */
+export type TimeRead = "flow" | "state" | "scheduled";
+/** The form of a time control. */
+export type TimeControl = "strip" | "brush" | "ruler" | "slider" | "stepper" | "screen" | "axis";
+/** What "Compare" offers first: the same period a year before, or the period just before. */
+export type TimeCompare = "year" | "previous";
+/** The length of a period. */
+export type TimeGrain = "day" | "week" | "month" | "quarter" | "year";
+
+/** Time travel being built (`ui.time.flow(..)`): `.at(..)` is required. */
+export class TimeB {
+  private readonly t: Record<string, any>;
+
+  constructor(read: TimeRead, query: string, value: string, label: string) {
+    this.t = { read, periods: { query, value, label } };
+  }
+
+  /** The state or param that holds the shown period (a period's key). Empty: the latest period that is not still to come. */
+  at(to: StateRef<any> | ParamRef<any>): this {
+    this.t.at = bindOf(to);
+    return this;
+  }
+
+  /**
+   * The state or param of the second pin: "Compare" in the head, whose menu offers the same period a year before, the
+   * period before, or one picked by hand; the card's queries are read again with it in place of `at`.
+   */
+  compare(then: StateRef<any> | ParamRef<any>): this {
+    this.t.then = bindOf(then);
+    return this;
+  }
+
+  /**
+   * What "Compare" offers first: `year` (the same period a year before; needs `.grain(..)`, and is the default with
+   * one) or `previous` (the period just before; the default without a grain).
+   */
+  compareBy(by: TimeCompare): this {
+    this.t.compare = by;
+    return this;
+  }
+
+  /**
+   * The state or param (an integer) of the cut of a running period: while the shown period still runs, the client
+   * writes into it the days of that period run so far (from its start, today included: Q4 to Nov 26 is 57) and passes
+   * it to both reads, so the endpoint answers the earlier period cut at the same day. Empty when the shown period is
+   * whole. Needs `.partial(..)` and `.grain(..)`.
+   */
+  upto(to: StateRef<any> | ParamRef<any>): this {
+    this.t.upto = bindOf(to);
+    return this;
+  }
+
+  /** The state or param (an integer) of how many periods the card sums: the brush's width. */
+  window(to: StateRef<any> | ParamRef<any>): this {
+    this.t.window = bindOf(to);
+    return this;
+  }
+
+  /** The control's form (`strip` when not set). */
+  control(c: TimeControl): this {
+    this.t.control = c;
+    return this;
+  }
+
+  /** The length of a period: the words of a window, how far "a year before" goes back and the calendar `.upto(..)` counts in (without it "Compare" offers the period before). */
+  grain(g: TimeGrain): this {
+    this.t.grain = g;
+    return this;
+  }
+
+  /** A number field of the periods' rows: the card's headline per period, drawn in the control. */
+  track<R, T>(f: FieldRef<R, T>): this {
+    this.t.periods.track = f.name;
+    return this;
+  }
+
+  /** A bool field of the periods' rows: the period still running ("to date"). */
+  partial<R>(f: FieldRef<R, boolean>): this {
+    this.t.periods.partial = f.name;
+    return this;
+  }
+
+  /** A field of the periods' rows: the date a level is on (`30 Sep 2026`), for `ui.time.state`. */
+  date<R, T>(f: FieldRef<R, T>): this {
+    this.t.periods.date = f.name;
+    return this;
+  }
+
+  /** A grid that compares: the column (its index in a row) its change column compares. */
+  key(column: number): this {
+    this.t.key = column;
+    return this;
+  }
+
+  /** @internal */
+  build(): Record<string, any> {
+    if (!this.t.at) throw new Error("time travel needs the state or param of the shown period: .at(..)");
+    const { read, control, periods, at, window, then, compare, upto, grain, key } = this.t;
+    return Object.fromEntries(
+      Object.entries({ read, control, periods, at, window, then, compare, upto, grain, key }).filter(([, v]) => v !== undefined),
+    );
+  }
+}
+
+/** Time travel of a chart or figure: what the numbers are, the periods (rows of a query: their key and label). */
+const time = {
+  /** Sums over a period (revenue in a quarter). */
+  flow: <R>(q: Q<any, R>, value: FieldRef<R, any>, label: FieldRef<R, any>): TimeB => new TimeB("flow", q.name, value.name, label.name),
+  /** Levels on a date (stock at the quarter's end): the head says "On …" with the period's `.date(..)`. */
+  state: <R>(q: Q<any, R>, value: FieldRef<R, any>, label: FieldRef<R, any>): TimeB => new TimeB("state", q.name, value.name, label.name),
+  /** Dates still to come (deliveries booked): needs `.partial(..)`, the running period, where the Today line is. */
+  scheduled: <R>(q: Q<any, R>, value: FieldRef<R, any>, label: FieldRef<R, any>): TimeB =>
+    new TimeB("scheduled", q.name, value.name, label.name),
+};
+
+/** The type of a map layer. */
+export type MapLayerKind = "points" | "hex" | "regions" | "marks" | "flows" | "rings" | "area" | "change" | "share";
+
+/** A map layer being built over rows of type `R` (`ui.layer.points(..)`). Each role has its method. */
+export class MapLayerB<R> {
+  declare readonly __row: (r: R) => R;
+  private readonly l: Record<string, any>;
+
+  constructor(type: MapLayerKind, query?: string) {
+    this.l = { type, query, fields: {} as Record<string, string> };
+  }
+
+  /** The row field of a role of the layer's type (`lat`, `value`, `frame`, …). */
+  field(role: string, f: FieldRef<R, any>): this {
+    this.l.fields[role] = f.name;
+    return this;
+  }
+
+  lat(f: FieldRef<R, any>): this {
+    return this.field("lat", f);
+  }
+
+  lon(f: FieldRef<R, any>): this {
+    return this.field("lon", f);
+  }
+
+  value(f: FieldRef<R, any>): this {
+    return this.field("value", f);
+  }
+
+  name(f: FieldRef<R, any>): this {
+    return this.field("name", f);
+  }
+
+  /** What a pick writes to the layer's select (else its name); how a place is paired between two periods. */
+  id(f: FieldRef<R, any>): this {
+    return this.field("id", f);
+  }
+
+  group(f: FieldRef<R, any>): this {
+    return this.field("group", f);
+  }
+
+  stage(f: FieldRef<R, any>): this {
+    return this.field("stage", f);
+  }
+
+  /** A bool: the place is ringed. */
+  flag(f: FieldRef<R, boolean>): this {
+    return this.field("flag", f);
+  }
+
+  /** Small multiples: rows with the same frame go on one small map, side by side on one scale. */
+  frame(f: FieldRef<R, any>): this {
+    return this.field("frame", f);
+  }
+
+  /** A GeoJSON geometry (a Polygon or MultiPolygon): a JSON field, or a string holding its text. */
+  shape(f: FieldRef<R, any>): this {
+    return this.field("shape", f);
+  }
+
+  /** `new`, `still` or `gone`, for `ui.layer.change`. */
+  state(f: FieldRef<R, any>): this {
+    return this.field("state", f);
+  }
+
+  /** True (or 1) for ours, for `ui.layer.share`. */
+  ours(f: FieldRef<R, any>): this {
+    return this.field("ours", f);
+  }
+
+  /** Where a flow starts. */
+  from(lat: FieldRef<R, any>, lon: FieldRef<R, any>): this {
+    return this.field("from_lat", lat).field("from_lon", lon);
+  }
+
+  /** Where a flow ends. */
+  to(lat: FieldRef<R, any>, lon: FieldRef<R, any>): this {
+    return this.field("to_lat", lat).field("to_lon", lon);
+  }
+
+  /** The layer's name in the key. */
+  title(t: Txt): this {
+    this.l.title = txt(t);
+    return this;
+  }
+
+  /** A static option of the layer: `.option('size', true)`. */
+  option(name: string, value: unknown): this {
+    this.l.options = { ...(this.l.options ?? {}), [name]: value };
+    return this;
+  }
+
+  /** The state that receives what the member picks (a place's id, else its name; an area's polygon), or null. */
+  selectState(state: StateRef<any>): this {
+    this.l.select = { state: state.name };
+    return this;
+  }
+
+  /** The same, into a param of the screen (it is in the URL). */
+  selectParam(param: ParamRef<any>): this {
+    this.l.select = { param: param.name };
+    return this;
+  }
+
+  /** @internal */
+  build(): Record<string, any> {
+    const { type, query, fields, title, options, select } = this.l;
+    return Object.fromEntries(
+      Object.entries({ type, query, fields: Object.keys(fields).length ? fields : undefined, title, options, select }).filter(
+        ([, v]) => v !== undefined,
+      ),
+    );
+  }
+}
+
+/** The layers of a map (`ui.viz.geo.map().layer(..)`), by type. */
+const layer = {
+  /** Places as dots (lat, lon; value, name, id, group, stage, flag): sized by the value with `.option('size', true)`. */
+  points: <R>(q: Q<any, R>): MapLayerB<R> => new MapLayerB<R>("points", q.name),
+  /** The points summed into hexagons (lat, lon; value). */
+  hex: <R>(q: Q<any, R>): MapLayerB<R> => new MapLayerB<R>("hex", q.name),
+  /** Polygons filled by their value, group or order (shape; value, name, id, group). */
+  regions: <R>(q: Q<any, R>): MapLayerB<R> => new MapLayerB<R>("regions", q.name),
+  /** Marks over the regions (lat, lon; value, name, id). */
+  marks: <R>(q: Q<any, R>): MapLayerB<R> => new MapLayerB<R>("marks", q.name),
+  /** Lines between places (`.from(lat, lon)`, `.to(lat, lon)`; value, name). */
+  flows: <R>(q: Q<any, R>): MapLayerB<R> => new MapLayerB<R>("flows", q.name),
+  /** Rings at distances round each place (lat, lon; name): `.option('distances', [1, 2, 3])`. */
+  rings: <R>(q: Q<any, R>): MapLayerB<R> => new MapLayerB<R>("rings", q.name),
+  /** Places new, still there or gone between two dates (lat, lon, state; value, name, id). */
+  change: <R>(q: Q<any, R>): MapLayerB<R> => new MapLayerB<R>("change", q.name),
+  /** Our share of the points in each hexagon (lat, lon, ours). */
+  share: <R>(q: Q<any, R>): MapLayerB<R> => new MapLayerB<R>("share", q.name),
+  /** An area the member draws: its polygon (GeoJSON text) goes to `.selectState(..)` / `.selectParam(..)`. */
+  area: (): MapLayerB<never> => new MapLayerB<never>("area"),
+};
 
 /** A constructor per kind of the charts catalogue, by family. */
 export type VizCatalogue = { readonly [F in VizFamily]: { readonly [K in VizKind<F>]: () => VizB } };
@@ -2436,6 +2739,18 @@ export class FormB<Req> {
     return this.input(f, "member", label);
   }
 
+  /**
+   * A write-only text drawn as a password field: a settings secret (`t.secret()`), or a string an endpoint takes (a
+   * value already saved is never shown).
+   */
+  secret<T>(f: FieldRef<Req, T>, label: Txt): InputB {
+    return this.input(f, "secret", label);
+  }
+
+  /**
+   * A drop zone and a picker for a `t.file()` or `t.array(t.file())` field, within its `maxSize` and `accept` (copied
+   * from the field): files upload as they are picked and their ids go with the form.
+   */
   upload<T>(f: FieldRef<Req, T>, label: Txt): InputB {
     return this.input(f, "upload", label);
   }
@@ -4012,6 +4327,15 @@ export class PostB<R> extends Built {
     return this;
   }
 
+  /**
+   * The files of the row (a `t.file()` or `t.array(t.file())` field): images as a grid, audio and video as players,
+   * other files as cards with Download.
+   */
+  files(f: RowPathLike<R>): this {
+    this.p.files = rowPath(f);
+    return this;
+  }
+
   /** A bool field: `(edited)` after the text. */
   edited(f: RowPathLike<R, boolean>): this {
     this.p.edited = rowPath(f);
@@ -4591,6 +4915,17 @@ export class ComposerB extends Node {
     return this;
   }
 
+  /**
+   * The paperclip, paste and drop: files are uploaded for `f` (a `t.file()` or `t.array(t.file())` field of the request
+   * the send action calls) and their ids go in it with the text. Adds the `attach` tool.
+   */
+  attach<Req, T>(f: FieldRef<Req, T>): this {
+    const tools = (this.body.tools as ComposerTool[] | undefined) ?? [];
+    if (!tools.includes("attach")) this.body.tools = [...tools, "attach"];
+    this.body.files = f.name;
+    return this;
+  }
+
   mentions<F>(m: MentionsB<F>): this {
     this.body.mentions = m;
     return this;
@@ -4746,6 +5081,10 @@ export const ui = {
   areaChart: chartOf("area"),
   pieChart: chartOf("pie"),
   viz,
+  /** Time travel of a `viz` (catalog revision 4): `ui.time.flow(quarters, quarter.f.key, quarter.f.label).at(q)`. */
+  time,
+  /** The layers of a map (catalog revision 4): `ui.layer.points(deals).lat(deal.f.lat).lon(deal.f.lon)`. */
+  layer,
   timeline,
   status,
   tag,
@@ -4806,3 +5145,32 @@ export const ui = {
   command,
   home,
 };
+
+/**
+ * @internal The sections of a settings form (`settingsDef(.., { form })`) as JSON: its inputs only, an empty untitled
+ * first section left out. A catalog text is written as `{key}` (settings forms have no text catalog of their own).
+ */
+export function settingsFormJson(build: (f: FormB<any>) => unknown): { title?: unknown; inputs: Record<string, unknown>[] }[] {
+  const fb = new FormB<any>();
+  build(fb);
+  const walk = (v: unknown): unknown => {
+    if (v instanceof Built) return walk(v.json());
+    if (v instanceof TextKey) {
+      const args = walk(v.args) as Record<string, unknown>;
+      return Object.keys(args).length > 0 ? { key: v.key, args } : { key: v.key };
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v !== null && typeof v === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(v)) if (x !== undefined) out[k] = walk(x);
+      return out;
+    }
+    return v;
+  };
+  return fb.sections
+    .filter((s) => s.title !== undefined || s.inputs.length > 0)
+    .map((s) => ({
+      ...(s.title !== undefined ? { title: walk(s.title) } : {}),
+      inputs: s.inputs.map((i) => walk(i) as Record<string, unknown>),
+    }));
+}

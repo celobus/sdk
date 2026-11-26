@@ -25,6 +25,7 @@ export const order = t.message('Order', {
   currency: t.text(),
   status: orderStatus,
   placedAt: t.timestamp(),
+  invoice: t.file().optional(),
 });
 
 export const listOrdersRequest = t.message('ListOrdersRequest', {
@@ -39,7 +40,13 @@ export const listOrdersResponse = t.message('ListOrdersResponse', {
   total: t.bigint(),
 });
 export const getOrderRequest = t.message('GetOrderRequest', { id: t.uuid() });
-export const cancelOrderRequest = t.message('CancelOrderRequest', { id: t.uuid(), reason: t.text() });
+export const cancelOrderRequest = t.message('CancelOrderRequest', {
+  id: t.uuid(),
+  reason: t.text(),
+  scans: t.array(t.file({ maxSize: '10 MiB', accept: ['image/*', 'application/pdf'] })),
+});
+export const exportOrdersRequest = t.message('ExportOrdersRequest', { status: orderStatus.optional() });
+export const exportOrdersReply = t.message('ExportOrdersReply', { file: t.file() });
 export const countOpenRequest = t.message('CountOpenRequest', {});
 export const countResponse = t.message('CountResponse', { count: t.bigint() });
 
@@ -94,6 +101,7 @@ export const note = t.message('Note', {
   replies: replies.optional(),
   job: job.optional(),
   jobId: t.text(),
+  files: t.array(t.file()),
 });
 export const packing = t.message('Packing', {
   job: t.text(),
@@ -190,6 +198,13 @@ export const cancelOrder = endpoint({
   idempotency: 'optional',
   handler: none,
 });
+export const exportOrders = endpoint({
+  input: exportOrdersRequest,
+  output: exportOrdersReply,
+  roles: [clerk],
+  idempotency: 'optional',
+  handler: () => ({ file: { id: '', name: '', type: '', size: 0 } }),
+});
 export const countOpen = endpoint({
   input: countOpenRequest,
   output: countResponse,
@@ -256,7 +271,14 @@ export const ordersScreen = ui.screen(ORDERS_SCREEN, (s) => {
       .withButton('Open', open)
       .onError((e) => e.toastError()),
   );
+  const exportCsv = s.action('export', (a) =>
+    a
+      .call(exportOrders, { status })
+      .download(exportOrdersReply.f.file)
+      .onError((e) => e.toastError()),
+  );
   s.title(ui.text('orders.title', 'Orders'));
+  s.header([ui.button('Export CSV', exportCsv)]);
   return ui.stack([
     ui.filterBar([status.select('Status')]),
     ui
@@ -268,6 +290,7 @@ export const ordersScreen = ui.screen(ORDERS_SCREEN, (s) => {
       .money(order.f.total, 'Total', order.f.currency)
       .status(order.f.status, 'Status', { placed: 'attention', paid: 'ok' })
       .relative(order.f.placedAt, 'Placed')
+      .file(order.f.invoice, 'Invoice')
       .open(open)
       .count(orders.field(listOrdersResponse.f.total))
       .countLabel(ui.text('orders.count', '{total} orders · newest first').arg('total', orders.field(listOrdersResponse.f.total)))
@@ -291,6 +314,7 @@ export const cancelDialog = ui.dialog(CANCEL, (o) => {
     cancelOrder,
     (f) => {
       f.textarea(cancelOrderRequest.f.reason, 'Why').required();
+      f.upload(cancelOrderRequest.f.scans, 'Scans');
       f.cancel('Keep it');
       f.note('The customer gets an email.');
       f.alternate('Cancel quietly', (c) => c.callForm(cancelOrder, { id: oid }).close());
@@ -477,6 +501,7 @@ export const activityScreen = ui.screen(ACTIVITY_SCREEN, (s) => {
     .tile(who.f(person.f.icon), who.f(person.f.engine))
     .badge('AGENT', ui.rowAt(who.f(person.f.agent)).eq(true))
     .markdown(note.f.text)
+    .files(note.f.files)
     .edited(note.f.edited)
     .pinned(note.f.pinned, true)
     .mine(note.f.mine)
@@ -683,6 +708,7 @@ export default plugin({
     listOrders: listOrders.ui(),
     getOrder: getOrder.ui(),
     cancelOrder: cancelOrder.ui().invalidates(ORDERS, ORDER.by(orderKey.f.id, order.f.id)),
+    exportOrders: exportOrders.ui(),
     countOpen: countOpen.ui(),
     sales: sales.ui(),
     topProducts: topProducts.ui(),

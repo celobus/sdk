@@ -7,7 +7,8 @@
 // - messages: in order of first use while walking the endpoints as declared (each endpoint's input, then its
 //   output; a message's nested messages right after it, depth first, in field order), then the entities'
 //   messages in entity order, then the extra `messages`, then the jobs' payloads (in job order), then the topics'
-//   key messages, then the views' rows (in view order), then the lake tables' rows (in table order);
+//   key messages, then the views' rows (in view order), then the lake tables' rows (in table order), then the
+//   settings message;
 // - dependencies and their reads: as declared;
 // - enums: in order of first use while walking those messages' fields, then the extra `enums`;
 // - fields: declaration order; an entity's message has `id` first, then its columns. `number` is the 1-based
@@ -23,7 +24,9 @@ import { EntityDef, EnumDef, Field, MessageDef, PlatformEntity, ViewDef, entityN
 import { describeLoad, describeModel, describeView, type DescribedLoad, type DescribedModel, type DescribedView } from "./query.js";
 import { LakeTableDef, LayerDef, lakeNames } from "./lake.js";
 import { givenUnknown, optionProblems, type Helper } from "./keys.js";
-import { TopicDecl, TopicDef, UiDoc, invalidationJson, resolveUi, topicDecl, type TopicLike } from "./ui.js";
+import { TopicDecl, TopicDef, UiDoc, invalidationJson, resolveUi, settingsFormJson, topicDecl, type TopicLike } from "./ui.js";
+import { SettingsDef, settingsChangeOf } from "./settings.js";
+import { completeForm, deriveForm, settingsErrors, settingsKeys, type DescribedSettings, type SettingsKeys } from "./settings-describe.js";
 
 /** A layer's or a lake table's name: snake_case, at most 32 characters. */
 const LAKE_NAME = /^[a-z][a-z0-9_]{0,31}$/;
@@ -39,7 +42,7 @@ function lakeType(f: DescriptorField): boolean {
   return !f.repeated && (LAKE_SCALARS.includes(f.type) || f.type.startsWith("enum:") || f.type.startsWith("ref:"));
 }
 
-export interface DescriptorField {
+export interface DescriptorField extends SettingsKeys {
   name: string;
   number: number;
   type: string;
@@ -56,6 +59,9 @@ export interface DescriptorField {
   on_delete?: string;
   /** The entity's history keeps the column's changes; entity columns only, written only when set. */
   history?: true;
+  /** A file field's largest file in bytes and its accepted types; each written only when declared. */
+  max_size?: number;
+  accept?: string[];
 }
 
 /** `on_delete` of a ref within the plugin, and of one to another plugin or the directory. */
@@ -111,8 +117,8 @@ export interface Descriptor {
     lake?: string[];
   }[];
   enums: { name: string; values: string[] }[];
-  /** `kind`: `job` for a job's payload. */
-  messages: { name: string; kind: "message" | "job"; description: string; fields: DescriptorField[] }[];
+  /** `kind`: `job` for a job's payload, `settings` for the settings message. */
+  messages: { name: string; kind: "message" | "job" | "settings"; description: string; fields: DescriptorField[] }[];
   entities: {
     name: string;
     message: string;
@@ -187,6 +193,8 @@ export interface Descriptor {
   lake_models?: DescribedModel[];
   /** The loads of the entities stored in OLAP; written only when declared. */
   loads?: DescribedLoad[];
+  /** The settings: their message, whether the plugin checks a change, and their form; written only when declared. */
+  settings?: DescribedSettings;
 }
 
 /** An entity's history as the descriptor has it. */
@@ -253,6 +261,11 @@ export const RUN_CHANGE_METHOD = "_RunChange";
 const RUN_CHANGE_TIMEOUT_MS = 30_000;
 const NO_FIELDS = new MessageDef("RunChangeAnswer", {});
 
+/** The reserved method of the settings check hook: `/<id>.v1.<Service>/_SettingsCheck`. */
+export const SETTINGS_CHECK_METHOD = "_SettingsCheck";
+/** How long the settings check hook may take (ms). */
+const SETTINGS_CHECK_TIMEOUT_MS = 10_000;
+
 /** A job ready to run. */
 export interface ResolvedJob {
   def: JobDef<any>;
@@ -277,6 +290,8 @@ export interface Resolved {
   /** The job pool's size, announced at registration (0: no jobs). */
   jobSlots: number;
   roleName: (role: RoleLike) => string | undefined;
+  /** The settings message the plugin declares (`plugin({ settings })`). */
+  settings?: MessageDef<any>;
 }
 
 export const RESERVED_IDS = [
@@ -606,7 +621,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
         if (!(field instanceof Field)) err("E_FIELD_TYPE", fpath, "t.array() needs a t.* field");
         else if (field.isOptional) err("E_FIELD_TYPE", fpath, "an array's elements cannot be optional");
       }
-      return {
+      const out: DescriptorField = {
         name: f.name,
         number: i + 1,
         type: field instanceof Field ? fieldType(field, fpath) : "",
@@ -614,6 +629,19 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
         optional: f.field.isOptional,
         description: f.field.description,
       };
+      const file = field instanceof Field ? field.spec.file : undefined;
+      if (file?.badSize !== undefined) {
+        err("E_FILE_OPTION", `${fpath}.maxSize`, `${JSON.stringify(file.badSize)} is not a size`,
+          "bytes (1048576) or a number and a unit ('1 GiB', '500 MB'; KiB, MiB, GiB, TiB, KB, MB, GB, TB)");
+      }
+      if (file?.maxSize !== undefined) out.max_size = file.maxSize;
+      if (file?.accept !== undefined) out.accept = [...file.accept];
+      // a setting's options (`.label()`, `.default()`, `.min()`, ..), each written only when declared
+      Object.assign(out, settingsKeys(f.field, out.type, repeated, fpath, err));
+      if (repeated && field instanceof Field && Object.keys(field.settings).length > 0) {
+        err("E_SETTINGS_VALIDATOR", fpath, "the options of a list setting go on the list: t.array(t.text()).maxItems(3), not on its item");
+      }
+      return out;
     });
   };
 
@@ -627,7 +655,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
     if (!claimType(name, source, path, "E_MSG_DUP")) return name;
     const desc: Descriptor["messages"][number] = {
       name,
-      kind: "message",
+      kind: source instanceof MessageDef && source.kind === "settings" ? "settings" : "message",
       description: isEntity || isView ? source.options.description ?? "" : source.messageDescription,
       fields: [],
     };
@@ -1197,6 +1225,23 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
     }
   }
 
+  // --- the settings message comes last (after the lake tables' rows), with the enums its fields use -------------
+  const settingsDef = options.settings;
+  let settingsSchema: MessageDef<any> | undefined;
+  if (settingsDef !== undefined) {
+    if (!(settingsDef instanceof SettingsDef) || !(settingsDef.schema instanceof MessageDef)) {
+      err("E_SCHEMA", "settings", "not settings (use settingsDef(message, {..}))");
+    } else {
+      noted(settingsDef, "settings");
+      settingsSchema = settingsDef.schema;
+      visitMessage(settingsSchema, "settings");
+      if (settingsSchema.kind !== "settings") {
+        err("E_SETTINGS_MESSAGE", "settings", `${settingsSchema.name} is not a message of kind settings`,
+          "declare it with t.message(.., { kind: 'settings' })");
+      }
+    }
+  }
+
   (options.enums ?? []).forEach((en, i) => {
     if (en instanceof EnumDef) visitEnum(en, `enums[${i}]`);
     else err("E_SCHEMA", `enums[${i}]`, "not an enum (use t.enum(...))");
@@ -1221,7 +1266,7 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
   };
   if (connections.length > 0) descriptor.connections = connections;
   if (jobs.length > 0) descriptor.jobs = jobs;
-  // a scheduled job runs with its payload's defaults: a required timestamp or date has none
+  // a scheduled job runs with its payload's defaults: a required timestamp, date or file has none
   for (const [path, payload] of scheduled) {
     const field = requiredWithoutDefault(descriptor, payload);
     if (field !== undefined) {
@@ -1284,6 +1329,40 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
       });
     }
   }
+  // --- the settings: the form (laid out by the plugin and completed, or derived), the check hook's route
+  if (settingsSchema !== undefined && settingsDef instanceof SettingsDef) {
+    const fields = messages.find((m) => m.name === settingsSchema!.name)?.fields ?? [];
+    const { onChange, form } = settingsDef.options;
+    let sections;
+    if (form === undefined) sections = deriveForm(fields, enums);
+    else if (typeof form !== "function") {
+      err("E_SCHEMA", "settings.form", "not a form ((f) => { f.number(..); .. })");
+      sections = deriveForm(fields, enums);
+    } else sections = completeForm(settingsFormJson(form as never), fields, enums);
+    descriptor.settings = { message: settingsSchema.name, on_change: onChange !== undefined, form: { sections } };
+    if (onChange !== undefined) {
+      if (typeof onChange !== "function") {
+        err("E_SCHEMA", "settings.onChange", "not a function (ctx, change) => ...");
+      } else {
+        const schema = settingsSchema;
+        resolvedEndpoints.push({
+          key: "settings.onChange",
+          name: SETTINGS_CHECK_METHOD,
+          input: NO_FIELDS,
+          output: NO_FIELDS,
+          timeoutMs: SETTINGS_CHECK_TIMEOUT_MS,
+          system: true,
+          decode: (body) => settingsChangeOf(schema, body),
+          handler: (async (ctx: Parameters<typeof onChange>[0], change: Parameters<typeof onChange>[1]) => {
+            await onChange(ctx, change);
+            return {};
+          }) as unknown as ResolvedEndpoint["handler"],
+        });
+      }
+    }
+  }
+  // the options of a setting and the secret type belong to the settings message; its fields and form
+  settingsErrors(messages, enums, descriptor.settings, err);
   if (options.ui !== undefined) {
     if (options.ui instanceof UiDoc) {
       noted(options.ui, "ui");
@@ -1295,6 +1374,8 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
           return `${id}.${name ?? ""}`;
         },
       });
+      // upload inputs carry their file field's options, so a screen checks a file before uploading it
+      fillUploads(descriptor.ui, descriptor);
     } else {
       err("E_SCHEMA", "ui", "not a UI document (use ui.define({...}))");
     }
@@ -1306,12 +1387,60 @@ export function resolve(options: PluginOptions, version: string | undefined): Re
     jobs: resolvedJobs,
     jobSlots: resolvedJobs.size > 0 ? jobSlots : 0,
     roleName,
+    ...(settingsSchema !== undefined ? { settings: settingsSchema } : {}),
   };
 }
 
 /**
+ * Copies each `upload` input's file field options into it (`multiple` for a list of files, `max_size`, `accept`), from
+ * the request of its form's endpoint, inputs of a `repeat` included.
+ */
+function fillUploads(ui: unknown, d: Descriptor): void {
+  if (Array.isArray(ui)) {
+    for (const v of ui) fillUploads(v, d);
+    return;
+  }
+  if (ui === null || typeof ui !== "object") return;
+  const m = ui as Record<string, unknown>;
+  const form = m.form as Record<string, unknown> | undefined;
+  if (form !== null && typeof form === "object" && !Array.isArray(form)) {
+    const input = d.endpoints.find((e) => e.name === form.endpoint)?.input;
+    if (input !== undefined && Array.isArray(form.sections)) {
+      for (const s of form.sections as Record<string, unknown>[]) {
+        if (Array.isArray(s?.inputs)) fillUploadInputs(s.inputs, input, d);
+      }
+    }
+  }
+  for (const v of Object.values(m)) fillUploads(v, d);
+}
+
+function fillUploadInputs(inputs: Record<string, unknown>[], msg: string, d: Descriptor): void {
+  for (const i of inputs) {
+    const f = typeof i?.name === "string" ? fieldAt(d, msg, i.name) : undefined;
+    if (f === undefined) continue;
+    if (i.control === "upload" && f.type === "file") {
+      if (f.repeated) i.multiple = true;
+      if (f.max_size !== undefined) i.max_size = f.max_size;
+      if (f.accept !== undefined && f.accept.length > 0) i.accept = [...f.accept];
+    }
+    if (f.type.startsWith("message:") && Array.isArray(i.fields)) {
+      fillUploadInputs(i.fields as Record<string, unknown>[], f.type.slice("message:".length), d);
+    }
+  }
+}
+
+/** A field of a message by its path (`customer.name`), through nested messages. */
+function fieldAt(d: Descriptor, msg: string, path: string): DescriptorField | undefined {
+  const dot = path.indexOf(".");
+  const head = dot < 0 ? path : path.slice(0, dot);
+  const f = d.messages.find((m) => m.name === msg)?.fields.find((x) => x.name === head);
+  if (f === undefined || dot < 0) return f;
+  return f.type.startsWith("message:") ? fieldAt(d, f.type.slice("message:".length), path.slice(dot + 1)) : undefined;
+}
+
+/**
  * The first field of message `name` that a payload read from `{}` cannot fill (`RemindUnpaid.since`): a single
- * `timestamp` or `date` that is not optional, directly or in a message field that is not optional.
+ * `timestamp`, `date` or `file` that is not optional, directly or in a message field that is not optional.
  */
 function requiredWithoutDefault(d: Descriptor, name: string, seen: string[] = []): string | undefined {
   if (seen.includes(name)) return undefined;
@@ -1319,7 +1448,7 @@ function requiredWithoutDefault(d: Descriptor, name: string, seen: string[] = []
   const fields = d.messages.find((m) => m.name === name)?.fields ?? d.entities.find((e) => e.message === name)?.fields;
   for (const f of fields ?? []) {
     if (f.optional || f.repeated) continue;
-    if (f.type === "timestamp" || f.type === "date") return `${name}.${f.name}`;
+    if (f.type === "timestamp" || f.type === "date" || f.type === "file") return `${name}.${f.name}`;
     if (f.type.startsWith("message:")) {
       const inner = f.type.slice("message:".length);
       if (!d.messages.some((m) => m.name === inner)) continue;

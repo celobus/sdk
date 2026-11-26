@@ -23,6 +23,7 @@ import type { ResolvedEndpoint, Resolved } from "./descriptor.js";
 import { DomainError, InvalidError, RpcError, toRpcError, unavailable } from "./errors.js";
 import { cutUtf8, runLogger, type Logger, type LogLevel } from "./log.js";
 import { endpointPath } from "./names.js";
+import { SettingsCache } from "./settings.js";
 
 export interface Header {
   name: string;
@@ -283,12 +284,15 @@ export function runSession(model: ServeModel, options: ServeOptions = {}): Promi
   const done = new Promise<void>((resolve) => (finish = resolve));
 
   const jobs = model.resolved.jobs ?? new Map();
+  // the settings the platform sends at registration and on each change, kept across reconnects
+  const settings = model.resolved.settings !== undefined ? new SettingsCache(model.resolved.settings) : undefined;
   const jobSlots = jobs.size > 0 ? model.resolved.jobSlots : 0;
   /** The runs in flight, by run id: what stops each and the session it came on. */
   const runs = new Map<string, { stop: AbortController; link: Link }>();
 
   const session: SyscallSession = {
     jobs: new Map([...jobs.values()].map((j) => [j.def, j])),
+    settings,
     syscall(call) {
       const current = link;
       if (!current || current.closed) return Promise.reject(unavailable("the session to the platform is down"));
@@ -434,7 +438,15 @@ export function runSession(model: ServeModel, options: ServeOptions = {}): Promi
         case "registered":
           backoff = 250;
           log.info("registered", { instance_id: msg.registered.instanceId, version: model.version });
+          if (settings && !settings.update(msg.registered.settingsRev ?? 0, msg.registered.settings, true)) {
+            log.warn("the settings the platform sent are not JSON; kept the previous ones");
+          }
           break;
+        case "settingsChanged": {
+          const rev = msg.settingsChanged.rev ?? 0;
+          if (settings?.update(rev, msg.settingsChanged.json, false)) log.info("the settings changed", { rev: String(rev) });
+          break;
+        }
         case "request":
           void onRequest(current, msg.request as WireRequest);
           break;

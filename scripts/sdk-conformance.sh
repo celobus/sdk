@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# SDK conformance: the plugins `hello`, `shop` (a UI), `notify` (notifications) and `jobsdemo` (background jobs,
-# analytic views and the Data Lake, in sdk/conformance/jobs) are declared the same way in every SDK (sdk/conformance/<plugin>/<lang>/);
+# SDK conformance: the plugins `hello`, `shop` (a UI), `notify` (notifications), `jobsdemo` (background jobs,
+# analytic views and the Data Lake, in sdk/conformance/jobs) and `prefs` (settings, in sdk/conformance/settings; with
+# `--form` it lays its settings form out by hand and checks each change, and must equal descriptor-form.json there) are
+# declared the same way in every SDK (sdk/conformance/<plugin>/<lang>/);
 # each is built, run with --describe, and its output, canonicalized (object keys sorted by `jq -S .`, arrays as
 # printed), must equal sdk/conformance/<plugin>/descriptor.json. Each SDK's unit tests then build the conformance query
 # (sdk/conformance/query/revenue.json) and must send that tree, from the analytic engine (`engine = ANALYTIC`) too, and
@@ -33,6 +35,8 @@ FIXTURE=sdk/conformance/hello/descriptor.json
 SHOP=sdk/conformance/shop/descriptor.json
 NOTIFY=sdk/conformance/notify/descriptor.json
 JOBS=sdk/conformance/jobs/descriptor.json
+SETTINGS=sdk/conformance/settings/descriptor.json
+SETTINGS_FORM=sdk/conformance/settings/descriptor-form.json
 LANGS=("$@")
 [[ ${#LANGS[@]} -eq 0 ]] && LANGS=(rust ts csharp)
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
@@ -78,11 +82,14 @@ lake() { # name, the plugin's command: the lake leg against that SDK's jobsdemo
 for lang in "${LANGS[@]}"; do
   case "$lang" in
     rust)
-      cargo build -q -p celobus-conformance-hello -p celobus-conformance-shop -p celobus-conformance-notify -p celobus-conformance-jobs
+      cargo build -q -p celobus-conformance-hello -p celobus-conformance-shop -p celobus-conformance-notify -p celobus-conformance-jobs \
+        -p celobus-conformance-settings
       compare rust target/debug/hello
       FIXTURE=$SHOP compare rust-shop target/debug/shop
       FIXTURE=$NOTIFY compare rust-notify target/debug/notify
       FIXTURE=$JOBS compare rust-jobs target/debug/jobsdemo
+      FIXTURE=$SETTINGS compare rust-settings target/debug/prefs
+      FIXTURE=$SETTINGS_FORM compare rust-settings-form target/debug/prefs --form
       query rust-query '1 passed' cargo test -q -p celobus-sdk --lib the_conformance_query_is_the_shared_tree
       query rust-analytic '1 passed' cargo test -q -p celobus-sdk --lib an_analytic_read_names_its_engine
       query rust-view-query '1 passed' cargo test -q -p celobus-conformance-jobs the_conformance_view_query_is_the_shared_tree
@@ -105,6 +112,9 @@ for lang in "${LANGS[@]}"; do
         FIXTURE=$NOTIFY compare ts-notify node sdk/conformance/notify/ts/dist/main.js
         (cd sdk/conformance/jobs/ts && npm ci --silent && npm run --silent build) >/dev/null
         FIXTURE=$JOBS compare ts-jobs node sdk/conformance/jobs/ts/dist/main.js
+        (cd sdk/conformance/settings/ts && npm ci --silent && npm run --silent build) >/dev/null
+        FIXTURE=$SETTINGS compare ts-settings node sdk/conformance/settings/ts/dist/main.js
+        FIXTURE=$SETTINGS_FORM compare ts-settings-form node sdk/conformance/settings/ts/dist/main.js --form
         query ts-query 'pass 1$' node --test --test-name-pattern "the conformance query is the shared tree" sdk/node/test/query.test.mjs
         query ts-analytic 'pass 1$' node --test --test-name-pattern "the conformance query reads the analytic engine" sdk/node/test/query.test.mjs
         query ts-view-query 'pass 1$' node --test --test-name-pattern "the conformance view query is the shared tree" sdk/node/test/views.test.mjs
@@ -128,6 +138,9 @@ for lang in "${LANGS[@]}"; do
         FIXTURE=$NOTIFY compare csharp-notify dotnet sdk/conformance/notify/csharp/bin/Release/net10.0/Notify.dll
         dotnet build -c Release --nologo -v q sdk/conformance/jobs/csharp >/dev/null
         FIXTURE=$JOBS compare csharp-jobs dotnet sdk/conformance/jobs/csharp/bin/Release/net10.0/Jobsdemo.dll
+        dotnet build -c Release --nologo -v q sdk/conformance/settings/csharp >/dev/null
+        FIXTURE=$SETTINGS compare csharp-settings dotnet sdk/conformance/settings/csharp/bin/Release/net10.0/Prefs.dll
+        FIXTURE=$SETTINGS_FORM compare csharp-settings-form dotnet sdk/conformance/settings/csharp/bin/Release/net10.0/Prefs.dll --form
         query csharp-query 'Passed: +1,' dotnet test --nologo -v q sdk/dotnet/Celobus.Sdk.Tests \
           --filter 'FullyQualifiedName~QueryLinqTests.TheConformanceQueryIsTheSharedTree&FullyQualifiedName!~Analytic'
         query csharp-analytic 'Passed: +1,' dotnet test --nologo -v q sdk/dotnet/Celobus.Sdk.Tests \

@@ -106,6 +106,9 @@ pub struct Descriptor {
     /// The loads of the entities stored in OLAP; written only when declared.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub loads: Vec<celobus_descriptor::load::Load>,
+    /// The settings: their message, whether the plugin checks a change, and their form; written only when declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<celobus_descriptor::settings::Settings>,
 }
 
 /// `runs`: the plugin handles the run-change hook (`on_change`).
@@ -305,6 +308,15 @@ pub struct FieldDecl {
     /// The entity's history keeps its changes; written only when set.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub history: bool,
+    /// A file field's largest file in bytes and its accepted types; each written only when declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accept: Vec<String>,
+    /// A settings field's options (`label`, `default`, `section`, `placeholder`, `multiline`, the validators and
+    /// `message`), each written only when declared.
+    #[serde(flatten)]
+    pub settings: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

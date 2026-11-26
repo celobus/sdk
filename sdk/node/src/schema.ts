@@ -4,6 +4,7 @@
 import { noted, optionProblems } from "./keys.js";
 import { encodeFieldValue } from "./codec.js";
 import type { Decimal } from "./decimal.js";
+import type { Secret } from "./secret.js";
 import { snake } from "./names.js";
 import type { RoleLike } from "./ctx.js";
 import type { LayerDef } from "./lake.js";
@@ -20,7 +21,9 @@ export type ScalarType =
   | "timestamp"
   | "date"
   | "bytes"
-  | "json";
+  | "json"
+  | "file"
+  | "secret";
 
 export type KeyType = "uuid" | "i64" | "string";
 
@@ -39,6 +42,89 @@ export interface FieldSpec {
   enumDef?: EnumDef<string>;
   ref?: RefTarget;
   inner?: AnyField;
+  /** a file field's options (`t.file({ maxSize, accept })`) */
+  file?: FileSpec;
+}
+
+/** @internal The options of a file field as declared: the size in bytes, or why it is not one. */
+export interface FileSpec {
+  maxSize?: number;
+  accept?: string[];
+  /** the declared `maxSize` that is not a size */
+  badSize?: string;
+}
+
+/**
+ * A file: a typed value of a message field, an entity column or a job payload (`t.file()`, `t.array(t.file())`). It
+ * names the file, never holds its bytes: read and write them with `ctx.files`. In JSON `{"id", "name", "type",
+ * "size"}`, `size` a string like every 64-bit integer (a number is read too).
+ *
+ * A file comes from a caller (an endpoint's file field, uploaded by a screen, the CLI or another client within the
+ * field's `maxSize` and `accept`), from another plugin (in a call or its answer), or from the plugin's own code
+ * (`ctx.files.create`). It lives while a row, a pending job, a schedule or a live agent run of the plugin holds it; a
+ * file nothing holds is collected after a grace period. A file in an endpoint's answer reaches the client with a
+ * short-lived URL to read it.
+ */
+export interface File {
+  /** The file's id. */
+  id: string;
+  /** Its name as uploaded or made (`report.csv`). */
+  name: string;
+  /** Its MIME type (`text/csv`); `application/octet-stream` when unknown. */
+  type: string;
+  /** Its size in bytes. */
+  size: number;
+}
+
+/** The options of a file field (`t.file({ maxSize: '1 GiB', accept: ['text/csv', 'image/*'] })`). */
+export interface FileOptions {
+  /**
+   * The largest file the field takes: bytes (`1048576`), or a number and a unit (`'1 GiB'`, `'500 MB'`; `KiB`, `MiB`,
+   * `GiB`, `TiB` binary, `KB`, `MB`, `GB`, `TB` decimal). Left out: the workspace's limit.
+   */
+  maxSize?: number | string;
+  /** The MIME types (`text/csv`) or patterns (`image/*`) it accepts. Left out: any type. */
+  accept?: readonly string[];
+}
+
+const SIZE_UNITS: Record<string, bigint> = {
+  "": 1n, b: 1n, kb: 1_000n, mb: 1_000_000n, gb: 1_000_000_000n, tb: 1_000_000_000_000n,
+  kib: 1n << 10n, mib: 1n << 20n, gib: 1n << 30n, tib: 1n << 40n,
+};
+
+/**
+ * A size as file fields take it: bytes (`1048576`), or a number and a unit, binary (`KiB`, `MiB`, `GiB`, `TiB`: powers
+ * of 1024) or decimal (`B`, `KB`, `MB`, `GB`, `TB`: powers of 1000), a space between them optional, the unit's case
+ * ignored (`'1 GiB'`, `'500MB'`, `'1.5 GiB'`). A fraction of a byte is dropped. `undefined` when it is not a size.
+ * @internal
+ */
+export function parseSize(s: string): number | undefined {
+  const text = s.trim();
+  const m = /^([0-9.]*)(.*)$/s.exec(text)!;
+  const num = m[1];
+  const unit = m[2].trim().toLowerCase();
+  if (num === "" || num.startsWith(".") || num.endsWith(".") || num.split(".").length > 2) return undefined;
+  const mult = Object.hasOwn(SIZE_UNITS, unit) ? SIZE_UNITS[unit] : undefined;
+  if (mult === undefined) return undefined;
+  const [whole, frac = ""] = num.split(".");
+  let bytes = BigInt(whole) * mult;
+  if (frac !== "") {
+    const digits = frac.slice(0, 18);
+    bytes += (BigInt(digits) * mult) / 10n ** BigInt(digits.length);
+  }
+  return bytes <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(bytes) : undefined;
+}
+
+function fileSpec(options: FileOptions): FileSpec {
+  const out: FileSpec = {};
+  const size = options.maxSize;
+  if (size !== undefined) {
+    const n = typeof size === "string" ? parseSize(size) : Number.isSafeInteger(size) ? size : undefined;
+    if (n === undefined || n <= 0) out.badSize = String(size);
+    else out.maxSize = n;
+  }
+  if (options.accept !== undefined && options.accept.length > 0) out.accept = [...options.accept];
+  return out;
 }
 
 /** @internal The column modifiers of an entity's field. */
@@ -97,26 +183,114 @@ export class Field<T, O extends boolean = false, R = unknown> {
     /** @internal */ readonly isOptional: boolean = false,
     /** @internal */ readonly description: string = "",
     /** @internal */ readonly column: ColumnSpec = {},
+    /** @internal The options of a settings field (`label`, `default`, the validators, ..), as declared. */
+    readonly settings: SettingsSpec = {},
   ) {}
+
+  /** @internal The same field with these settings options added. */
+  private setting(more: SettingsSpec): Field<T, O, R> {
+    return new Field<T, O, R>(this.spec, this.isOptional, this.description, this.column, { ...this.settings, ...more });
+  }
+
+  /** A setting's label in the settings form; by default its name in words (`threadWarmHours` is `Thread warm hours`). */
+  label(text: string): Field<T, O, R> {
+    return this.setting({ label: text });
+  }
+
+  /**
+   * A setting's default: what `ctx.settings(..)` reads until an owner or an admin sets another value (a setting with
+   * one is never required). Not for a secret.
+   */
+  default(value: T): Field<T, O, R> {
+    return this.setting({ default: value, hasDefault: true });
+  }
+
+  /** The section of the settings form the setting is in (the settings without one share an untitled section). */
+  section(title: string): Field<T, O, R> {
+    return this.setting({ section: title });
+  }
+
+  /** A hint shown in a setting's empty input. */
+  placeholder(text: string): Field<T, O, R> {
+    return this.setting({ placeholder: text });
+  }
+
+  /** A text setting filled in a text area. */
+  multiline(): Field<T, O, R> {
+    return this.setting({ multiline: true });
+  }
+
+  /** A setting's lowest value: a number (a bigint for an int64), a decimal or a date (`YYYY-MM-DD`). */
+  min(value: SettingBound): Field<T, O, R> {
+    return this.setting({ min: value, hasMin: true });
+  }
+
+  /** A setting's highest value: a number (a bigint for an int64), a decimal or a date (`YYYY-MM-DD`). */
+  max(value: SettingBound): Field<T, O, R> {
+    return this.setting({ max: value, hasMax: true });
+  }
+
+  /** The fewest characters (Unicode code points) of a text or a secret setting. */
+  minLen(n: number): Field<T, O, R> {
+    return this.setting({ minLen: n });
+  }
+
+  /** The most characters (Unicode code points) of a text or a secret setting. */
+  maxLen(n: number): Field<T, O, R> {
+    return this.setting({ maxLen: n });
+  }
+
+  /**
+   * A regular expression a text setting matches somewhere (anchor it with `^` and `$`): literals, classes, `\d`,
+   * `\w`, groups, alternation and repetition. A `RegExp`'s source is taken, its flags are not.
+   */
+  pattern(re: string | RegExp): Field<T, O, R> {
+    return this.setting({ pattern: typeof re === "string" ? re : re.source });
+  }
+
+  /** A text setting that is an absolute `http` or `https` URL. */
+  url(): Field<T, O, R> {
+    return this.setting({ format: "url" });
+  }
+
+  /** A text setting that is an email address. */
+  email(): Field<T, O, R> {
+    return this.setting({ format: "email" });
+  }
+
+  /** The fewest items of a list setting. */
+  minItems(n: number): Field<T, O, R> {
+    return this.setting({ minItems: n });
+  }
+
+  /** The most items of a list setting. */
+  maxItems(n: number): Field<T, O, R> {
+    return this.setting({ maxItems: n });
+  }
+
+  /** The text shown under a setting when any of its validators refuses a value, instead of the platform's own. */
+  message(text: string): Field<T, O, R> {
+    return this.setting({ message: text });
+  }
 
   /** The field may be absent (`undefined` in TypeScript, omitted on the wire). Fields are required otherwise. */
   optional(): Field<T, true, R> {
-    return new Field<T, true, R>(this.spec, true, this.description, this.column);
+    return new Field<T, true, R>(this.spec, true, this.description, this.column, this.settings);
   }
 
   /** The field's description (descriptor, documentation, MCP). */
   describe(text: string): Field<T, O, R> {
-    return new Field<T, O, R>(this.spec, this.isOptional, text, this.column);
+    return new Field<T, O, R>(this.spec, this.isOptional, text, this.column, this.settings);
   }
 
   /** An entity column whose values are unique (among the rows that are not deleted, on a soft-delete entity). */
   unique(): Field<T, O, R> {
-    return new Field<T, O, R>(this.spec, this.isOptional, this.description, { ...this.column, unique: true });
+    return new Field<T, O, R>(this.spec, this.isOptional, this.description, { ...this.column, unique: true }, this.settings);
   }
 
   /** An entity column with an index of its own (refs have one without it). */
   index(): Field<T, O, R> {
-    return new Field<T, O, R>(this.spec, this.isOptional, this.description, { ...this.column, index: true });
+    return new Field<T, O, R>(this.spec, this.isOptional, this.description, { ...this.column, index: true }, this.settings);
   }
 
   /**
@@ -124,7 +298,7 @@ export class Field<T, O extends boolean = false, R = unknown> {
    * (`simple` by default: no stemming).
    */
   searchable(language = "simple"): Field<T, O, R> {
-    return new Field<T, O, R>(this.spec, this.isOptional, this.description, { ...this.column, searchable: language });
+    return new Field<T, O, R>(this.spec, this.isOptional, this.description, { ...this.column, searchable: language }, this.settings);
   }
 
   /**
@@ -132,7 +306,7 @@ export class Field<T, O extends boolean = false, R = unknown> {
    * sorted, a ref, the id, the label or read by declared SQL).
    */
   encrypted(): Field<T, O> {
-    return new Field<T, O>(this.spec, this.isOptional, this.description, { ...this.column, encrypted: true });
+    return new Field<T, O>(this.spec, this.isOptional, this.description, { ...this.column, encrypted: true }, this.settings);
   }
 
   /**
@@ -141,13 +315,42 @@ export class Field<T, O extends boolean = false, R = unknown> {
    * masked only when the history says `unmasked`.
    */
   history(): Field<T, O, R> {
-    return new Field<T, O, R>(this.spec, this.isOptional, this.description, { ...this.column, history: true });
+    return new Field<T, O, R>(this.spec, this.isOptional, this.description, { ...this.column, history: true }, this.settings);
   }
 
   /** @internal A use of this field with its own identity (messages and entities copy their fields). */
   use(): Field<T, O, R> {
-    return new Field<T, O, R>(this.spec, this.isOptional, this.description, this.column);
+    return new Field<T, O, R>(this.spec, this.isOptional, this.description, this.column, this.settings);
   }
+}
+
+/** A bound of a setting (`min`, `max`): a number, a bigint (an int64), a decimal, or a date or a decimal as text. */
+export type SettingBound = number | bigint | string | Decimal;
+
+/** @internal The options of a settings field as declared (each present only when given). */
+export interface SettingsSpec {
+  label?: string;
+  default?: unknown;
+  hasDefault?: boolean;
+  section?: string;
+  placeholder?: string;
+  multiline?: boolean;
+  min?: SettingBound;
+  hasMin?: boolean;
+  max?: SettingBound;
+  hasMax?: boolean;
+  minLen?: number;
+  maxLen?: number;
+  pattern?: string;
+  format?: "url" | "email";
+  minItems?: number;
+  maxItems?: number;
+  message?: string;
+}
+
+/** @internal Whether a field carries any option of a setting. */
+export function hasSettingsOptions(f: AnyField): boolean {
+  return Object.keys(f.settings).length > 0;
 }
 
 export type AnyField = Field<any, boolean, any>;
@@ -720,6 +923,8 @@ export class MessageDef<S extends Shape> extends Field<Infer<S>, false> {
      * of its JSON; an enum and an optional field with a value are still written (`t.message(.., { omitDefaults: true })`).
      */
     readonly omitDefaults: boolean = false,
+    /** `settings`: the plugin's settings (`t.message(.., { kind: 'settings' })`, `settingsDef(..)`). */
+    readonly kind: MessageKind = "message",
   ) {
     const spec: FieldSpec = { kind: "message" };
     super(spec);
@@ -728,6 +933,9 @@ export class MessageDef<S extends Shape> extends Field<Infer<S>, false> {
     this.f = fieldRefs(this.fields) as FieldRefs<Infer<S>, S>;
   }
 }
+
+/** What a message is: a plain one, or the plugin's settings (`t.message(.., { kind: 'settings' })`). */
+export type MessageKind = "message" | "settings";
 
 /** A named enum (`t.enum('OrderStatus', ['placed', 'paid'])`); its values are strings on the wire and in code. */
 export class EnumDef<V extends string> extends Field<V, false> {
@@ -1053,6 +1261,21 @@ function scalar<T>(type: ScalarType): Field<T, false> {
   return new Field<T, false>({ kind: "scalar", scalar: type });
 }
 
+/** The options of `t.message(name, fields, options)`. */
+export interface MessageOptions {
+  description?: string;
+  /**
+   * Fields at their protobuf default are left out of the message's JSON (an enum, and an optional field with a value,
+   * are still written).
+   */
+  omitDefaults?: boolean;
+  /**
+   * `settings`: the plugin's settings, what an owner or an admin sets for it (`plugin({ settings: settingsDef(m) })`);
+   * only its fields take the options of a setting (`.label()`, `.default()`, `.min()`, ..) and `t.secret()`.
+   */
+  kind?: MessageKind;
+}
+
 /** Field builders. Each maps to one descriptor type; the comment says the TypeScript and the wire type. */
 export const t = {
   /** string */
@@ -1079,6 +1302,18 @@ export const t = {
   bytes: () => scalar<Uint8Array>("bytes"),
   /** json: any JSON value, typed as `T`; the value itself on the wire */
   json: <T = unknown>() => scalar<T>("json"),
+  /**
+   * file: a `File` (`{ id, name, type, size }`), never its bytes: `ctx.files` reads and writes them. `maxSize` is the
+   * largest file the field takes (`'1 GiB'`, `'500 MB'`, or bytes), `accept` the MIME types or patterns it takes
+   * (`['text/csv', 'image/*']`); a screen's upload checks a file against them before sending it. A list of files is
+   * `t.array(t.file({..}))`.
+   */
+  file: (options: FileOptions = {}): Field<File, false> => {
+    const column: ColumnSpec = {};
+    const unknown = optionProblems("file", options);
+    if (unknown.length > 0) column.unknownOptions = unknown;
+    return new Field<File, false>({ kind: "scalar", scalar: "file", file: fileSpec(options) }, false, "", column);
+  },
   /** repeated: an array of the inner field's type (never absent: an empty array) */
   array: <F extends AnyField>(inner: F): Field<ValueOf<F>[], false> =>
     new Field<ValueOf<F>[], false>({ kind: "array", inner }),
@@ -1092,8 +1327,17 @@ export const t = {
    * (`""`, `0`, `false`, an empty list, a message whose JSON is `{}`) are left out of the JSON it is written as (an
    * enum, and an optional field that has a value, are still written), which trims the views a screen reads often.
    */
-  message: <S extends Shape>(name: string, fields: S, options?: { description?: string; omitDefaults?: boolean }): MessageDef<S> =>
-    noted(new MessageDef(name, fields, options?.description ?? "", options?.omitDefaults ?? false), "message", options),
+  message: <S extends Shape>(name: string, fields: S, options?: MessageOptions): MessageDef<S> =>
+    noted(
+      new MessageDef(name, fields, options?.description ?? "", options?.omitDefaults ?? false, options?.kind === "settings" ? "settings" : "message"),
+      "message",
+      options,
+    ),
+  /**
+   * secret: a setting's secret (an API key, a token), a `Secret` read with `.expose()`; a string on the wire. Only a
+   * field of the settings message (`kind: 'settings'`) is one; it has no default.
+   */
+  secret: () => scalar<Secret>("secret"),
   /** `t.enum('Name', [...values])` declares an enum; `t.enum(def)` is a field of it. */
   enum: enumBuilder,
 };

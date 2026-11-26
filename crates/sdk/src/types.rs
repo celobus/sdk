@@ -1,4 +1,4 @@
-//! Field types: `Id<E>`, `Json<T>`, `Timestamp`, `Date`, `Decimal`, `Uuid`, and the codec of the
+//! Field types: `Id<E>`, `Json<T>`, `File`, `Timestamp`, `Date`, `Decimal`, `Uuid`, and the codec of the
 //! language types (`String`, `bool`, `i32`, `i64`, `f64`, `Vec<u8>`, `Option<T>`, `Vec<T>`).
 
 use std::cmp::Ordering;
@@ -338,6 +338,90 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> FieldValue for Jso
     }
     fn missing(path: &str) -> Result<Self> {
         Self::decode(&Value::Null, path)
+    }
+}
+
+// --- files -----------------------------------------------------------------------------------------
+
+/// A file: a typed value of a message field, an entity column or a job payload (`file` in the descriptor; `File`,
+/// `Option<File>`, `Vec<File>`). It names the file, never holds its bytes: read and write them with `ctx.files()`.
+/// JSON: `{"id", "name", "type", "size"}`, `size` in bytes as a string like every 64-bit integer (`"2100000"`; a
+/// number is read too).
+///
+/// A file comes from a caller (an endpoint's `File` field: uploaded by a screen, the CLI or another client, within
+/// the field's `#[field(max_size = "1 GiB", accept = ["text/csv"])]`), from another plugin (in a call or its
+/// answer), or from the plugin's own code. It lives while a row, a pending job, a schedule or a live agent run of the
+/// plugin holds it; a file nothing holds is collected after a grace period. A `File` in an endpoint's answer reaches
+/// the client with a short-lived URL to read it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct File {
+    /// The file's id.
+    pub id: String,
+    /// Its name as uploaded or made (`report.csv`).
+    #[serde(default)]
+    pub name: String,
+    /// Its MIME type (`text/csv`); `application/octet-stream` when unknown.
+    #[serde(default, rename = "type")]
+    pub content_type: String,
+    /// Its size in bytes.
+    #[serde(
+        default,
+        serialize_with = "size_to_json",
+        deserialize_with = "size_from_json"
+    )]
+    pub size: u64,
+}
+
+fn size_to_json<S: serde::Serializer>(size: &u64, s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_str(&size.to_string())
+}
+
+fn size_from_json<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<u64, D::Error> {
+    match Value::deserialize(d)? {
+        Value::Null => Ok(0),
+        v => integer(&v)
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or_else(|| serde::de::Error::custom("size must be a number of bytes")),
+    }
+}
+
+impl FieldValue for File {
+    fn field_type(_: &mut Registry) -> FieldType {
+        FieldType::scalar("file")
+    }
+    fn encode(&self) -> Value {
+        serde_json::json!({
+            "id": self.id,
+            "name": self.name,
+            "type": self.content_type,
+            "size": self.size.to_string(),
+        })
+    }
+    fn decode(value: &Value, path: &str) -> Result<Self> {
+        let obj = crate::message::object(value, path)?;
+        let text = |k: &str| -> Result<String> {
+            match obj.get(k) {
+                None | Some(Value::Null) => Ok(String::new()),
+                Some(Value::String(s)) => Ok(s.clone()),
+                Some(_) => Err(wrong_type(&format!("{path}.{k}"), "a string")),
+            }
+        };
+        let id = text("id")?;
+        if id.is_empty() {
+            return Err(wrong_type(&format!("{path}.id"), "a file id"));
+        }
+        let size = match obj.get("size") {
+            None | Some(Value::Null) => 0,
+            Some(v) => integer(v)
+                .and_then(|n| u64::try_from(n).ok())
+                .ok_or_else(|| wrong_type(&format!("{path}.size"), "a number of bytes"))?,
+        };
+        Ok(File {
+            id,
+            name: text("name")?,
+            content_type: text("type")?,
+            size,
+        })
     }
 }
 

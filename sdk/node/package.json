@@ -1,6 +1,6 @@
 {
   "name": "@celobus/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The Celobus plugin SDK for Node.js (TypeScript): declarations, the descriptor and the plugin session",
   "license": "SEE LICENSE IN LICENSE",
   "author": "Celobus",

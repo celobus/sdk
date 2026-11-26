@@ -108,6 +108,22 @@
     {
       "auth": "user",
       "description": "",
+      "idempotency": "optional",
+      "input": "ExportOrdersRequest",
+      "name": "ExportOrders",
+      "output": "ExportOrdersReply",
+      "roles": [
+        "clerk"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000,
+      "ui": true
+    },
+    {
+      "auth": "user",
+      "description": "",
       "idempotency": "off",
       "input": "CountOpenRequest",
       "name": "CountOpen",
@@ -436,6 +452,14 @@
           "optional": false,
           "repeated": false,
           "type": "timestamp"
+        },
+        {
+          "description": "",
+          "name": "invoice",
+          "number": 9,
+          "optional": true,
+          "repeated": false,
+          "type": "file"
         }
       ],
       "kind": "message",
@@ -474,10 +498,53 @@
           "optional": false,
           "repeated": false,
           "type": "string"
+        },
+        {
+          "accept": [
+            "image/*",
+            "application/pdf"
+          ],
+          "description": "",
+          "max_size": 10485760,
+          "name": "scans",
+          "number": 3,
+          "optional": false,
+          "repeated": true,
+          "type": "file"
         }
       ],
       "kind": "message",
       "name": "CancelOrderRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "status",
+          "number": 1,
+          "optional": true,
+          "repeated": false,
+          "type": "enum:OrderStatus"
+        }
+      ],
+      "kind": "message",
+      "name": "ExportOrdersRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "file",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "file"
+        }
+      ],
+      "kind": "message",
+      "name": "ExportOrdersReply"
     },
     {
       "description": "",
@@ -877,6 +944,14 @@
           "optional": false,
           "repeated": false,
           "type": "string"
+        },
+        {
+          "description": "",
+          "name": "files",
+          "number": 15,
+          "optional": false,
+          "repeated": true,
+          "type": "file"
         }
       ],
       "kind": "message",
@@ -1570,7 +1645,7 @@
     }
   ],
   "ui": {
-    "catalog": 3,
+    "catalog": 4,
     "commands": [
       {
         "icon": "search",
@@ -1741,6 +1816,17 @@
                     "label": "Why",
                     "name": "reason",
                     "required": true
+                  },
+                  {
+                    "accept": [
+                      "image/*",
+                      "application/pdf"
+                    ],
+                    "control": "upload",
+                    "label": "Scans",
+                    "max_size": 10485760,
+                    "multiple": true,
+                    "name": "scans"
                   }
                 ]
               }
@@ -1958,6 +2044,44 @@
                 }
               }
             ]
+          },
+          {
+            "name": "export",
+            "on_error": [
+              {
+                "toast": {
+                  "error": true,
+                  "tone": "danger"
+                }
+              }
+            ],
+            "steps": [
+              {
+                "call": {
+                  "args": [
+                    {
+                      "field": "status",
+                      "value": {
+                        "param": "status"
+                      }
+                    }
+                  ],
+                  "endpoint": "ExportOrders"
+                }
+              },
+              {
+                "download": "file"
+              }
+            ]
+          }
+        ],
+        "header": [
+          {
+            "button": {
+              "action": "export",
+              "emphasis": "secondary",
+              "label": "Export CSV"
+            }
           }
         ],
         "id": "orders",
@@ -2033,6 +2157,13 @@
                         "relative": {}
                       },
                       "title": "Placed"
+                    },
+                    {
+                      "field": "invoice",
+                      "format": {
+                        "file": {}
+                      },
+                      "title": "Invoice"
                     }
                   ],
                   "compact": {
@@ -3434,6 +3565,7 @@
                             }
                           },
                           "edited": "edited",
+                          "files": "files",
                           "hover": [
                             {
                               "builtin": "react"
@@ -3679,6 +3811,7 @@
                             }
                           },
                           "edited": "edited",
+                          "files": "files",
                           "hover": [
                             {
                               "builtin": "react"

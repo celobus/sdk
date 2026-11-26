@@ -1,0 +1,373 @@
+{
+  "agents": [],
+  "capabilities": [],
+  "dependencies": [],
+  "description": "",
+  "endpoints": [
+    {
+      "auth": "user",
+      "description": "How long a thread stays with its agent.",
+      "idempotency": "off",
+      "input": "HoursRequest",
+      "name": "Hours",
+      "output": "HoursReply",
+      "roles": [],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    }
+  ],
+  "entities": [],
+  "enums": [
+    {
+      "name": "Tone",
+      "values": [
+        "calm",
+        "loud_and_clear"
+      ]
+    },
+    {
+      "name": "Channel",
+      "values": [
+        "email",
+        "chat",
+        "push"
+      ]
+    }
+  ],
+  "id": "prefs",
+  "messages": [
+    {
+      "description": "",
+      "fields": [],
+      "kind": "message",
+      "name": "HoursRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "hours",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "int32"
+        },
+        {
+          "description": "",
+          "name": "tone",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "enum:Tone"
+        }
+      ],
+      "kind": "message",
+      "name": "HoursReply"
+    },
+    {
+      "description": "What the owners and admins of a workspace set for the plugin.",
+      "fields": [
+        {
+          "default": 2,
+          "description": "After this many hours without messages a thread no longer sticks to the agent that answered in it.",
+          "label": "Thread stays with its agent, hours",
+          "max": 48,
+          "min": 1,
+          "name": "thread_warm_hours",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "section": "Agents",
+          "type": "int32"
+        },
+        {
+          "default": 20000,
+          "description": "The longest message a member may send.",
+          "max": 20000,
+          "message": "From 100 to 20,000 characters",
+          "min": 100,
+          "name": "message_max_chars",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "section": "Agents",
+          "type": "int64"
+        },
+        {
+          "default": 0.5,
+          "description": "",
+          "max": 1,
+          "min": 0,
+          "name": "sample_rate",
+          "number": 3,
+          "optional": false,
+          "repeated": false,
+          "type": "double"
+        },
+        {
+          "default": "12.50",
+          "description": "",
+          "max": "100.00",
+          "min": "0",
+          "name": "fee",
+          "number": 4,
+          "optional": false,
+          "repeated": false,
+          "type": "decimal"
+        },
+        {
+          "description": "",
+          "max": "2030-12-31",
+          "min": "2020-01-01",
+          "name": "starts_on",
+          "number": 5,
+          "optional": true,
+          "repeated": false,
+          "type": "date"
+        },
+        {
+          "default": true,
+          "description": "",
+          "name": "enabled",
+          "number": 6,
+          "optional": false,
+          "repeated": false,
+          "type": "bool"
+        },
+        {
+          "default": "calm",
+          "description": "",
+          "name": "tone",
+          "number": 7,
+          "optional": false,
+          "repeated": false,
+          "type": "enum:Tone"
+        },
+        {
+          "default": [
+            "email"
+          ],
+          "description": "",
+          "label": "Notify by",
+          "max_items": 2,
+          "min_items": 1,
+          "name": "channels",
+          "number": 8,
+          "optional": false,
+          "repeated": true,
+          "type": "enum:Channel"
+        },
+        {
+          "description": "",
+          "max_items": 5,
+          "name": "tags",
+          "number": 9,
+          "optional": false,
+          "placeholder": "One per line",
+          "repeated": true,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "max_items": 3,
+          "name": "watchers",
+          "number": 10,
+          "optional": false,
+          "repeated": true,
+          "type": "ref:platform.user"
+        },
+        {
+          "description": "",
+          "name": "owner",
+          "number": 11,
+          "optional": true,
+          "repeated": false,
+          "type": "ref:platform.user"
+        },
+        {
+          "description": "The first message of a thread.",
+          "max_len": 500,
+          "min_len": 1,
+          "multiline": true,
+          "name": "greeting",
+          "number": 12,
+          "optional": false,
+          "pattern": "^[A-Z]",
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "format": "url",
+          "label": "Webhook URL",
+          "name": "webhook_url",
+          "number": 13,
+          "optional": true,
+          "placeholder": "https://",
+          "repeated": false,
+          "section": "Integrations",
+          "type": "string"
+        },
+        {
+          "description": "",
+          "format": "email",
+          "name": "contact",
+          "number": 14,
+          "optional": true,
+          "repeated": false,
+          "section": "Integrations",
+          "type": "string"
+        },
+        {
+          "description": "",
+          "max_len": 200,
+          "min_len": 8,
+          "name": "webhook_token",
+          "number": 15,
+          "optional": true,
+          "repeated": false,
+          "section": "Integrations",
+          "type": "secret"
+        }
+      ],
+      "kind": "settings",
+      "name": "PrefsSettings"
+    }
+  ],
+  "permissions": [],
+  "roles": [],
+  "schema": 1,
+  "scopes": [],
+  "settings": {
+    "form": {
+      "sections": [
+        {
+          "inputs": [
+            {
+              "control": "number",
+              "help": "After this many hours without messages a thread no longer sticks to the agent that answered in it.",
+              "label": "Thread stays with its agent, hours",
+              "name": "thread_warm_hours"
+            },
+            {
+              "control": "number",
+              "help": "The longest message a member may send.",
+              "label": "Message max chars",
+              "name": "message_max_chars"
+            }
+          ],
+          "title": "Agents"
+        },
+        {
+          "inputs": [
+            {
+              "control": "number",
+              "label": "Sample rate",
+              "name": "sample_rate"
+            },
+            {
+              "control": "number",
+              "label": "Fee",
+              "name": "fee"
+            },
+            {
+              "control": "date",
+              "label": "Starts on",
+              "name": "starts_on"
+            },
+            {
+              "control": "switch",
+              "label": "Enabled",
+              "name": "enabled"
+            },
+            {
+              "control": "select",
+              "label": "Tone",
+              "name": "tone",
+              "options": [
+                {
+                  "label": "Calm",
+                  "value": "calm"
+                },
+                {
+                  "label": "Loud and clear",
+                  "value": "loud_and_clear"
+                }
+              ]
+            },
+            {
+              "control": "multi_select",
+              "label": "Notify by",
+              "name": "channels",
+              "options": [
+                {
+                  "label": "Email",
+                  "value": "email"
+                },
+                {
+                  "label": "Chat",
+                  "value": "chat"
+                },
+                {
+                  "label": "Push",
+                  "value": "push"
+                }
+              ]
+            },
+            {
+              "control": "textarea",
+              "label": "Tags",
+              "name": "tags",
+              "placeholder": "One per line"
+            },
+            {
+              "control": "member",
+              "label": "Watchers",
+              "name": "watchers"
+            },
+            {
+              "control": "member",
+              "label": "Owner",
+              "name": "owner"
+            },
+            {
+              "control": "textarea",
+              "help": "The first message of a thread.",
+              "label": "Greeting",
+              "name": "greeting",
+              "required": true
+            }
+          ]
+        },
+        {
+          "inputs": [
+            {
+              "control": "text",
+              "label": "Webhook URL",
+              "name": "webhook_url",
+              "placeholder": "https://"
+            },
+            {
+              "control": "text",
+              "label": "Contact",
+              "name": "contact"
+            },
+            {
+              "control": "secret",
+              "label": "Webhook token",
+              "name": "webhook_token"
+            }
+          ],
+          "title": "Integrations"
+        }
+      ]
+    },
+    "message": "PrefsSettings",
+    "on_change": false
+  },
+  "title": "Prefs",
+  "version": "0.1.0"
+}

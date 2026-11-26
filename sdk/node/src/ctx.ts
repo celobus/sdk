@@ -1,8 +1,8 @@
 // The context of one request: who calls, the request itself, and what the plugin may do through the platform
 // (dependency calls, its entities and declared transactions, reads of its dependencies' entities, SQL, the
-// directory, the runs of its agents, notifications: `ctx.notifications`, notify.ts; background jobs: `ctx.jobs` to
-// enqueue and cancel runs, `ctx.job` for the run a job's handler is in). Events are not available: those members
-// exist and reject with `unavailable`.
+// directory, the runs of its agents, the plugin's files: `ctx.files`, files.ts; notifications: `ctx.notifications`,
+// notify.ts; background jobs: `ctx.jobs` to enqueue and cancel runs, `ctx.job` for the run a job's handler is in).
+// Events are not available: those members exist and reject with `unavailable`.
 import { checkCall } from "./keys.js";
 import { decodeMessage, encodeMessage, stringify, type FieldErrors } from "./codec.js";
 import { Repository, TxRepository, type DbLink, type DbResult } from "./db.js";
@@ -12,14 +12,17 @@ import type { ResolvedJob } from "./descriptor.js";
 import type { Logger } from "./log.js";
 import { endpointPath, snake } from "./names.js";
 import { Notifications, linkWire, type NotifyLink } from "./notify.js";
-import { ViewDef, entityNames, foreignPlugin, type EntityDef, type IoValue, type MessageDef } from "./schema.js";
+import { ViewDef, entityNames, foreignPlugin, type EntityDef, type Infer, type IoValue, type MessageDef, type Shape } from "./schema.js";
+import type { SettingsCache } from "./settings.js";
 import { Analytics, startQuery, type Query, type Queryable } from "./query.js";
 import { Lake, type LakeTableDef } from "./lake.js";
 import { sqlParams, sqlRows, type SqlRow } from "./sql.js";
 import type { TopicDef } from "./ui.js";
+import { PlatformFiles, fileWire, type Files, type FilesResult } from "./files.js";
+import type { File } from "./schema.js";
 
 /** @internal What the platform answers a syscall (`SyscallResult`, protobuf field names in camelCase). */
-export interface SyscallResult extends DbResult {
+export interface SyscallResult extends DbResult, FilesResult {
   id: string;
   error: string;
   errorDetails?: { currentVersion: string | number; column: string } | null;
@@ -100,6 +103,10 @@ export interface SyscallSession {
   invalidate(topic: string, key: string): void;
   /** The plugin's jobs by their declarations (what `ctx.jobs.enqueue` takes); absent: none. */
   jobs?: ReadonlyMap<JobDef<any>, ResolvedJob>;
+  /** Where `ctx.files` reads and writes instead of the platform (a test's files in memory); absent: the platform. */
+  files?: Files;
+  /** The plugin's settings as the platform sent them (or a test gave); absent: none. */
+  settings?: SettingsCache;
 }
 
 /** @internal `Principal` as the platform sends it. */
@@ -110,6 +117,7 @@ export interface WirePrincipal {
   roles: string[];
   groups: string[];
   scopes: string[];
+  agentRun?: string;
 }
 
 interface WireMember {
@@ -141,6 +149,12 @@ export class Caller {
   readonly groups: readonly string[];
   /** The token's scopes for this plugin, full names `<plugin>:<scope>`. */
   readonly scopes: readonly string[];
+  /**
+   * When the caller is an agent working on a run: that run's id. An agent calls the endpoints of the plugin whose
+   * code started its run only from that run, so a handler may tie what the agent does to the record the run was
+   * started for.
+   */
+  readonly agentRun: string | undefined;
 
   constructor(
     principal: WirePrincipal | null | undefined,
@@ -153,6 +167,7 @@ export class Caller {
     this.roles = principal?.roles ?? [];
     this.groups = principal?.groups ?? [];
     this.scopes = principal?.scopes ?? [];
+    this.agentRun = principal?.agentRun || undefined;
   }
 
   /** The calling user's id; throws 401 `unauthenticated` when the request has none. */
@@ -270,6 +285,19 @@ const AGENT_REFUSALS = new Map([
   ["forbidden", 403],
 ]);
 
+/** What the platform refuses a file call with besides `not_found` and `bad_request`, and the status each code answers. */
+const FILE_REFUSALS = new Map([
+  ["file_gone", 410],
+  ["file_too_large", 413],
+  ["quota_exceeded", 507],
+  ["too_much_unattached", 507],
+  ["too_many_unattached", 429],
+  ["file_size_mismatch", 409],
+  ["file_not_uploaded", 409],
+  ["file_unknown", 409],
+  ["read_only", 409],
+]);
+
 /** What the platform refuses a `notify_*` syscall with besides the db codes (`invalid`, `capability_missing`). */
 const NOTIFY_REFUSALS = new Map([
   ["follow_limit", 409],
@@ -325,7 +353,7 @@ export function syscallFailed(e: unknown): unknown {
   const code = i > 0 ? e.message.slice(0, i) : "";
   const message = e.message.slice(i + 2);
   if (DENIALS.has(code)) return new RpcError(403, code, message);
-  const status = AGENT_REFUSALS.get(code) ?? NOTIFY_REFUSALS.get(code) ?? JOB_REFUSALS.get(code);
+  const status = AGENT_REFUSALS.get(code) ?? NOTIFY_REFUSALS.get(code) ?? JOB_REFUSALS.get(code) ?? FILE_REFUSALS.get(code);
   if (status !== undefined) return new RpcError(status, code, message);
   const db = DB_REFUSALS.get(code);
   if (db !== undefined) {
@@ -442,6 +470,17 @@ export interface AgentRunOptions {
    * screens, not every screen of the plugin). Needs `topic` as a `TopicDef`; left out: every key.
    */
   topicKey?: Record<string, unknown>;
+  /**
+   * Files the run is given (the plugin's own: 409 `file_unknown` otherwise). They are kept while the run lives, its
+   * input lists each one, and the agent downloads those it needs.
+   */
+  files?: readonly File[];
+}
+
+/** What a follow-up message to a run carries besides its text. */
+export interface AgentSendOptions {
+  /** Files given to the run, as `AgentRunOptions.files` are. */
+  files?: readonly File[];
 }
 
 /** An agent of the workspace the caller of the request may start a run of (`ctx.agents.available()`). */
@@ -505,7 +544,7 @@ export interface Agents {
    * Sends a follow-up message to a run that has not ended, as this request's caller; resolves with the sequence
    * number of the input. 409 `run_ended` when the run is over.
    */
-  send(runId: string, text: string): Promise<number>;
+  send(runId: string, text: string, options?: AgentSendOptions): Promise<number>;
   /** Stops the run now; a run that ended stays as it is. */
   cancel(runId: string): Promise<AgentRun>;
   /** Ends a session after the turn in progress. */
@@ -801,6 +840,7 @@ export class Ctx {
           ...(options.notifyLink ? { notifyLink: linkWire(options.notifyLink) } : {}),
           ...(options.topic === undefined ? {} : { topic: typeof options.topic === "string" ? options.topic : options.topic.name }),
           ...(options.topicKey === undefined ? {} : { topicKey: runTopicKey(options.topic, options.topicKey) }),
+          files: (options.files ?? []).map(fileWire),
         };
         return runOf((await this.syscall({ agentRun: start })).agentRun, "agent_run");
       },
@@ -843,8 +883,10 @@ export class Ctx {
         const r = await this.syscall({ agentRuns: { agent: options.agent ?? "", limit: options.limit ?? 0, group: options.group ?? "" } });
         return (r.agentRuns?.runs ?? []).map((run) => runOf(run, "agent_runs"));
       },
-      send: async (runId, text) => {
-        const r = await this.syscall({ agentSend: { runId, text, requestId: this.request.id } });
+      send: async (runId, text, options = {}) => {
+        checkCall("ctx.agents.send()", options);
+        const files = (options.files ?? []).map(fileWire);
+        const r = await this.syscall({ agentSend: { runId, text, requestId: this.request.id, files } });
         return Number(r.agentInput?.seq ?? 0);
       },
       cancel: async (runId) => runOf((await this.syscall({ agentCancel: { runId } })).agentRun, "agent_cancel"),
@@ -912,6 +954,17 @@ export class Ctx {
         return !!r.jobCancelled.cancelled;
       },
     };
+  }
+
+  /**
+   * The plugin's files: `open(file)` reads one as a stream (`.lines()`), `create(name, type)` writes a new one
+   * (`write`, then `finish` gives its `File`), `head(file)` says what is known of one (`files.ts`).
+   */
+  get files(): Files {
+    return (
+      this.session.files ??
+      new PlatformFiles({ syscall: (call) => this.syscall(call), requestId: this.request.id, signal: this.request.signal })
+    );
   }
 
   /** Aborted at the deadline or when the session ends (the same as `ctx.request.signal`); in a job's run, when it must stop. */
@@ -1115,6 +1168,20 @@ export class Ctx {
    * (outside it, 403 `capability_missing`), read masked columns, and are recorded in the workspace's audit with the
    * caller, the request and `reason`.
    */
+  /**
+   * The plugin's settings (`plugin({ settings: settingsDef(schema) })`): what an owner or an admin saved, else the
+   * declared defaults. Read from the process's memory (the platform sends each change), so it is cheap to call in every
+   * handler; the value is frozen and shared. A required setting no one has set yet is a 409 `settings_required` naming
+   * it (`details.fields`, `details.missing`): the plugin needs setup. A message other than the declared one is a 500.
+   */
+  settings<S extends Shape>(schema: MessageDef<S>): Infer<S> {
+    const cache = this.session.settings;
+    if (cache === undefined) {
+      throw internal(new Error(`no settings: the plugin declares none (plugin({ settings: settingsDef(${schema.name}) })), or a test gave none (testCtx(plugin, { settings }))`));
+    }
+    return cache.get(schema);
+  }
+
   asSystem(reason: string): this {
     const Kind = this.constructor as typeof Ctx;
     return new Kind(this.session, this.caller, this.request, this.plugin, this.log, this.tx, reason, this.job) as this;

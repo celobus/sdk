@@ -169,6 +169,8 @@ internal static class UiJson
             FieldKind.Date => "date",
             FieldKind.Bytes => "bytes",
             FieldKind.Json => "json",
+            FieldKind.File => "file",
+            FieldKind.Secret => "secret",
             FieldKind.Message => $"message:{element.Name}",
             FieldKind.Enum => $"enum:{element.Name}",
             FieldKind.Ref => $"ref:{Schema.RefTarget(element.GetGenericArguments()[0], "")}",

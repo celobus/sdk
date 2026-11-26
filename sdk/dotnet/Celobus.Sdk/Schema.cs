@@ -59,7 +59,7 @@ internal static class Names
 /// <summary>The descriptor type of a field (or of a repeated field's element).</summary>
 internal enum FieldKind
 {
-    String, Bool, Int32, Int64, Double, Decimal, Uuid, Timestamp, Date, Bytes, Json, Message, Enum, Ref, Invalid,
+    String, Bool, Int32, Int64, Double, Decimal, Uuid, Timestamp, Date, Bytes, Json, Message, Enum, Ref, File, Secret, Invalid,
 }
 
 internal enum CollectionKind { None, Array, List }
@@ -87,6 +87,9 @@ internal sealed class FieldSchema
     public string? Inverse { get; init; }                // [Ref(Inverse = ..)]
     public string? OnDelete { get; init; }               // [Ref(OnDelete = ..)], snake_case
     public bool History { get; init; }                   // [History] on an entity's column
+    public string? MaxSize { get; init; }                // [MaxSize(..)] on a file field, as declared
+    public IReadOnlyList<string> Accept { get; init; } = []; // [Accept(..)] on a file field
+    public SettingOptions Setting { get; init; } = SettingOptions.None; // a setting's options ([Label], [Range], a default, ..)
 
     /// <summary>The descriptor type; refs resolve against the plugin id.</summary>
     public string DescriptorType(string pluginId) => Kind switch
@@ -102,6 +105,8 @@ internal sealed class FieldSchema
         FieldKind.Date => "date",
         FieldKind.Bytes => "bytes",
         FieldKind.Json => "json",
+        FieldKind.File => "file",
+        FieldKind.Secret => "secret",
         FieldKind.Message => $"message:{ElementType.Name}",
         FieldKind.Enum => $"enum:{ElementType.Name}",
         FieldKind.Ref => $"ref:{Schema.RefTarget(ElementType.GetGenericArguments()[0], pluginId)}",
@@ -174,9 +179,12 @@ internal sealed class MessageSchema
             .Select(p => (p, (ParameterInfo?)null, -1)));
 
         var nullability = new NullabilityInfoContext(); // not thread-safe: one per build
+        // a settings message's defaults are its properties' initial values
+        var settings = entity is null && message?.Kind == MessageKind.Settings;
+        var sample = settings ? SettingOptions.Sample(t) : null;
         var fields = new List<FieldSchema>();
         foreach (var (prop, param, index) in ordered)
-            fields.Add(Field(nullability, prop, param, index, fields.Count + 1));
+            fields.Add(Field(nullability, prop, param, index, fields.Count + 1, settings, sample));
 
         var schema = new MessageSchema
         {
@@ -204,7 +212,8 @@ internal sealed class MessageSchema
         return d;
     }
 
-    private static FieldSchema Field(NullabilityInfoContext nullability, PropertyInfo prop, ParameterInfo? param, int ctorIndex, int number)
+    private static FieldSchema Field(NullabilityInfoContext nullability, PropertyInfo prop, ParameterInfo? param, int ctorIndex, int number,
+        bool settings, object? sample)
     {
         var name = Names.Snake(prop.Name);
         var type = prop.PropertyType;
@@ -233,7 +242,7 @@ internal sealed class MessageSchema
 
         var fieldKind = Schema.KindOf(element);
         if (fieldKind == FieldKind.Invalid)
-            error ??= $"`{Schema.Display(type)}` is not a field type (a scalar, Id<T>, an enum, a [Message] type or a list of them)";
+            error ??= $"`{Schema.Display(type)}` is not a field type (a scalar, Id<T>, File, an enum, a [Message] type or a list of them)";
 
         return new FieldSchema
         {
@@ -261,6 +270,10 @@ internal sealed class MessageSchema
                 && od != Sdk.OnDelete.Default
                 ? Names.Snake(od.ToString())
                 : null,
+            MaxSize = (prop.GetCustomAttribute<MaxSizeAttribute>() ?? param?.GetCustomAttribute<MaxSizeAttribute>())?.Text,
+            Accept = [.. prop.GetCustomAttributes<AcceptAttribute>().Concat(param?.GetCustomAttributes<AcceptAttribute>() ?? [])
+                .SelectMany(a => a.Types)],
+            Setting = SettingOptions.Of(prop, param, settings, sample),
         };
     }
 
@@ -339,6 +352,8 @@ internal static partial class Schema
         if (t == typeof(DateOnly)) return FieldKind.Date;
         if (t == typeof(byte[])) return FieldKind.Bytes;
         if (t == typeof(JsonElement) || t == typeof(JsonNode) || t == typeof(JsonObject)) return FieldKind.Json;
+        if (t == typeof(File)) return FieldKind.File;
+        if (t == typeof(Secret)) return FieldKind.Secret;
         if (t.IsEnum) return FieldKind.Enum;
         if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(Id<>)) return FieldKind.Ref;
         if (IsMessage(t)) return FieldKind.Message;

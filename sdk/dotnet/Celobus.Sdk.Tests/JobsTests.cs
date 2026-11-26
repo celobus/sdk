@@ -97,7 +97,7 @@ public class JobsTests
         var plugin = J.JobsdemoPlugin.Define();
         Assert.Empty(plugin.Check());
         var actual = JsonNode.Parse(plugin.DescriptorJson());
-        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "jobs.json")));
+        var expected = JsonNode.Parse(System.IO.File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "jobs.json")));
         Assert.True(JsonNode.DeepEquals(expected, actual), actual!.ToJsonString());
     }
 

@@ -1,6 +1,6 @@
 // Static types: handlers get typed input and must return typed output. Compiled (not run) by `npm test`;
 // each `@ts-expect-error` must be an error.
-import { Decimal, daysAgo, endpoint, entity, historyOf, job, lakeTable, layer, plugin, remote, role, t, testCtx, view, type Ctx, type Dependency, type Enqueued, type Row, type SqlRow, type ValueOf } from '@celobus/sdk';
+import { Decimal, Secret, settingsDef, daysAgo, endpoint, entity, historyOf, job, lakeTable, layer, plugin, remote, role, t, testCtx, view, type Ctx, type Dependency, type Enqueued, type File, type FileWriter, type Row, type SqlRow, type ValueOf } from '@celobus/sdk';
 import * as platform from '@celobus/sdk/platform';
 import { alias, avg, count, exists, label, max, sum, type Label } from '@celobus/sdk/query';
 
@@ -492,6 +492,80 @@ job({
       const done: 'pending' | 'building' | 'done' | 'failed' = (await ticket.wait()).state;
       void done;
       return { rows: rows.length };
+    },
+  });
+}
+
+// files: a `File` value, lists of them, `ctx.files`
+{
+  const doc = entity({ columns: { title: t.text(), files: t.array(t.file({ maxSize: '1 GiB', accept: ['image/*'] })), cover: t.file().optional() } });
+  endpoint({
+    input: t.message('AddDoc', { title: t.text(), files: t.array(t.file()) }),
+    output: { made: t.file(), lines: t.int() },
+    async handler(ctx, req) {
+      const files: File[] = req.files;
+      const size: number = files[0].size;
+      const type: string = files[0].type;
+      // @ts-expect-error a file is not a string
+      const id: string = files[0];
+      // @ts-expect-error maxSize is a number or a string
+      t.file({ maxSize: true });
+      const row: { files: File[]; cover?: File } = { files, cover: undefined } satisfies Partial<Row<typeof doc>>;
+      let lines = 0;
+      for await (const line of (await ctx.files.open(files[0])).lines()) lines += line.length > 0 ? 1 : 0;
+      const w: FileWriter = await ctx.files.create('out.csv', 'text/csv', { size: 3 });
+      await w.write('a\n');
+      await w.write(new Uint8Array([10]));
+      const made: File = await w.finish();
+      const at: Date = (await ctx.files.head(made)).createdAt;
+      await ctx.agents.run('reader', 'look', { files });
+      await ctx.agents.send('run-1', 'and these', { files: [made] });
+      void [size, type, id, row, at];
+      return { made, lines };
+    },
+  });
+}
+
+// settings: `ctx.settings(schema)` is typed by the schema; `onChange` gets both sides typed
+{
+  const tone = t.enum('Tone', ['calm', 'loud']);
+  const s = t.message('S', {
+    hours: t.int().label('Hours').default(2).min(1).max(48),
+    limit: t.bigint().default(20000n),
+    token: t.secret().optional(),
+    tone: t.enum(tone).default('calm'),
+    url: t.text().optional().url(),
+  }, { kind: 'settings' });
+  // @ts-expect-error a default of another type
+  t.int().default('2');
+  // @ts-expect-error not a message kind
+  t.message('K', {}, { kind: 'job' });
+  plugin({
+    id: 'chat',
+    settings: settingsDef(s, {
+      onChange(_ctx, change) {
+        const before: number | undefined = change.previous?.hours;
+        const token: Secret | undefined = change.current.token;
+        void [before, token];
+      },
+      form: (f) => {
+        f.number(s.f.hours, 'Hours');
+        f.secret(s.f.token, 'Token');
+      },
+    }),
+  });
+  endpoint({
+    input: {},
+    output: { hours: t.int() },
+    handler(ctx) {
+      const v = ctx.settings(s);
+      const limit: bigint = v.limit;
+      const key: string | undefined = v.token?.expose();
+      const mood: 'calm' | 'loud' = v.tone;
+      // @ts-expect-error no such setting
+      v.nope;
+      void [limit, key, mood];
+      return { hours: v.hours };
     },
   });
 }

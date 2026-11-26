@@ -43,8 +43,9 @@ pub struct Manifest {
     pub connections: Vec<Connection>,
 }
 
-/// The kinds of a connection: a language model provider for agents, speech recognition for dictation.
-pub const CONNECTION_KINDS: &[&str] = &["llm", "stt"];
+/// The kinds of a connection: a language model provider for agents, speech recognition for dictation, a basemap
+/// provider for the plugin's maps.
+pub const CONNECTION_KINDS: &[&str] = &["llm", "stt", "maps"];
 
 /// A connection a plugin declares; an owner or admin of the workspace fills it in.
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
@@ -254,7 +255,7 @@ impl Manifest {
             }
             if !CONNECTION_KINDS.contains(&c.kind.as_str()) {
                 return Err(format!(
-                    "connection {}: kind must be llm or stt, not {:?}",
+                    "connection {}: kind must be llm, stt or maps, not {:?}",
                     c.name, c.kind
                 ));
             }
@@ -585,12 +586,14 @@ mod tests {
     fn connections_are_declared_once_and_named_by_agents() {
         let m = Manifest::from_json(
             br#"{"depends":["ai"],
-                "connections":[{"name":"research","kind":"llm","title":"Research model"},{"name":"speech","kind":"stt"}],
+                "connections":[{"name":"research","kind":"llm","title":"Research model"},{"name":"speech","kind":"stt"},
+                               {"name":"basemap","kind":"maps","title":"Maps"}],
                 "agents":[{"name":"a","connection":"research","ssh_key":true},{"name":"b","connection":"ai.anthropic"}]}"#,
         )
         .unwrap();
         let pb = m.to_pb();
         assert_eq!(pb.connections[1].kind, "stt");
+        assert_eq!(pb.connections[2].kind, "maps");
         assert_eq!(
             (pb.agents[0].connection.as_str(), pb.agents[0].ssh_key),
             ("research", true)
@@ -612,7 +615,7 @@ mod tests {
             ),
             (
                 r#"{"connections":[{"name":"r","kind":"tts"}]}"#,
-                "llm or stt",
+                "llm, stt or maps",
             ),
             (
                 r#"{"connections":[{"name":"r","kind":"llm"},{"name":"r","kind":"stt"}]}"#,
@@ -620,6 +623,10 @@ mod tests {
             ),
             (
                 r#"{"connections":[{"name":"s","kind":"stt"}],"agents":[{"name":"a","connection":"s"}]}"#,
+                "not an llm",
+            ),
+            (
+                r#"{"connections":[{"name":"m","kind":"maps"}],"agents":[{"name":"a","connection":"m"}]}"#,
                 "not an llm",
             ),
             (

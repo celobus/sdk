@@ -30,6 +30,7 @@ pub struct Order {
     pub currency: String,
     pub status: OrderStatus,
     pub placed_at: Timestamp,
+    pub invoice: Option<File>,
 }
 
 #[derive(Message, Clone, Debug, Default)]
@@ -56,6 +57,18 @@ pub struct GetOrderRequest {
 pub struct CancelOrderRequest {
     pub id: Uuid,
     pub reason: String,
+    #[field(max_size = "10 MiB", accept = ["image/*", "application/pdf"])]
+    pub scans: Vec<File>,
+}
+
+#[derive(Message, Clone, Debug, Default)]
+pub struct ExportOrdersRequest {
+    pub status: Option<OrderStatus>,
+}
+
+#[derive(Message, Clone, Debug, Default)]
+pub struct ExportOrdersReply {
+    pub file: File,
 }
 
 #[derive(Message, Clone, Debug, Default)]
@@ -190,6 +203,7 @@ pub struct Note {
     pub replies: Option<Replies>,
     pub job: Option<Job>,
     pub job_id: String,
+    pub files: Vec<File>,
 }
 
 #[derive(Message, Clone, Debug, Default)]
@@ -341,6 +355,9 @@ async fn get_order(_: Ctx, _: GetOrderRequest) -> Result<Order> {
 async fn cancel_order(_: Ctx, _: CancelOrderRequest) -> Result<Order> {
     Ok(Order::default())
 }
+async fn export_orders(_: Ctx, _: ExportOrdersRequest) -> Result<ExportOrdersReply> {
+    Ok(ExportOrdersReply::default())
+}
 async fn count_open(_: Ctx, _: CountOpenRequest) -> Result<CountResponse> {
     Ok(CountResponse::default())
 }
@@ -408,7 +425,15 @@ fn orders_screen() -> Screen {
             .with_button("Open", &open)
             .on_error(|e| e.toast_error())
         });
+        let export = s.action("export", |a| {
+            a.call(export_orders, |c| {
+                c.arg(ExportOrdersRequest::status, status)
+            })
+            .download(ExportOrdersReply::file)
+            .on_error(|e| e.toast_error())
+        });
         s.title(t("orders.title", "Orders"));
+        s.header([button("Export CSV", &export)]);
         stack([
             filter_bar([status.select("Status")]),
             table(&orders)
@@ -426,6 +451,7 @@ fn orders_screen() -> Screen {
                     ],
                 )
                 .relative(Order::placed_at, "Placed")
+                .file(Order::invoice, "Invoice")
                 .open(&open)
                 .count(orders.field(ListOrdersResponse::total))
                 .count_label(
@@ -617,6 +643,7 @@ fn cancel_dialog() -> Overlay {
             cancel_order,
             |f| {
                 f.textarea(CancelOrderRequest::reason, "Why").required();
+                f.upload(CancelOrderRequest::scans, "Scans");
                 f.cancel("Keep it");
                 f.note("The customer gets an email.");
                 f.alternate("Cancel quietly", |c| {
@@ -746,6 +773,7 @@ fn activity_screen() -> Screen {
             .tile(who.f(Person::icon), who.f(Person::engine))
             .badge("AGENT", row_at(who.f(Person::agent)).eq(true))
             .markdown(Note::text)
+            .files(Note::files)
             .edited(Note::edited)
             .pinned(Note::pinned, lit(true))
             .mine(Note::mine)
@@ -1022,6 +1050,12 @@ fn plugin() -> Plugin {
                 .idempotency(Idempotency::Optional)
                 .invalidates(ORDERS)
                 .invalidates(ORDER.by(OrderKey::id, Order::id)),
+        )
+        .endpoint(
+            Endpoint::new(export_orders)
+                .ui()
+                .roles([CLERK])
+                .idempotency(Idempotency::Optional),
         )
         .endpoint(Endpoint::new(count_open).ui().read_only())
         .endpoint(Endpoint::new(sales).ui().read_only())

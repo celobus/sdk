@@ -29,6 +29,14 @@ public sealed class CancelOrder : Endpoint<CancelOrderRequest, Order>
     public override Task<Order> Handle(Ctx ctx, CancelOrderRequest req) => throw PluginError.NotFound("no such order");
 }
 
+public sealed class ExportOrders : Endpoint<ExportOrdersRequest, ExportOrdersReply>
+{
+    public override void Configure(EndpointOptions e) => e.Ui().Roles(ShopPlugin.Clerk).Idempotency(IdempotencyMode.Optional);
+
+    public override Task<ExportOrdersReply> Handle(Ctx ctx, ExportOrdersRequest req) =>
+        throw PluginError.NotFound("no export");
+}
+
 public sealed class CountOpen : Endpoint<CountOpenRequest, CountResponse>
 {
     public override void Configure(EndpointOptions e) => e.Ui().ReadOnly();

@@ -10,6 +10,10 @@
 //!   index(a, b desc), unique_index(a, b), history(layer = AUDIT, all, unmasked))]`, `#[col(unique, index,
 //!   encrypted, searchable, searchable(lang = "english"), nav = name, inverse = name, on_delete = cascade,
 //!   history)]` on its fields).
+//! - `#[field(max_size = "1 GiB", accept = ["text/csv", "image/*"])]` on a `File`, `Option<File>` or `Vec<File>` field
+//!   of a message or an entity: the largest file it takes and the MIME types (or patterns) it accepts.
+//! - `#[field(label = "..", default = 2, min = 1, max = 48, section = "..", url, ..)]` on a field of a
+//!   `#[message(settings)]` struct: its form and validators (see `Message`).
 //!
 //! The generated code refers to `::celobus_sdk::__private`, so the plugin depends on `celobus-sdk`
 //! (which re-exports these macros) and never on this crate directly.
@@ -28,7 +32,18 @@ use syn::{
 /// typed by its response) and `#[message(omit_defaults)]` (fields at their protobuf default — `""`, `0`,
 /// `false`, an empty list, a message whose JSON is `{}` — are left out of the JSON; an `Option` that is `Some` and
 /// an enum are always written). The first paragraph of a doc comment is the description.
-#[proc_macro_derive(Message, attributes(message))]
+///
+/// Field options: `#[field(max_size = "1 GiB", accept = ["text/csv", "image/*"])]` on a `File` field (or
+/// `Option<File>`, `Vec<File>`): the largest file it takes, in bytes or with a unit (`KiB`, `MiB`, `GiB`, `TiB`
+/// binary; `KB`, `MB`, `GB`, `TB` decimal), and the MIME types or patterns it accepts.
+///
+/// On a field of a `#[message(settings)]` struct: `#[field(label = "Thread stays with its agent, hours", default = 2,
+/// min = 1, max = 48, section = "Agents")]` — the form's `label`, `section` and `placeholder`, `multiline` (a text
+/// area), a `default` (a number, a string — decimals, dates, an enum's value name —, `true`/`false`, or a list), and
+/// validators: `min`, `max` (numbers, decimals and dates as strings), `min_len`, `max_len` (characters), `pattern`
+/// (a regular expression), `url`, `email`, `min_items`, `max_items`, and `message` (its own text when one of them
+/// refuses a value). The doc comment is the field's help.
+#[proc_macro_derive(Message, attributes(message, field))]
 pub fn derive_message(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let out = match &input.data {
@@ -60,7 +75,7 @@ pub fn derive_message(input: TokenStream) -> TokenStream {
 /// onto the directory). `#[entity(history(layer = AUDIT))]` keeps the entity's history in the lake's layer `AUDIT` (a
 /// `Layer` constant): the changes of the columns marked `#[col(history)]`, or with `all` of every column but the
 /// encrypted ones and, unless `unmasked` is said too, the masked ones.
-#[proc_macro_derive(Entity, attributes(entity, col))]
+#[proc_macro_derive(Entity, attributes(entity, col, field))]
 pub fn derive_entity(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let out = match &input.data {
@@ -399,6 +414,205 @@ fn column_options(attrs: &[Attribute]) -> syn::Result<ColumnOptions> {
     Ok(o)
 }
 
+/// The options of a field: a file field's `#[field(max_size = "1 GiB", accept = ["text/csv"])]`, and a settings
+/// field's `label`, `default`, `section`, `placeholder`, `multiline` and validators (each kept as its descriptor key and
+/// its value as JSON text).
+#[derive(Default)]
+struct FileOptions {
+    max_size: Option<u64>,
+    accept: Vec<String>,
+    settings: Vec<(String, String)>,
+}
+
+/// The settings options of `#[field(..)]`: what each takes.
+const SETTINGS_OPTIONS: &str = "label = \"..\", default = <value>, section = \"..\", placeholder = \"..\", multiline, \
+     min = <number or \"..\">, max = .., min_len = n, max_len = n, pattern = \"..\", url, email, min_items = n, \
+     max_items = n, message = \"..\"";
+
+/// A JSON string literal.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A literal as JSON: a string, an integer or a float (optionally negative), `true`/`false`, or a list of them.
+fn json_literal(v: syn::parse::ParseStream) -> syn::Result<String> {
+    if v.peek(syn::token::Bracket) {
+        let content;
+        syn::bracketed!(content in v);
+        let mut items = vec![];
+        while !content.is_empty() {
+            items.push(json_literal(&content)?);
+            if content.is_empty() {
+                break;
+            }
+            content.parse::<syn::Token![,]>()?;
+        }
+        return Ok(format!("[{}]", items.join(",")));
+    }
+    let neg = if v.peek(syn::Token![-]) {
+        v.parse::<syn::Token![-]>()?;
+        "-"
+    } else {
+        ""
+    };
+    let lit: syn::Lit = v.parse()?;
+    let text = match &lit {
+        syn::Lit::Str(s) if neg.is_empty() => json_string(&s.value()),
+        syn::Lit::Int(i) => {
+            let digits = i.base10_digits();
+            digits
+                .parse::<i128>()
+                .map_err(|_| syn::Error::new(i.span(), "not an integer"))?;
+            format!("{neg}{digits}")
+        }
+        syn::Lit::Float(f) => {
+            let digits = f.base10_digits();
+            let digits = if digits.ends_with('.') {
+                format!("{digits}0")
+            } else {
+                digits.to_string()
+            };
+            format!("{neg}{digits}")
+        }
+        syn::Lit::Bool(b) if neg.is_empty() => b.value.to_string(),
+        _ => {
+            return Err(syn::Error::new(
+                lit.span(),
+                "a value is a string, a number, true or false, or a list of them",
+            ));
+        }
+    };
+    Ok(text)
+}
+
+fn count_value(meta: &syn::meta::ParseNestedMeta) -> syn::Result<String> {
+    let n: syn::LitInt = meta.value()?.parse()?;
+    n.base10_parse::<u32>()
+        .map(|n| n.to_string())
+        .map_err(|_| syn::Error::new(n.span(), "a count from 0 to 4294967295"))
+}
+
+fn file_options(attrs: &[Attribute]) -> syn::Result<FileOptions> {
+    let mut o = FileOptions::default();
+    for attr in attrs.iter().filter(|a| a.path().is_ident("field")) {
+        attr.parse_nested_meta(|meta| {
+            let key = meta
+                .path
+                .get_ident()
+                .map(|i| i.to_string())
+                .unwrap_or_default();
+            let text = |meta: &syn::meta::ParseNestedMeta| -> syn::Result<String> {
+                let s: LitStr = meta.value()?.parse()?;
+                Ok(json_string(&s.value()))
+            };
+            let setting = match key.as_str() {
+                "label" | "section" | "placeholder" | "pattern" | "message" => {
+                    Some((key.clone(), text(&meta)?))
+                }
+                "default" | "min" | "max" => Some((key.clone(), json_literal(meta.value()?)?)),
+                "min_len" | "max_len" | "min_items" | "max_items" => {
+                    Some((key.clone(), count_value(&meta)?))
+                }
+                "multiline" => Some((key.clone(), "true".to_string())),
+                "url" | "email" => Some(("format".to_string(), json_string(&key))),
+                _ => None,
+            };
+            if let Some((k, v)) = setting {
+                if o.settings.iter().any(|(x, _)| *x == k) {
+                    return Err(meta.error(format!("{k} is given twice (url and email are one format)")));
+                }
+                o.settings.push((k, v));
+                return Ok(());
+            }
+            if meta.path.is_ident("max_size") {
+                let v = meta.value()?;
+                let size = if v.peek(syn::LitInt) {
+                    let n: syn::LitInt = v.parse()?;
+                    n.base10_parse::<u64>().ok()
+                } else {
+                    let s: LitStr = v.parse()?;
+                    parse_size(&s.value())
+                };
+                match size {
+                    Some(n) if n > 0 => o.max_size = Some(n),
+                    _ => {
+                        return Err(meta.error(
+                            "max_size is a size: bytes (1048576) or a number and a unit (\"1 GiB\", \"500 MB\"; KiB, MiB, GiB, TiB, KB, MB, GB, TB)",
+                        ));
+                    }
+                }
+            } else if meta.path.is_ident("accept") {
+                let v = meta.value()?;
+                if v.peek(LitStr) {
+                    let s: LitStr = v.parse()?;
+                    o.accept.push(s.value());
+                } else {
+                    let content;
+                    syn::bracketed!(content in v);
+                    let items =
+                        syn::punctuated::Punctuated::<LitStr, syn::Token![,]>::parse_terminated(&content)?;
+                    o.accept.extend(items.iter().map(LitStr::value));
+                }
+            } else {
+                return Err(meta.error(format!(
+                    "unknown field option (a file: max_size = \"1 GiB\", accept = [\"text/csv\"]; a setting: {SETTINGS_OPTIONS})"
+                )));
+            }
+            Ok(())
+        })?;
+    }
+    Ok(o)
+}
+
+/// A size: bytes, or a number and a unit (binary `KiB`..`TiB`, decimal `B`, `KB`..`TB`, case ignored); the same
+/// grammar as `celobus_descriptor::parse_size`.
+fn parse_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let split = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
+    let (num, unit) = (&s[..split], s[split..].trim());
+    if num.is_empty() || num.starts_with('.') || num.ends_with('.') || num.matches('.').count() > 1
+    {
+        return None;
+    }
+    let mult: u64 = match unit.to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "kb" => 1_000,
+        "mb" => 1_000_000,
+        "gb" => 1_000_000_000,
+        "tb" => 1_000_000_000_000,
+        "kib" => 1 << 10,
+        "mib" => 1 << 20,
+        "gib" => 1 << 30,
+        "tib" => 1 << 40,
+        _ => return None,
+    };
+    let (whole, frac) = num.split_once('.').unwrap_or((num, ""));
+    let mut bytes = whole.parse::<u64>().ok()?.checked_mul(mult)?;
+    if !frac.is_empty() {
+        let digits = frac.len().min(18);
+        let f: u64 = frac[..digits].parse().ok()?;
+        let part = (u128::from(f) * u128::from(mult)) / 10u128.pow(digits as u32);
+        bytes = bytes.checked_add(u64::try_from(part).ok()?)?;
+    }
+    Some(bytes)
+}
+
 /// The entity a ref field names: `T` of `Id<T>` or `Option<Id<T>>`.
 fn ref_target(ty: &syn::Type) -> Option<syn::Type> {
     let syn::Type::Path(p) = ty else {
@@ -573,6 +787,7 @@ fn message_struct(input: &DeriveInput, entity: Option<EntityOptions>) -> syn::Re
     let mut json_names = Vec::new();
     let mut docs = Vec::new();
     let mut columns: Vec<ColumnOptions> = Vec::new();
+    let mut files: Vec<FileOptions> = Vec::new();
     for field in &named.named {
         let ident = field.ident.clone().expect("named field");
         let fname = unraw(&ident);
@@ -589,8 +804,24 @@ fn message_struct(input: &DeriveInput, entity: Option<EntityOptions>) -> syn::Re
             ));
         }
         columns.push(col);
+        files.push(file_options(&field.attrs)?);
     }
 
+    // the options of a setting belong to the fields of a settings message
+    let settings_kind = entity.is_none() && message_options(&input.attrs)?.kind == "settings";
+    if !settings_kind
+        && let Some((field, _)) = named
+            .named
+            .iter()
+            .zip(&files)
+            .find(|(_, f)| !f.settings.is_empty())
+    {
+        return Err(syn::Error::new(
+            field.span(),
+            "label, default, section, placeholder, multiline, validators and message are options of a setting: \
+             declare the struct with #[message(settings)]",
+        ));
+    }
     // `#[message(omit_defaults)]`: fields at their protobuf default are left out of the JSON
     let omit = entity.is_none() && message_options(&input.attrs)?.omit_defaults;
     let encode = if omit {
@@ -625,8 +856,20 @@ fn message_struct(input: &DeriveInput, entity: Option<EntityOptions>) -> syn::Re
         .map(|c| c.on_delete.as_ref().map(unraw).unwrap_or_default());
     let encrypted = columns.iter().map(|c| c.encrypted);
     let kept = columns.iter().map(|c| c.history);
+    let file_opts = files.iter().map(|f| {
+        let max = match f.max_size {
+            Some(n) => quote! { ::std::option::Option::Some(#n) },
+            None => quote! { ::std::option::Option::None },
+        };
+        let accept = &f.accept;
+        let (keys, values): (Vec<&String>, Vec<&String>) =
+            f.settings.iter().map(|(k, v)| (k, v)).unzip();
+        let settings =
+            (!keys.is_empty()).then(|| quote! { .settings(&[ #( (#keys, #values) ),* ]) });
+        quote! { .file(#max, &[ #( #accept ),* ]) #settings }
+    });
     let fields = quote! {
-        ::std::vec![ #( reg.field::<#types>(#names, #docs).column(#uniques, #indexed, #encrypted).searchable(#searchable).navigation(#navs, #inverses).on_delete(#on_deletes).history(#kept), )* ]
+        ::std::vec![ #( reg.field::<#types>(#names, #docs).column(#uniques, #indexed, #encrypted).searchable(#searchable).navigation(#navs, #inverses).on_delete(#on_deletes).history(#kept) #file_opts, )* ]
     };
     // navigation handles: a ref's forward nav (when its name is not the field's own) and its inverse nav, on the
     // target (an entity of the same crate)
@@ -1083,5 +1326,22 @@ mod tests {
         assert_eq!(snake_case("HTTPServer"), "http_server");
         assert_eq!(snake_case("CustomerDeleted"), "customer_deleted");
         assert_eq!(snake_case("V2Item"), "v2_item");
+    }
+
+    #[test]
+    fn settings_values_as_json() {
+        use syn::parse::Parser as _;
+        let lit = |s: &str| json_literal.parse_str(s).unwrap();
+        assert_eq!(lit("2"), "2");
+        assert_eq!(lit("-15"), "-15");
+        assert_eq!(lit("0.75"), "0.75");
+        assert_eq!(lit("1."), "1.0");
+        assert_eq!(lit("true"), "true");
+        assert_eq!(lit(r#""12.50""#), r#""12.50""#);
+        assert_eq!(lit(r#"["calm", "loud"]"#), r#"["calm","loud"]"#);
+        assert_eq!(lit("[]"), "[]");
+        assert!(json_literal.parse_str("-\"x\"").is_err());
+        assert!(json_literal.parse_str("'c'").is_err());
+        assert_eq!(json_string("a\"b\\c\nd\u{1}"), r#""a\"b\\c\nd\u0001""#);
     }
 }

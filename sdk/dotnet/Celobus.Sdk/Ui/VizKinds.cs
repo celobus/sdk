@@ -11,6 +11,7 @@ public static class Viz
     public static DistKinds Dist { get; } = new();
     public static FigureKinds Figure { get; } = new();
     public static FlowKinds Flow { get; } = new();
+    public static GeoKinds Geo { get; } = new();
     public static LineKinds Line { get; } = new();
     public static MeterKinds Meter { get; } = new();
     public static PartKinds Part { get; } = new();
@@ -24,6 +25,7 @@ public static class Viz
         ["dist"] = ["candles", "correlation", "cumulative", "density", "densitygrid", "histogram", "parallel", "scatter", "spread"],
         ["figure"] = ["chips", "hero", "metric", "metrics", "stats", "versus"],
         ["flow"] = ["funnel", "icicle", "layers", "matrix", "network", "outline", "paths", "polar", "quadrant", "radar", "route", "sankey", "steps", "tilemap", "tree", "words"],
+        ["geo"] = ["map"],
         ["line"] = ["bump", "line", "multiples", "slope"],
         ["meter"] = ["bullet", "checklist", "gauge", "level", "meter", "meterList", "range", "rating", "ring", "steps", "versus"],
         ["part"] = ["budget", "donut", "onein", "overlap", "pictogram", "rose", "share", "sharetile", "split", "squares", "treemap", "waffle"],
@@ -95,6 +97,14 @@ public sealed class FlowKinds
     public VizNode Tilemap() => new("flow", "tilemap");
     public VizNode Tree() => new("flow", "tree");
     public VizNode Words() => new("flow", "words");
+}
+
+/// <summary>The kinds of the <c>geo</c> family.</summary>
+public sealed class GeoKinds
+{
+    internal GeoKinds() { }
+
+    public VizNode Map() => new("geo", "map");
 }
 
 /// <summary>The kinds of the <c>line</c> family.</summary>

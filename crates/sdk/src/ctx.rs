@@ -107,6 +107,20 @@ pub(crate) const NOTIFY_REFUSALS: &[(&str, u16)] = &[("follow_limit", 409), ("ra
 /// What the platform refuses a job call with besides the db codes (`invalid`, `not_found`).
 pub(crate) const JOB_REFUSALS: &[(&str, u16)] = &[("queue_full", 429), ("payload_too_large", 413)];
 
+/// What the platform refuses a `files_*` call (and a `File` the plugin puts in a call, a job or a run) with besides
+/// `not_found` and `bad_request`.
+pub(crate) const FILE_REFUSALS: &[(&str, u16)] = &[
+    ("file_gone", 410),
+    ("file_too_large", 413),
+    ("quota_exceeded", 507),
+    ("too_much_unattached", 507),
+    ("too_many_unattached", 429),
+    ("file_size_mismatch", 409),
+    ("file_not_uploaded", 409),
+    ("file_unknown", 409),
+    ("read_only", 409),
+];
+
 fn denied(error: &str) -> Option<Error> {
     let (code, message) = error.split_once(": ")?;
     if let Some(code) = DENIALS.iter().find(|c| **c == code) {
@@ -116,6 +130,7 @@ fn denied(error: &str) -> Option<Error> {
         .iter()
         .chain(NOTIFY_REFUSALS)
         .chain(JOB_REFUSALS)
+        .chain(FILE_REFUSALS)
         .find(|(c, _)| *c == code)?;
     Some(Error::new(*status, *code, message))
 }
@@ -222,6 +237,8 @@ struct CtxInner {
     job: Option<crate::jobs::JobInfo>,
     /// the lake appends made so far (a run's default write key is its id and the append's number)
     appends: std::sync::atomic::AtomicU32,
+    /// where `ctx.files()` reads and writes bytes
+    files: crate::files::Store,
 }
 
 /// The plugin serving the request.
@@ -231,6 +248,8 @@ pub struct PluginInfo {
     version: String,
     /// its jobs' keys by payload message; `None` for a test context, which takes the payload's name in snake_case
     jobs: Option<HashMap<&'static str, String>>,
+    /// its settings as the platform last sent them (`ctx.settings()`)
+    settings: Arc<crate::settings::SettingsCache>,
 }
 
 impl PluginInfo {
@@ -239,7 +258,18 @@ impl PluginInfo {
             id: id.into(),
             version: version.into(),
             jobs: None,
+            settings: Default::default(),
         }
+    }
+
+    /// With the settings message the plugin declares (`Plugin::settings`), whose values the platform sends.
+    pub(crate) fn with_settings_message(mut self, message: Option<&'static str>) -> Self {
+        self.settings = Arc::new(crate::settings::SettingsCache::declared(message));
+        self
+    }
+
+    pub(crate) fn settings_cache(&self) -> &crate::settings::SettingsCache {
+        &self.settings
     }
 
     /// With the plugin's declared jobs: (payload message, job key).
@@ -324,6 +354,7 @@ pub struct Caller {
     groups: Vec<Id<Group>>,
     scopes: Vec<String>,
     plugin: String,
+    agent_run: Option<String>,
 }
 
 impl Caller {
@@ -348,6 +379,7 @@ impl Caller {
             groups: p.groups.into_iter().map(Id::new).collect(),
             scopes: p.scopes,
             plugin: plugin.into(),
+            agent_run: (!p.agent_run.is_empty()).then_some(p.agent_run),
         }
     }
 
@@ -390,6 +422,19 @@ impl Caller {
 
     pub fn display_name(&self) -> &str {
         &self.display_name
+    }
+
+    /// When the caller is an agent working on a run: that run's id. An agent calls the endpoints of the plugin
+    /// whose code started its run only from that run, so a handler may tie what the agent does to the record the
+    /// run was started for.
+    pub fn agent_run(&self) -> Option<&str> {
+        self.agent_run.as_deref()
+    }
+
+    /// The same caller as an agent working on this run; for tests.
+    pub fn with_agent_run(mut self, run: impl Into<String>) -> Self {
+        self.agent_run = Some(run.into());
+        self
     }
 
     /// Effective roles: `workspace.*` (expanded) and plugin roles `<plugin>.<role>`.
@@ -451,6 +496,7 @@ impl Ctx {
                 caller,
                 job: None,
                 appends: Default::default(),
+                files: Default::default(),
             }),
             tx: 0,
             system: None,
@@ -474,6 +520,7 @@ impl Ctx {
                 caller,
                 job: Some(job),
                 appends: Default::default(),
+                files: Default::default(),
             }),
             tx: 0,
             system: None,
@@ -532,7 +579,8 @@ impl Ctx {
     }
 
     /// A context without a session, for unit tests of handlers: the caller is the system (see
-    /// [`Ctx::with_caller`]) and every call to the platform answers `unavailable`.
+    /// [`Ctx::with_caller`]), every call to the platform answers `unavailable`, and `ctx.files()` keeps files in
+    /// memory (`create` a file, then `open` it; the contexts made from this one share them).
     pub fn test(plugin: &str, version: &str) -> Self {
         Self::new(
             Arc::new(Link::detached()),
@@ -540,6 +588,50 @@ impl Ctx {
             RequestInfo::new(0, Duration::from_secs(30), None),
             Caller::from_principal(None, plugin),
         )
+        .with_files(crate::files::Store::Memory(Default::default()))
+    }
+
+    /// The same context with its files elsewhere (a test context's memory, a fake store in the SDK's tests).
+    pub(crate) fn with_files(&self, files: crate::files::Store) -> Self {
+        Self {
+            inner: Arc::new(CtxInner {
+                link: self.inner.link.clone(),
+                plugin: self.inner.plugin.clone(),
+                request: self.inner.request.clone(),
+                caller: self.inner.caller.clone(),
+                job: self.inner.job.clone(),
+                appends: Default::default(),
+                files,
+            }),
+            tx: self.tx,
+            system: self.system.clone(),
+            analytic: self.analytic,
+        }
+    }
+
+    pub(crate) fn files_backend(&self) -> crate::files::Backend {
+        self.inner.files.backend()
+    }
+
+    /// The same context with these settings (unit tests of handlers that read `ctx.settings::<S>()`); the contexts made
+    /// from it share them.
+    pub fn with_settings<S: Message>(&self, settings: S) -> Self {
+        let mut plugin = (*self.inner.plugin).clone();
+        plugin.settings = Arc::new(crate::settings::SettingsCache::with(settings.to_json()));
+        Self {
+            inner: Arc::new(CtxInner {
+                link: self.inner.link.clone(),
+                plugin: Arc::new(plugin),
+                request: self.inner.request.clone(),
+                caller: self.inner.caller.clone(),
+                job: self.inner.job.clone(),
+                appends: Default::default(),
+                files: self.inner.files.clone(),
+            }),
+            tx: self.tx,
+            system: self.system.clone(),
+            analytic: self.analytic,
+        }
     }
 
     /// The same context with another caller (unit tests).
@@ -553,6 +645,7 @@ impl Ctx {
                 caller,
                 job: self.inner.job.clone(),
                 appends: Default::default(),
+                files: self.inner.files.clone(),
             }),
             tx: self.tx,
             system: self.system.clone(),
@@ -577,6 +670,7 @@ impl Ctx {
                     scheduled_at: chrono::Utc::now(),
                 }),
                 appends: Default::default(),
+                files: self.inner.files.clone(),
             }),
             tx: self.tx,
             system: self.system.clone(),
@@ -686,6 +780,12 @@ impl Ctx {
     /// The workspace's groups.
     pub fn groups(&self) -> Groups<'_> {
         Groups { ctx: self }
+    }
+
+    /// The bytes of the plugin's files: `open` one to read it as a stream, `create` a new one, `head` what is known
+    /// of one (`crate::files`).
+    pub fn files(&self) -> crate::files::Files {
+        crate::files::Files::new(self.clone())
     }
 
     /// The runs of this plugin's agents: start one, read it and its events, write to it, stop it.

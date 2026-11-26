@@ -73,7 +73,7 @@ public class QueryLinqTests
     public void TheConformanceQueryIsTheSharedTree()
     {
         var tree = JsonNode.Parse(Revenue.Build(Context(Nothing)).TreeJson());
-        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/revenue.json")));
+        var expected = JsonNode.Parse(System.IO.File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/revenue.json")));
         Assert.True(JsonNode.DeepEquals(expected, tree), tree!.ToJsonString());
     }
 
@@ -82,7 +82,7 @@ public class QueryLinqTests
     {
         var platform = new FakeSyscalls(_ => new SyscallResult { DbRows = new DbRows() });
         var q = Revenue.BuildAnalytic(Context(platform));
-        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/revenue.json")));
+        var expected = JsonNode.Parse(System.IO.File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/revenue.json")));
         var tree = JsonNode.Parse(q.TreeJson());
         Assert.True(JsonNode.DeepEquals(expected, tree), tree!.ToJsonString());
         await q.ToListAsync();

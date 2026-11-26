@@ -102,6 +102,11 @@ message Syscall {
     LakeRefresh lake_refresh = 43;
     AnalyticsLoad analytics_load = 47;
     AnalyticsLoadStatus analytics_load_status = 48;
+    FilesCreate files_create = 49;
+    FilesParts files_parts = 50;
+    FilesFinish files_finish = 51;
+    FilesOpen files_open = 52;
+    FilesHead files_head = 53;
   }
 }
 
@@ -907,6 +912,9 @@ message AgentRunStart {
   // The key of `topic` to invalidate: the canonical key, as Invalidate.key (the key message's fields, sorted, values
   // as strings). Empty: every key. A key without a topic is `bad_request`.
   string topic_key = 12;
+  // Files the run is given (the plugin's own files: `file_unknown` otherwise). They are kept while the run lives, the
+  // agent may read them, and its input lists each one; it downloads those it needs.
+  repeated File files = 13;
 }
 message AgentRunGet { string run_id = 1; }
 // The events after `after` (a sequence number; 0 = from the first), oldest first, at most `limit` (0 = all the run
@@ -918,8 +926,8 @@ message AgentRunEvents { string run_id = 1; uint64 after = 2; uint32 limit = 3; 
 // them to the runs of one group (AgentRun.group).
 message AgentRunList { string agent = 1; uint32 limit = 2; string group = 3; }
 // A follow-up input of a run that has not ended, recorded as sent by the caller of the request in progress
-// (`request_id`, as in AgentRunStart).
-message AgentRunSend { string run_id = 1; string text = 2; uint64 request_id = 3; }
+// (`request_id`, as in AgentRunStart), with files given to the run as AgentRunStart.files are.
+message AgentRunSend { string run_id = 1; string text = 2; uint64 request_id = 3; repeated File files = 4; }
 message AgentRunCancel { string run_id = 1; }   // stop now
 message AgentRunClose { string run_id = 1; }    // end a session after its turn
 
@@ -989,6 +997,98 @@ message AvailableAgent {
 }
 // Sorted by plugin, then name.
 message AvailableAgents { repeated AvailableAgent agents = 1; }
+
+// Files. A file is a typed value a plugin keeps in its messages, entity columns and job payloads:
+// File, never its bytes. The bytes live in the workspace's object store and move directly between it and whoever
+// reads or writes them, over signed URLs the platform hands out; a plugin reaches only its own files (a file it was
+// given in a request, a call's answer, a job payload or a row, or one it made). A file lives while a row of the
+// plugin's entities, a pending job, a schedule or a live agent run of the plugin holds it, and for a grace period
+// after it was made or handed over; then it is collected. There is no delete: remove it from the record.
+//
+// Every call carries `request_id` (0 outside a request). Errors are `<code>: <message>` in SyscallResult.error:
+// `not_found` (404: not a file of this plugin), `file_gone` (410: the file was collected), `file_too_large` (413),
+// `quota_exceeded` (507: the workspace's storage is full), `file_size_mismatch` (409: the bytes written are not the
+// size declared), `file_not_uploaded` (409: nothing was written), `read_only` (409: FilesCreate in a read-only
+// endpoint), `bad_request` (400: an empty or invalid name), `unavailable` (503: the object store cannot be reached).
+
+// A file as plugins see it: in JSON `{"id", "name", "type", "size"}`. `name` and `type` are what the uploader
+// declared (the type is `application/octet-stream` when the bytes do not match a declared image, audio, video or PDF
+// type); `size` is in bytes, in JSON a string as every 64-bit integer (`"2100000"`; a number is read too).
+message File {
+  string id = 1;
+  string name = 2;
+  string content_type = 3 [json_name = "type"];
+  uint64 size = 4;
+}
+
+// A File as a client of the plugin sees it, in an answer, a screen's query or a live update: the same fields and a
+// short-lived URL to read the bytes, valid until `url_expires_at_ms` (unix milliseconds, at most 30 minutes ahead;
+// a string in JSON, as `size`). A plugin never gets one: the platform turns the plugin's File values into FileView
+// on the way to the client.
+message FileView {
+  string id = 1;
+  string name = 2;
+  string content_type = 3 [json_name = "type"];
+  uint64 size = 4;
+  string url = 5;
+  int64 url_expires_at_ms = 6;
+}
+
+// Starts writing a new file of the plugin (`ctx.files().create(name, type)`): its first page of part URLs. Inside a
+// request, the file is made for its caller, who may download it while no record holds it (an export).
+message FilesCreate {
+  string name = 1;               // <= 255 bytes; `/`, `\`, control characters and leading dots are removed
+  string content_type = 2;       // empty: application/octet-stream
+  optional uint64 size = 3;      // the size when known: reserved at once (else part by part)
+  uint64 request_id = 4;
+}
+// Where to write the parts of a file being written: `parts` parts of `part_size` bytes (the last one the remainder),
+// numbered from 1. `urls` are the signed PUT URLs of the parts `first`, `first + 1`, …; each takes exactly its part's
+// length. `done` lists the parts already stored. The URLs are valid until `expires_at_ms` (unix milliseconds).
+message FilesUpload {
+  string id = 1;
+  uint64 part_size = 2;
+  uint32 parts = 3;              // 0 while the size is not known: ask for parts as they are written
+  uint32 first = 4;
+  repeated string urls = 5;
+  repeated uint32 done = 6;
+  int64 expires_at_ms = 7;
+}
+// The next page of part URLs of a file being written, from part `from`; answered with FilesUpload.
+message FilesParts {
+  string id = 1;
+  uint32 from = 2;
+  uint64 request_id = 3;
+}
+// Ends writing: the parts' ETags in part order (empty: the platform lists them itself). Answered with the File.
+message FilesFinish {
+  string id = 1;
+  repeated string etags = 2;
+  uint64 request_id = 3;
+}
+// Opens one of the plugin's files for reading: a signed GET URL (ranged reads allowed), answered with FilesRead.
+// `offset` is where the caller means to start reading; ask again when the URL has expired.
+message FilesOpen {
+  string id = 1;
+  optional uint64 offset = 2;
+  uint64 request_id = 3;
+}
+message FilesRead {
+  File file = 1;
+  string url = 2;
+  int64 expires_at_ms = 3;       // unix milliseconds
+}
+// What is known of one of the plugin's files, answered with FileInfo.
+message FilesHead {
+  string id = 1;
+  uint64 request_id = 2;
+}
+message FileInfo {
+  File file = 1;
+  string etag = 2;
+  int64 created_at_ms = 3;       // unix milliseconds
+  string created_by = 4;         // the user id of who uploaded or made it; empty: the plugin itself
+}
 
 // Call another plugin of the workspace (through the platform).
 message Invoke {
@@ -1124,11 +1224,35 @@ message CelldMessage {
     SyscallResult syscall_result = 3;
     JobRun job_run = 4;
     JobAbort job_abort = 5;
+    SettingsChanged settings_changed = 6;
   }
 }
 
 message Registered {
   string instance_id = 1;
+  // The plugin's settings, when its descriptor declares them: a JSON object of the effective
+  // values in the plugin's JSON mapping (lowerCamelCase names, int64 and decimal as strings), the declared defaults
+  // filled in and secrets in clear; a required setting no one has set yet is absent. Empty when the plugin declares
+  // no settings.
+  bytes settings = 2;
+  // The revision of `settings`: 0 when no one has saved them yet. A later SettingsChanged with a lower revision is
+  // stale.
+  uint64 settings_rev = 3;
+}
+
+// The plugin's settings changed (an owner or an admin saved or reset them): the new effective values, as
+// `Registered.settings` has them. Sent to every live process of the plugin; a process keeps the one with the highest
+// `rev` it has seen.
+//
+// The settings check hook travels as a request: when the descriptor says `settings.on_change`, before new values are
+// saved the platform sends the plugin a request with no caller (`Principal` absent) to the reserved method
+// `/<id>.v1.<Service>/_SettingsCheck`, with the JSON body `{"previous": <settings>, "current": <settings>}` (both as
+// `Registered.settings` has them: the effective values before the change and the ones to be saved). A 2xx answer lets the values be saved; an error answer (`{"code", "message", "details"}`) refuses
+// them: `details.fields` (field name -> message) puts its messages under those fields, otherwise `message` is shown.
+// No answer within 10 seconds refuses them too.
+message SettingsChanged {
+  uint64 rev = 1;
+  bytes json = 2;
 }
 
 message Request {
@@ -1154,6 +1278,10 @@ message Principal {
   // the token's scopes for the target plugin, expanded: plugin:* / plugin:<name> -> every scope the
   // plugin declares, as <plugin>:<scope>
   repeated string scopes = 6;
+  // When the caller is an agent working on a run: that run's id (empty otherwise). An agent calls the endpoints of
+  // the plugin whose code started its run only from that run, so a plugin may tie what the agent does to the record
+  // the run was started for (the conversation it answers in, the import it was asked for).
+  string agent_run = 7;
 }
 
 // A workspace member as plugins see it (directory).
@@ -1201,6 +1329,10 @@ message SyscallResult {
     LakeWritten lake_written = 24;          // LakeWrite
     LakeRefreshed lake_refreshed = 25;      // LakeRefresh
     AnalyticsTicket analytics_ticket = 29;  // AnalyticsLoad, AnalyticsLoadStatus
+    FilesUpload files_upload = 30;          // FilesCreate, FilesParts
+    File file = 31;                         // FilesFinish
+    FilesRead files_read = 32;              // FilesOpen
+    FileInfo file_info = 33;                // FilesHead
   }
   DbErrorDetails error_details = 17;        // with some `error` codes of the Db* calls
 }
@@ -1230,7 +1362,7 @@ message PluginManifest {
 }
 message ConnectionDecl {
   string name = 1;           // snake_case, unique in the plugin
-  string kind = 2;           // llm | stt
+  string kind = 2;           // llm | stt | maps
   string title = 3;
   string description = 4;
 }

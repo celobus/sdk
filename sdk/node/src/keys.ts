@@ -8,9 +8,11 @@
 import type { AgentOptions, BypassScope, ConnectionOptions, Dependency, DependencyRead, EndpointOptions, JobOptions, JobRetry, PluginOptions, RoleOptions, ScopeOptions } from "./declare.js";
 import type { LakeTableOptions, LayerOptions } from "./lake.js";
 import type { NotificationOptions } from "./notify.js";
-import type { EntityOptions, ForeignEntityOptions, HistoryOptions, RefOptions, Shape, ViewOptions } from "./schema.js";
+import type { EntityOptions, FileOptions, ForeignEntityOptions, HistoryOptions, MessageOptions, RefOptions, Shape, ViewOptions } from "./schema.js";
+import type { SettingsOptions } from "./settings.js";
 import type { UiOptions } from "./ui.js";
-import type { AgentRunOptions, EnqueueOptions, TransactionOptions } from "./ctx.js";
+import type { AgentRunOptions, AgentSendOptions, EnqueueOptions, TransactionOptions } from "./ctx.js";
+import type { CreateOptions, OpenOptions } from "./files.js";
 import type { TxGetOptions } from "./db.js";
 import type { AppendOptions, RefreshOptions } from "./lake.js";
 import type { Ask, Follow, Notice } from "./notify.js";
@@ -24,7 +26,7 @@ export const KEYS = {
     id: true, version: true, title: true, description: true, roles: true, scopes: true, capabilities: true,
     permissions: true, agents: true, connections: true, dependencies: true, entities: true, views: true, layers: true,
     lakeTables: true, lakeDependencies: true, historyDependencies: true, endpoints: true, notifications: true, jobs: true,
-    jobSlots: true, messages: true, enums: true, topics: true, ui: true, onRunChange: true,
+    jobSlots: true, messages: true, enums: true, topics: true, ui: true, onRunChange: true, settings: true,
   }),
   role: all<RoleOptions>({ title: true, description: true, strict: true, defaultFor: true }),
   scope: all<ScopeOptions>({ title: true, description: true, sensitive: true }),
@@ -63,7 +65,9 @@ export const KEYS = {
   retry: all<JobRetry>({ retries: true, delay: true, backoff: true }),
   notification: all<NotificationOptions>({ title: true, description: true, tab: true, digest: true }),
   ref: all<RefOptions>({ nav: true, inverse: true, onDelete: true }),
-  message: all<{ description?: string; omitDefaults?: boolean }>({ description: true, omitDefaults: true }),
+  file: all<FileOptions>({ maxSize: true, accept: true }),
+  message: all<MessageOptions>({ description: true, omitDefaults: true, kind: true }),
+  settings: all<SettingsOptions<Shape>>({ onChange: true, form: true }),
   ui: all<UiOptions>({ nav: true, landing: true, home: true, commands: true, screens: true, overlays: true, search: true, texts: true }),
 } as const;
 
@@ -77,7 +81,7 @@ const CALLS: Record<Helper, string> = {
   dependencyRead: "a dependency's reads", entity: "entity()", foreignEntity: "entity() of another plugin",
   index: "an index of entity({ indexes })", history: "entity({ history })", view: "view()", layer: "layer()",
   lakeTable: "lakeTable()", endpoint: "endpoint()", job: "job()", retry: "job({ retry })", notification: "notification()",
-  ref: "t.ref()", message: "t.message()", ui: "ui.define()",
+  ref: "t.ref()", file: "t.file()", message: "t.message()", settings: "settingsDef()", ui: "ui.define()",
 };
 
 /** The keys of `value` that `helper` does not know (none when it is not an object). */
@@ -116,7 +120,11 @@ export const CALL_KEYS = {
   "ctx.jobs.enqueue()": all<EnqueueOptions>({ delay: true, at: true, singleton: true }),
   "ctx.agents.run()": all<AgentRunOptions>({
     engine: true, model: true, session: true, timeout: true, group: true, notify: true, notifyLink: true, topic: true, topicKey: true,
+    files: true,
   }),
+  "ctx.agents.send()": all<AgentSendOptions>({ files: true }),
+  "ctx.files.open()": all<OpenOptions>({ offset: true }),
+  "ctx.files.create()": all<CreateOptions>({ size: true }),
   "ctx.agents.events()": all<{ after?: number; limit?: number }>({ after: true, limit: true }),
   "ctx.agents.list()": all<{ agent?: string; limit?: number; group?: string }>({ agent: true, limit: true, group: true }),
   "ctx.notifications.send()": all<Notice>({

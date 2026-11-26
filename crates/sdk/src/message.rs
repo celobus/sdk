@@ -128,7 +128,7 @@ impl FieldType {
         }
     }
 
-    /// `string`, `bool`, `int32`, `int64`, `double`, `decimal`, `uuid`, `timestamp`, `date`, `bytes`, `json`.
+    /// `string`, `bool`, `int32`, `int64`, `double`, `decimal`, `uuid`, `timestamp`, `date`, `bytes`, `json`, `file`.
     pub fn scalar(name: &'static str) -> Self {
         Self::of(TypeName::Scalar(name))
     }
@@ -177,6 +177,12 @@ pub struct FieldInfo {
     pub(crate) on_delete: &'static str,
     /// `#[col(history)]`: the entity's history keeps its changes
     pub(crate) history: bool,
+    /// `#[field(max_size = .., accept = [..])]` of a file field: its largest file in bytes, its accepted types
+    pub(crate) max_size: Option<u64>,
+    pub(crate) accept: &'static [&'static str],
+    /// The options of a settings field (`#[field(label = .., default = .., min = ..)]`): each descriptor key with its
+    /// value as JSON text.
+    pub(crate) settings: &'static [(&'static str, &'static str)],
 }
 
 impl FieldInfo {
@@ -210,6 +216,21 @@ impl FieldInfo {
     /// `#[col(history)]`: the entity's history keeps the column's changes.
     pub fn history(mut self, history: bool) -> Self {
         self.history = history;
+        self
+    }
+
+    /// `#[field(max_size = "1 GiB", accept = ["text/csv"])]` of a file field: the largest file in bytes (`None`: the
+    /// workspace's limit) and the accepted MIME types or patterns (none: any).
+    pub fn file(mut self, max_size: Option<u64>, accept: &'static [&'static str]) -> Self {
+        self.max_size = max_size;
+        self.accept = accept;
+        self
+    }
+
+    /// The options of a settings field: `(key, JSON)` pairs (`("label", "\"Hours\""), ("default", "2")`).
+    #[doc(hidden)]
+    pub fn settings(mut self, options: &'static [(&'static str, &'static str)]) -> Self {
+        self.settings = options;
         self
     }
 }
@@ -317,6 +338,9 @@ impl Registry {
             inverse: "",
             on_delete: "",
             history: false,
+            max_size: None,
+            accept: &[],
+            settings: &[],
         }
     }
 

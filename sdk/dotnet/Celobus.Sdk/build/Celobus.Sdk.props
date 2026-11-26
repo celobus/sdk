@@ -1,0 +1,8 @@
+<Project>
+  <!-- `File` in a plugin is Celobus.Sdk.File, not System.IO.File (which implicit usings import): an alias wins over
+       the namespaces a file imports. The file system's is written System.IO.File. Leave it out with
+       <CelobusFileAlias>false</CelobusFileAlias>. A project that references the SDK's sources imports this file. -->
+  <ItemGroup Condition="'$(CelobusFileAlias)' != 'false'">
+    <Using Include="Celobus.Sdk.File" Alias="File" />
+  </ItemGroup>
+</Project>

@@ -51,6 +51,7 @@ fn member() -> pb::Principal {
         roles: vec!["workspace.member".into(), "jobsdemo.member".into()],
         groups: vec![],
         scopes: vec!["jobsdemo:read".into(), "jobsdemo:write".into()],
+        agent_run: String::new(),
     }
 }
 
@@ -518,6 +519,7 @@ async fn the_plugin_sends_the_conformance_lake_calls() {
     outbound
         .send(to_plugin(celld_message::Kind::Registered(pb::Registered {
             instance_id: "i-1".into(),
+            ..Default::default()
         })))
         .await
         .unwrap();

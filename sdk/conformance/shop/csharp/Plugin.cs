@@ -43,6 +43,7 @@ public static class ShopPlugin
         .Endpoint<ListOrders>()
         .Endpoint<GetOrder>()
         .Endpoint<CancelOrder>()
+        .Endpoint<ExportOrders>()
         .Endpoint<CountOpen>()
         .Endpoint<Sales>()
         .Endpoint<TopProducts>()
@@ -106,7 +107,12 @@ public static class ShopPlugin
             .Described(r.Get(o => o.Customer))
             .WithButton("Open", open)
             .OnError(e => e.ToastError()));
+        var export = s.Action("export", a => a
+            .Call(ExportOrders.Ref, c => c.Arg(x => x.Status, status))
+            .Download((ExportOrdersReply r) => r.File)
+            .OnError(e => e.ToastError()));
         s.Title(Ui.Text("orders.title", "Orders"));
+        s.Header(Ui.Button("Export CSV", export));
         return Ui.Stack(
             Ui.FilterBar(status.Select("Status")),
             Ui.Table(orders)
@@ -117,6 +123,7 @@ public static class ShopPlugin
                 .Money(o => o.Total, "Total", o => o.Currency)
                 .Status(o => o.Status, "Status", (OrderStatus.Placed, Tone.Attention), (OrderStatus.Paid, Tone.Ok))
                 .Relative(o => o.PlacedAt, "Placed")
+                .File(o => o.Invoice, "Invoice")
                 .Open(open)
                 .Count(orders.Field(r => r.Total))
                 .CountLabel(Ui.Text("orders.count", "{total} orders · newest first").Arg("total", orders.Field(r => r.Total)))
@@ -200,6 +207,7 @@ public static class ShopPlugin
             f =>
             {
                 f.Textarea(r => r.Reason, "Why").Required();
+                f.Upload(r => r.Scans, "Scans");
                 f.Cancel("Keep it");
                 f.Note("The customer gets an email.");
                 f.Alternate("Cancel quietly", c => c.CallForm(CancelOrder.Ref, x => x.Arg(r => r.Id, oid)).Close());
@@ -316,6 +324,7 @@ public static class ShopPlugin
             .Tile(who.F(p => p.Icon), who.F(p => p.Engine))
             .Badge("AGENT", Ui.RowValue(who.F(p => p.Agent)).Eq(true))
             .Markdown(n => n.Text)
+            .Files(n => n.Files)
             .Edited(n => n.Edited)
             .Pinned(n => n.Pinned, true)
             .Mine(n => n.Mine)

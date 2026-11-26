@@ -79,6 +79,36 @@
     },
     {
       "auth": "user",
+      "description": "Keeps a document with its files.",
+      "idempotency": "off",
+      "input": "AddDocumentRequest",
+      "name": "AddDocument",
+      "output": "AddDocumentReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
+      "description": "Exports the day's tasks as a file.",
+      "idempotency": "off",
+      "input": "ExportTasksRequest",
+      "name": "ExportTasks",
+      "output": "ExportTasksReply",
+      "roles": [
+        "member"
+      ],
+      "scopes": [
+        "write"
+      ],
+      "timeout_ms": 30000
+    },
+    {
+      "auth": "user",
       "description": "Writes generated rows to the lake.",
       "idempotency": "off",
       "input": "LoadTasksRequest",
@@ -422,6 +452,57 @@
     {
       "access": {
         "admin": true,
+        "create": {
+          "role": "member"
+        },
+        "delete": null,
+        "export": [],
+        "guards": [],
+        "masks": [],
+        "permits": [],
+        "read": {
+          "role": "member"
+        },
+        "relations": [],
+        "update": null
+      },
+      "append_only": false,
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.document"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "files",
+          "number": 3,
+          "optional": false,
+          "repeated": true,
+          "type": "file"
+        }
+      ],
+      "key": "uuid",
+      "label": "title",
+      "message": "Document",
+      "name": "document",
+      "soft_delete": false,
+      "version": false
+    },
+    {
+      "access": {
+        "admin": true,
         "create": null,
         "delete": null,
         "export": [],
@@ -497,6 +578,11 @@
       "description": "Marks a task processed",
       "name": "process_task",
       "payload": "ProcessTask"
+    },
+    {
+      "description": "Imports a file line by line",
+      "name": "import_file",
+      "payload": "ImportFile"
     },
     {
       "description": "Writes the day's report",
@@ -1047,6 +1133,87 @@
       "fields": [
         {
           "description": "",
+          "name": "title",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "accept": [
+            "text/csv",
+            "image/*"
+          ],
+          "description": "",
+          "max_size": 1073741824,
+          "name": "files",
+          "number": 2,
+          "optional": false,
+          "repeated": true,
+          "type": "file"
+        }
+      ],
+      "kind": "message",
+      "name": "AddDocumentRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "document",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.document"
+        },
+        {
+          "description": "",
+          "name": "run_id",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "AddDocumentReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "day",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        }
+      ],
+      "kind": "message",
+      "name": "ExportTasksRequest"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "file",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "file"
+        }
+      ],
+      "kind": "message",
+      "name": "ExportTasksReply"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
           "name": "mode",
           "number": 1,
           "optional": false,
@@ -1521,6 +1688,37 @@
       "name": "Budget"
     },
     {
+      "description": "",
+      "fields": [
+        {
+          "description": "",
+          "name": "id",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "ref:jobsdemo.document"
+        },
+        {
+          "description": "",
+          "name": "title",
+          "number": 2,
+          "optional": false,
+          "repeated": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "files",
+          "number": 3,
+          "optional": false,
+          "repeated": true,
+          "type": "file"
+        }
+      ],
+      "kind": "message",
+      "name": "Document"
+    },
+    {
       "description": "The tasks of a day by stage with tasks, kept in the analytic copy only: loaded from `task_day`.",
       "fields": [
         {
@@ -1581,6 +1779,24 @@
       ],
       "kind": "job",
       "name": "ProcessTask"
+    },
+    {
+      "description": "",
+      "fields": [
+        {
+          "accept": [
+            "text/csv"
+          ],
+          "description": "",
+          "name": "file",
+          "number": 1,
+          "optional": false,
+          "repeated": false,
+          "type": "file"
+        }
+      ],
+      "kind": "job",
+      "name": "ImportFile"
     },
     {
       "description": "",

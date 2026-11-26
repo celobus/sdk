@@ -18,6 +18,21 @@ public sealed class ProcessTaskJob : Job<ProcessTask>
     }
 }
 
+/// <summary>Reads the file line by line, never whole.</summary>
+public sealed class ImportFileJob : Job<ImportFile>
+{
+    public override void Configure(JobOptions j) => j.Describe("Imports a file line by line");
+
+    public override async Done Run(Ctx ctx, ImportFile p)
+    {
+        using var reader = new StreamReader(await ctx.Files.Open(p.File));
+        var n = 0;
+        while (await reader.ReadLineAsync(ctx.Cancelled) is { } line)
+            if (line.Length > 0) n++;
+        ctx.Log.LogInformation("imported {Lines} lines of {Name}", n, p.File.Name);
+    }
+}
+
 public sealed class DailyReportJob : Job<DailyReport>
 {
     public override void Configure(JobOptions j) => j.Describe("Writes the day's report");

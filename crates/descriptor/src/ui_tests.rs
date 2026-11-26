@@ -1760,3 +1760,818 @@ fn an_absent_value_equals_the_default() {
     ));
     assert!(holds(&Cond::Empty(V::Row("missing".into())), &get));
 }
+
+/// `talk` with files: `Msg.files` and `PostRequest.files` (lists of files), the composer's attach tool and the
+/// post's files bound to them, then changed by `f`.
+fn talk_files(f: &dyn Fn(&mut Value, &mut Value)) -> Vec<String> {
+    let mut ui = talk_ui();
+    let mut d = talk(Value::Null);
+    for (m, n) in [("Msg", 21), ("PostRequest", 6)] {
+        let msgs = d["messages"].as_array_mut().unwrap();
+        let msg = msgs.iter_mut().find(|x| x["name"] == m).unwrap();
+        msg["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(rep("files", n, "file"));
+    }
+    let list = &mut ui["screens"][0]["layout"]["split"]["list"]["stack"]["children"];
+    list[3]["composer"]["tools"] = json!(["attach"]);
+    list[3]["composer"]["files"] = json!("files");
+    list[1]["stream"]["item"]["post"]["files"] = json!("files");
+    f(&mut d, &mut ui);
+    d["ui"] = ui;
+    let d: Descriptor = serde_json::from_value(d).expect("parses");
+    validate(&d)
+        .into_iter()
+        .map(|e| e.code.to_string())
+        .collect()
+}
+
+#[test]
+fn files_in_a_composer_and_a_post() {
+    assert_eq!(talk_files(&|_, _| {}), Vec::<String>::new());
+    fn composer(ui: &mut Value) -> &mut Value {
+        &mut ui["screens"][0]["layout"]["split"]["list"]["stack"]["children"][3]["composer"]
+    }
+    let at = |f: &dyn Fn(&mut Value, &mut Value), code: &str| {
+        let c = talk_files(f);
+        assert!(c.contains(&code.to_string()), "{code} not in {c:?}");
+    };
+    // the attach tool names its field; the field belongs to the attach tool
+    at(&|_, ui| composer(ui)["files"] = Value::Null, "E_UI_SHAPE");
+    at(
+        &|_, ui| composer(ui)["tools"] = json!(["emoji"]),
+        "E_UI_SHAPE",
+    );
+    // a field the send action's request does not have, or one that holds no files
+    at(
+        &|_, ui| composer(ui)["files"] = json!("attachments"),
+        "E_UI_FIELD_UNKNOWN",
+    );
+    at(
+        &|_, ui| composer(ui)["files"] = json!("text"),
+        "E_UI_ARG_TYPE",
+    );
+    // a post's files are a file field of the row
+    at(
+        &|_, ui| {
+            ui["screens"][0]["layout"]["split"]["list"]["stack"]["children"][1]["stream"]["item"]
+                ["post"]["files"] = json!("text")
+        },
+        "E_UI_ARG_TYPE",
+    );
+    at(
+        &|_, ui| {
+            ui["screens"][0]["layout"]["split"]["list"]["stack"]["children"][1]["stream"]["item"]
+                ["post"]["files"] = json!("scans")
+        },
+        "E_UI_FIELD_UNKNOWN",
+    );
+    // a file field takes files, never text, and text takes no files
+    let push_arg = |ui: &mut Value, action: usize, arg: Value| {
+        ui["screens"][0]["actions"][action]["steps"][0]["call"]["args"]
+            .as_array_mut()
+            .unwrap()
+            .push(arg)
+    };
+    at(
+        &|_, ui| {
+            push_arg(
+                ui,
+                0,
+                json!({ "field": "files", "value": { "form": "text" } }),
+            )
+        },
+        "E_UI_ARG_TYPE",
+    );
+    at(
+        &|_, ui| {
+            push_arg(
+                ui,
+                0,
+                json!({ "field": "files", "value": { "lit": "0193" } }),
+            )
+        },
+        "E_UI_ARG_TYPE",
+    );
+    at(
+        &|_, ui| {
+            push_arg(
+                ui,
+                3,
+                json!({ "field": "text", "value": { "row": "files" } }),
+            )
+        },
+        "E_UI_ARG_TYPE",
+    );
+    // the JSON keeps its spelling
+    let d: Descriptor = {
+        let mut d = talk(Value::Null);
+        let mut ui = talk_ui();
+        ui["screens"][0]["layout"]["split"]["list"]["stack"]["children"][3]["composer"]["tools"] =
+            json!(["attach"]);
+        ui["screens"][0]["layout"]["split"]["list"]["stack"]["children"][3]["composer"]["files"] =
+            json!("files");
+        d["ui"] = ui;
+        serde_json::from_value(d).unwrap()
+    };
+    let v = serde_json::to_value(d.ui.as_ref().unwrap()).unwrap();
+    let c = &v["screens"][0]["layout"]["split"]["list"]["stack"]["children"][3]["composer"];
+    assert_eq!(
+        (&c["tools"], &c["files"]),
+        (&json!(["attach"]), &json!("files"))
+    );
+}
+
+/// `shop` with files: `CancelOrderRequest.scans` (a list) and `Order.receipt`, then changed by `f`.
+fn shop_files(f: &dyn Fn(&mut Value)) -> Vec<(String, String)> {
+    let mut ui = good_ui();
+    ui["screens"][1]["overlays"][0]["layout"]["form"]["sections"][0]["inputs"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "name": "scans", "control": "upload", "label": "Scans", "multiple": true }));
+    ui["screens"][0]["layout"]["stack"]["children"][1]["table"]["columns"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "field": "receipt", "title": "Receipt", "format": { "file": {} } }));
+    let mut d = shop(ui);
+    for (m, field) in [
+        ("CancelOrderRequest", rep("scans", 3, "file")),
+        (
+            "Order",
+            json!({ "name": "receipt", "number": 6, "type": "file", "optional": true }),
+        ),
+    ] {
+        let msgs = d["messages"].as_array_mut().unwrap();
+        let msg = msgs.iter_mut().find(|x| x["name"] == m).unwrap();
+        msg["fields"].as_array_mut().unwrap().push(field);
+    }
+    f(&mut d);
+    let d: Descriptor = serde_json::from_value(d).expect("parses");
+    validate(&d)
+        .into_iter()
+        .map(|e| (e.code.to_string(), e.path))
+        .collect()
+}
+
+#[test]
+fn an_upload_input_and_a_file_column() {
+    assert_eq!(shop_files(&|_| {}), vec![]);
+    fn inputs(d: &mut Value) -> &mut Value {
+        &mut d["ui"]["screens"][1]["overlays"][0]["layout"]["form"]["sections"][0]["inputs"]
+    }
+    let has = |errs: Vec<(String, String)>, code: &str| {
+        assert!(
+            errs.iter().any(|(c, _)| c == code),
+            "{code} not in {errs:?}"
+        );
+    };
+    // an upload fills a file field, and a file field is filled by an upload
+    has(
+        shop_files(&|d| inputs(d)[0]["control"] = json!("upload")),
+        "E_UI_ARG_TYPE",
+    );
+    has(
+        shop_files(&|d| inputs(d)[1]["control"] = json!("text")),
+        "E_UI_ARG_TYPE",
+    );
+    // an upload carries its field's options; other inputs have none
+    has(
+        shop_files(&|d| inputs(d)[1]["multiple"] = json!(false)),
+        "E_UI_ARG_TYPE",
+    );
+    has(
+        shop_files(&|d| inputs(d)[1]["max_size"] = json!(10)),
+        "E_UI_ARG_TYPE",
+    );
+    has(
+        shop_files(&|d| inputs(d)[0]["accept"] = json!(["text/csv"])),
+        "E_UI_SHAPE",
+    );
+    // an upload is no filter
+    has(
+        shop_files(&|d| {
+            d["ui"]["screens"][0]["layout"]["stack"]["children"][0]["filter_bar"]["inputs"][0]["control"] =
+                json!("upload")
+        }),
+        "E_UI_SHAPE",
+    );
+    // the file format shows a file field
+    has(
+        shop_files(&|d| {
+            d["ui"]["screens"][0]["layout"]["stack"]["children"][1]["table"]["columns"][0]["format"] =
+                json!({ "file": {} })
+        }),
+        "E_UI_ARG_TYPE",
+    );
+}
+
+#[test]
+fn a_download_step_takes_one_file_of_the_answer_before_it() {
+    fn steps(d: &mut Value) -> &mut Vec<Value> {
+        d["ui"]["screens"][0]["actions"][1]["steps"]
+            .as_array_mut()
+            .unwrap()
+    }
+    let with = |at: usize, field: &str| {
+        let field = field.to_string();
+        move |d: &mut Value| steps(d).insert(at, json!({ "download": field }))
+    };
+    // after the call: `receipt` of its answer (Order)
+    assert_eq!(shop_files(&with(2, "receipt")), vec![]);
+    let only =
+        |errs: Vec<(String, String)>| -> Vec<String> { errs.into_iter().map(|(c, _)| c).collect() };
+    // before any call, and in on_error, there is no answer to read
+    assert_eq!(
+        only(shop_files(&with(0, "receipt"))),
+        vec!["E_UI_REF_CONTEXT"]
+    );
+    assert_eq!(
+        only(shop_files(&|d| {
+            d["ui"]["screens"][0]["actions"][1]["on_error"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({ "download": "receipt" }))
+        })),
+        vec!["E_UI_REF_CONTEXT"]
+    );
+    // a field the answer has not, a field that is not a file, a list of files
+    assert_eq!(
+        only(shop_files(&with(2, "nope"))),
+        vec!["E_UI_FIELD_UNKNOWN"]
+    );
+    assert_eq!(only(shop_files(&with(2, "number"))), vec!["E_UI_ARG_TYPE"]);
+    assert_eq!(
+        only(shop_files(&|d| {
+            let msgs = d["messages"].as_array_mut().unwrap();
+            let order = msgs.iter_mut().find(|x| x["name"] == "Order").unwrap();
+            order["fields"]
+                .as_array_mut()
+                .unwrap()
+                .push(rep("copies", 7, "file"));
+            steps(d).insert(2, json!({ "download": "copies" }));
+        })),
+        vec!["E_UI_ARG_TYPE"]
+    );
+    // the JSON shape: the step's value is the path
+    let s: crate::ui::Step = serde_json::from_value(json!({ "download": "receipt" })).unwrap();
+    assert_eq!(s, crate::ui::Step::Download("receipt".into()));
+    assert_eq!(s.name(), "download");
+    assert_eq!(
+        serde_json::to_value(&s).unwrap(),
+        json!({ "download": "receipt" })
+    );
+}
+
+// ------------------------------------------------------------------------------------------ catalog 4
+
+/// The report shop with quarters, sales at a quarter, places on a map, a maps connection and a dependency.
+fn travel(ui: Value) -> Value {
+    let mut v = report(ui);
+    v["messages"].as_array_mut().unwrap().extend([
+        json!({ "name": "Quarter", "fields": [f("key", 1, "string"), f("label", 2, "string"), f("ends", 3, "string"),
+                                              f("total", 4, "decimal"), f("running", 5, "bool")] }),
+        json!({ "name": "QuartersResponse", "fields": [rep("quarters", 1, "message:Quarter")] }),
+        json!({ "name": "SalesAtRequest", "fields": [f("quarter", 1, "string"), f("window", 2, "int32"),
+                                                     f("area", 3, "string"), f("upto", 4, "int32")] }),
+        json!({ "name": "Place", "fields": [f("lat", 1, "double"), f("lon", 2, "double"), f("value", 3, "decimal"),
+                                            f("name", 4, "string"), f("id", 5, "string"), f("shape", 6, "json"),
+                                            f("state", 7, "string"), f("ours", 8, "bool")] }),
+        json!({ "name": "PlacesResponse", "fields": [rep("places", 1, "message:Place")] }),
+    ]);
+    let place = v["messages"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|m| m["name"] == "Place")
+        .unwrap();
+    place["fields"]
+        .as_array_mut()
+        .unwrap()
+        .push(rep("labels", 10, "double"));
+    v["endpoints"].as_array_mut().unwrap().extend([
+        json!({ "name": "Quarters", "input": "Empty", "output": "QuartersResponse", "scopes": ["read"], "read_only": true, "ui": true }),
+        json!({ "name": "SalesAt", "input": "SalesAtRequest", "output": "SalesResponse", "scopes": ["read"], "read_only": true, "ui": true }),
+        json!({ "name": "Places", "input": "SalesAtRequest", "output": "PlacesResponse", "scopes": ["read"], "read_only": true, "ui": true }),
+    ]);
+    v["connections"] =
+        json!([{ "name": "basemap", "kind": "maps" }, { "name": "model", "kind": "llm" }]);
+    v["dependencies"] = json!([{ "plugin": "geo", "calls": [] }]);
+    v
+}
+
+/// `report_ui` with a screen `travel` whose layout is `node`: params quarter, window, then and area; queries
+/// over them.
+fn travel_ui(node: Value) -> Value {
+    let mut ui = report_ui(json!({ "text": { "text": "Report" } }));
+    ui["catalog"] = json!(4);
+    ui["screens"].as_array_mut().unwrap().push(json!({
+      "id": "travel", "title": "Travel",
+      "params": [{ "name": "quarter", "type": "string" }, { "name": "window", "type": "int32" },
+                 { "name": "then", "type": "string" }, { "name": "area", "type": "string" },
+                 { "name": "upto", "type": "int32" }],
+      "state": [{ "name": "picked", "type": "string" }],
+      "queries": [
+        { "name": "quarters", "endpoint": "Quarters", "rows": "quarters" },
+        { "name": "sales", "endpoint": "SalesAt", "rows": "days",
+          "args": [{ "field": "quarter", "value": { "param": "quarter" } }, { "field": "window", "value": { "param": "window" } },
+                   { "field": "upto", "value": { "param": "upto" } }] },
+        { "name": "places", "endpoint": "Places", "rows": "places",
+          "args": [{ "field": "quarter", "value": { "param": "quarter" } }, { "field": "area", "value": { "param": "area" } }] },
+        { "name": "whole", "endpoint": "SalesAt", "rows": "days",
+          "args": [{ "field": "quarter", "value": { "param": "quarter" } }] },
+        { "name": "still", "endpoint": "Places", "rows": "places" },
+        { "name": "all_sales", "endpoint": "SalesAt", "rows": "days" }
+      ],
+      "layout": node
+    }));
+    ui
+}
+
+fn travel_errors(node: Value) -> Vec<(String, String)> {
+    let d: Descriptor = serde_json::from_value(travel(travel_ui(node))).expect("parses");
+    validate(&d)
+        .into_iter()
+        .map(|e| (e.code.to_string(), e.path))
+        .collect()
+}
+
+/// Bars by channel with time travel over the quarters, compared with a year before.
+fn timed_bars() -> Value {
+    json!({ "viz": {
+      "family": "bar", "kind": "bar", "title": "Revenue by channel",
+      "bind": [{ "to": "rows", "from": { "rows": { "query": "sales", "map": { "name": "channel", "value": "total" }, "text": ["name"] } } }],
+      "time": {
+        "read": "flow", "control": "brush",
+        "periods": { "query": "quarters", "value": "key", "label": "label", "track": "total", "partial": "running" },
+        "at": { "param": "quarter" }, "window": { "param": "window" }, "then": { "param": "then" }, "grain": "quarter"
+      }
+    } })
+}
+
+/// A map over the places: points sized by value, hexagons, regions, an area the member draws.
+fn map() -> Value {
+    json!({ "viz": {
+      "family": "geo", "kind": "map", "title": "Deals", "connection": "basemap",
+      "options": { "view": { "center": [-118.28, 33.97], "zoom": 10 } },
+      "layers": [
+        { "type": "points", "query": "places", "title": "Deals",
+          "fields": { "lat": "lat", "lon": "lon", "value": "value", "name": "name", "id": "id" },
+          "options": { "size": true, "fmt": "money" }, "select": { "state": "picked" } },
+        { "type": "hex", "query": "places", "fields": { "lat": "lat", "lon": "lon", "value": "value" }, "options": { "radius": 14 } },
+        { "type": "regions", "query": "still", "fields": { "shape": "shape", "value": "value", "name": "name" },
+          "options": { "mode": "diverging" } },
+        { "type": "change", "query": "places", "fields": { "lat": "lat", "lon": "lon", "state": "state" } },
+        { "type": "share", "query": "places", "fields": { "lat": "lat", "lon": "lon", "ours": "ours" } },
+        { "type": "area", "title": "Drawn area", "select": { "param": "area" } }
+      ],
+      "time": { "read": "flow", "periods": { "query": "quarters", "value": "key", "label": "label" },
+                "at": { "param": "quarter" }, "then": { "param": "then" } }
+    } })
+}
+
+#[test]
+fn time_travel_validates_round_trips_and_needs_catalog_4() {
+    assert_eq!(travel_errors(timed_bars()), vec![]);
+    let d: Descriptor = serde_json::from_value(travel(travel_ui(timed_bars()))).unwrap();
+    let v = serde_json::to_value(&d).unwrap();
+    assert_eq!(v["ui"]["screens"][3]["layout"], timed_bars());
+    let again: Descriptor = serde_json::from_str(&canonical_json(&v)).unwrap();
+    assert_eq!(again, d);
+    let r = requirements(d.ui.as_ref().unwrap());
+    // a display part: an older client draws the fallback (the card without time travel is not drawn)
+    assert_eq!(r["travel"].compat(3), "degraded");
+    assert_eq!(r["travel"].compat(4), "full");
+    assert_eq!(r["report"].compat(3), "full");
+    // the smallest: a read, the periods' value and label, and `at`
+    let mut small = timed_bars();
+    small["viz"]["time"] = json!({ "read": "state", "periods": { "query": "quarters", "value": "key", "label": "label" },
+                                   "at": { "param": "quarter" } });
+    assert_eq!(travel_errors(small), vec![]);
+    // unknown reads, controls and fields do not parse
+    for bad in [
+        json!({ "read": "sum", "periods": { "query": "quarters", "value": "key", "label": "label" }, "at": { "param": "quarter" } }),
+        json!({ "read": "flow", "control": "dial", "periods": { "query": "quarters", "value": "key", "label": "label" }, "at": { "param": "quarter" } }),
+        json!({ "read": "flow", "periods": { "query": "quarters", "value": "key", "label": "label" }, "at": { "param": "quarter" }, "today": 3 }),
+    ] {
+        let mut n = timed_bars();
+        n["viz"]["time"] = bad.clone();
+        assert!(
+            serde_json::from_value::<Descriptor>(travel(travel_ui(n))).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+/// `timed_bars` that compares with the period before first and cuts a running quarter at the same day.
+fn cut_bars() -> Value {
+    let mut n = timed_bars();
+    n["viz"]["time"]["compare"] = json!("previous");
+    n["viz"]["time"]["upto"] = json!({ "param": "upto" });
+    n
+}
+
+#[test]
+fn time_compare_and_cut_validate_and_round_trip() {
+    assert_eq!(travel_errors(cut_bars()), vec![]);
+    let d: Descriptor = serde_json::from_value(travel(travel_ui(cut_bars()))).unwrap();
+    let v = serde_json::to_value(&d).unwrap();
+    assert_eq!(v["ui"]["screens"][3]["layout"], cut_bars());
+    assert_eq!(
+        v["ui"]["screens"][3]["layout"]["viz"]["time"]["upto"],
+        json!({ "param": "upto" })
+    );
+    // still catalog 4: both are optional, a document without them is as before
+    let r = requirements(d.ui.as_ref().unwrap());
+    assert_eq!(r["travel"].compat(4), "full");
+    let mut year = cut_bars();
+    year["viz"]["time"]["compare"] = json!("year");
+    assert_eq!(travel_errors(year), vec![]);
+    // only year and previous; the person picks a period in the menu, never the plugin
+    let mut picked = cut_bars();
+    picked["viz"]["time"]["compare"] = json!("picked");
+    assert!(serde_json::from_value::<Descriptor>(travel(travel_ui(picked))).is_err());
+}
+
+#[test]
+fn time_compare_and_cut_are_checked() {
+    let at = "ui.screens[travel].layout.viz.time";
+    let one = |change: &dyn Fn(&mut Value), want: &[(&str, &str)]| {
+        let mut n = cut_bars();
+        change(&mut n["viz"]);
+        let want: Vec<(String, String)> = want
+            .iter()
+            .map(|(c, p)| (c.to_string(), format!("{at}{p}")))
+            .collect();
+        assert_eq!(travel_errors(n), want);
+    };
+    one(
+        &|v| v["time"]["upto"] = json!({ "param": "ghost" }),
+        &[("E_UI_PARAM_UNKNOWN", ".upto")],
+    );
+    one(
+        &|v| v["time"]["upto"] = json!({ "param": "area" }),
+        // a string, and the sales do not pass it either
+        &[("E_UI_ARG_TYPE", ".upto"), ("E_UI_VIZ_TIME", ".upto")],
+    );
+    one(
+        &|v| v["time"]["upto"] = json!({ "param": "window" }),
+        &[("E_UI_VIZ_TIME", "")],
+    );
+    // the cut must reach the card's data: these sales do not pass it
+    one(
+        &|v| v["bind"][0]["from"]["rows"]["query"] = json!("whole"),
+        &[("E_UI_VIZ_TIME", ".upto")],
+    );
+    one(
+        &|v| {
+            v["time"]["periods"]
+                .as_object_mut()
+                .unwrap()
+                .remove("partial");
+        },
+        &[("E_UI_VIZ_TIME", ".periods.partial")],
+    );
+    one(
+        &|v| {
+            v["time"].as_object_mut().unwrap().remove("grain");
+        },
+        &[("E_UI_VIZ_TIME", ".grain")],
+    );
+    one(
+        &|v| {
+            v["time"]["read"] = json!("state");
+            v["time"].as_object_mut().unwrap().remove("window");
+        },
+        &[("E_UI_VIZ_TIME", ".upto")],
+    );
+    one(
+        &|v| {
+            v["time"].as_object_mut().unwrap().remove("then");
+        },
+        &[("E_UI_VIZ_TIME", ".compare")],
+    );
+    one(
+        &|v| {
+            v["time"]["compare"] = json!("year");
+            v["time"].as_object_mut().unwrap().remove("grain");
+            v["time"].as_object_mut().unwrap().remove("upto");
+        },
+        &[("E_UI_VIZ_TIME", ".compare")],
+    );
+    // the period before needs no grain; a cut without a comparison is fine
+    let mut n = cut_bars();
+    n["viz"]["time"].as_object_mut().unwrap().remove("grain");
+    n["viz"]["time"].as_object_mut().unwrap().remove("upto");
+    assert_eq!(travel_errors(n), vec![]);
+    let mut n = cut_bars();
+    n["viz"]["time"].as_object_mut().unwrap().remove("then");
+    n["viz"]["time"].as_object_mut().unwrap().remove("compare");
+    assert_eq!(travel_errors(n), vec![]);
+}
+
+#[test]
+fn a_line_compares_with_the_earlier_periods_line() {
+    let mut n = timed_bars();
+    n["viz"]["family"] = json!("line");
+    n["viz"]["kind"] = json!("line");
+    n["viz"]["time"]["control"] = json!("stepper");
+    n["viz"]["time"].as_object_mut().unwrap().remove("window");
+    assert_eq!(travel_errors(n), vec![]);
+}
+
+#[test]
+fn time_travel_is_checked() {
+    let at = "ui.screens[travel].layout.viz.time";
+    let one = |change: &dyn Fn(&mut Value), code: &str, path: &str| {
+        let mut n = timed_bars();
+        change(&mut n["viz"]);
+        assert_eq!(
+            travel_errors(n),
+            vec![(code.to_string(), format!("{at}{path}"))],
+            "{code} at {path}"
+        );
+    };
+    one(
+        &|v| v["time"]["periods"]["query"] = json!("ghost"),
+        "E_UI_QUERY_UNKNOWN",
+        ".periods.query",
+    );
+    one(
+        &|v| v["time"]["periods"]["label"] = json!("name"),
+        "E_UI_FIELD_UNKNOWN",
+        ".periods.label",
+    );
+    one(
+        &|v| v["time"]["periods"]["track"] = json!("label"),
+        "E_UI_ARG_TYPE",
+        ".periods.track",
+    );
+    one(
+        &|v| v["time"]["periods"]["partial"] = json!("total"),
+        "E_UI_ARG_TYPE",
+        ".periods.partial",
+    );
+    one(
+        &|v| v["time"]["at"] = json!({ "param": "ghost" }),
+        "E_UI_PARAM_UNKNOWN",
+        ".at",
+    );
+    one(
+        &|v| v["time"]["then"] = json!({ "state": "ghost" }),
+        "E_UI_STATE_UNKNOWN",
+        ".then",
+    );
+    one(
+        &|v| v["time"]["window"] = json!({ "param": "area" }),
+        "E_UI_ARG_TYPE",
+        ".window",
+    );
+    one(
+        &|v| v["time"]["then"] = json!({ "param": "quarter" }),
+        "E_UI_VIZ_TIME",
+        "",
+    );
+    // the period must reach the card's data
+    one(
+        &|v| v["bind"][0]["from"]["rows"]["query"] = json!("all_sales"),
+        "E_UI_VIZ_TIME",
+        ".at",
+    );
+    // what the kind can draw
+    one(
+        &|v| {
+            v["kind"] = json!("diverging");
+        },
+        "E_UI_VIZ_TIME",
+        ".then",
+    );
+    one(
+        &|v| {
+            v["time"]["control"] = json!("axis");
+            v["time"].as_object_mut().unwrap().remove("then");
+        },
+        "E_UI_VIZ_TIME",
+        ".control",
+    );
+    one(
+        &|v| {
+            v["time"]["control"] = json!("screen");
+        },
+        "E_UI_VIZ_TIME",
+        ".then",
+    );
+    one(
+        &|v| {
+            v["time"]["read"] = json!("state");
+        },
+        "E_UI_VIZ_TIME",
+        ".window",
+    );
+    one(
+        &|v| {
+            v["time"]["read"] = json!("scheduled");
+            v["time"]["periods"]
+                .as_object_mut()
+                .unwrap()
+                .remove("partial");
+        },
+        "E_UI_VIZ_TIME",
+        ".periods.partial",
+    );
+    one(
+        &|v| {
+            v["family"] = json!("table");
+            v["kind"] = json!("grid");
+        },
+        "E_UI_VIZ_TIME",
+        ".key",
+    );
+    // the axis control on a kind with its own time axis, and a grid that names its compared column, are fine
+    let mut n = timed_bars();
+    n["viz"]["kind"] = json!("column");
+    n["viz"]["time"]["control"] = json!("axis");
+    n["viz"]["time"].as_object_mut().unwrap().remove("then");
+    assert_eq!(travel_errors(n), vec![]);
+    let mut n = timed_bars();
+    n["viz"]["family"] = json!("table");
+    n["viz"]["kind"] = json!("grid");
+    n["viz"]["time"]["key"] = json!(1);
+    assert_eq!(travel_errors(n), vec![]);
+    // a home widget has no params or state to hold the period
+    let mut ui = travel_ui(json!({ "text": { "text": "x" } }));
+    ui["queries"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "name": "q", "endpoint": "Quarters", "rows": "quarters" }));
+    ui["home"] = json!([{ "id": "w", "title": "W", "node": { "viz": {
+        "family": "figure", "kind": "metric",
+        "time": { "read": "flow", "periods": { "query": "q", "value": "key", "label": "label" }, "at": { "param": "quarter" } } } } }]);
+    let d: Descriptor = serde_json::from_value(travel(ui)).unwrap();
+    let codes: Vec<&str> = validate(&d).iter().map(|e| e.code).collect();
+    assert!(codes.contains(&"E_UI_PARAM_UNKNOWN"), "{codes:?}");
+}
+
+#[test]
+fn a_map_validates_and_needs_catalog_4() {
+    assert_eq!(travel_errors(map()), vec![]);
+    let d: Descriptor = serde_json::from_value(travel(travel_ui(map()))).unwrap();
+    let v = serde_json::to_value(&d).unwrap();
+    assert_eq!(v["ui"]["screens"][3]["layout"], map());
+    let r = requirements(d.ui.as_ref().unwrap());
+    assert_eq!(r["travel"].compat(3), "degraded");
+    assert_eq!(r["travel"].compat(4), "full");
+    // a dependency's maps connection
+    let mut n = map();
+    n["viz"]["connection"] = json!("geo.osm");
+    assert_eq!(travel_errors(n), vec![]);
+    // unknown layer types do not parse
+    let mut n = map();
+    n["viz"]["layers"][0]["type"] = json!("pins");
+    assert!(serde_json::from_value::<Descriptor>(travel(travel_ui(n))).is_err());
+}
+
+#[test]
+fn a_map_is_checked() {
+    let at = "ui.screens[travel].layout.viz";
+    let one = |change: &dyn Fn(&mut Value), code: &str, path: &str| {
+        let mut n = map();
+        change(&mut n["viz"]);
+        assert_eq!(
+            travel_errors(n),
+            vec![(code.to_string(), format!("{at}{path}"))],
+            "{code} at {path}"
+        );
+    };
+    // the connection: a maps connection of this plugin or of a dependency
+    one(
+        &|v| {
+            v.as_object_mut().unwrap().remove("connection");
+        },
+        "E_UI_VIZ_CONNECTION",
+        ".connection",
+    );
+    one(
+        &|v| v["connection"] = json!("ghost"),
+        "E_UI_VIZ_CONNECTION",
+        ".connection",
+    );
+    one(
+        &|v| v["connection"] = json!("model"),
+        "E_UI_VIZ_CONNECTION",
+        ".connection",
+    );
+    one(
+        &|v| v["connection"] = json!("crm.osm"),
+        "E_UI_VIZ_CONNECTION",
+        ".connection",
+    );
+    one(
+        &|v| v["connection"] = json!("geo.Osm"),
+        "E_UI_VIZ_CONNECTION",
+        ".connection",
+    );
+    // layers: at least one, at most eight
+    one(&|v| v["layers"] = json!([]), "E_UI_VIZ_LAYER", ".layers");
+    one(
+        &|v| {
+            let l = v["layers"][1].clone();
+            v["layers"] = json!(vec![l; ui::MAP_MAX_LAYERS + 1]);
+        },
+        "E_UI_LIMIT",
+        ".layers",
+    );
+    // a layer's roles, their fields and their types
+    one(
+        &|v| v["layers"][0]["fields"]["size"] = json!("value"),
+        "E_UI_VIZ_LAYER",
+        ".layers[0].fields.size",
+    );
+    one(
+        &|v| {
+            v["layers"][0]["fields"]
+                .as_object_mut()
+                .unwrap()
+                .remove("lat");
+        },
+        "E_UI_VIZ_LAYER",
+        ".layers[0].fields",
+    );
+    one(
+        &|v| v["layers"][0]["fields"]["lon"] = json!("lng"),
+        "E_UI_FIELD_UNKNOWN",
+        ".layers[0].fields.lon",
+    );
+    one(
+        &|v| v["layers"][0]["fields"]["lat"] = json!("name"),
+        "E_UI_ARG_TYPE",
+        ".layers[0].fields.lat",
+    );
+    one(
+        &|v| v["layers"][0]["fields"]["lat"] = json!("labels"),
+        "E_UI_ARG_TYPE",
+        ".layers[0].fields.lat",
+    );
+    one(
+        &|v| v["layers"][2]["fields"]["shape"] = json!("value"),
+        "E_UI_ARG_TYPE",
+        ".layers[2].fields.shape",
+    );
+    one(
+        &|v| v["layers"][4]["fields"]["ours"] = json!("ghost"),
+        "E_UI_FIELD_UNKNOWN",
+        ".layers[4].fields.ours",
+    );
+    one(
+        &|v| {
+            v["layers"][1].as_object_mut().unwrap().remove("query");
+        },
+        "E_UI_VIZ_LAYER",
+        ".layers[1].query",
+    );
+    one(
+        &|v| v["layers"][1]["query"] = json!("ghost"),
+        "E_UI_QUERY_UNKNOWN",
+        ".layers[1].query",
+    );
+    // selections: declared, and not on layers where nothing is picked
+    one(
+        &|v| v["layers"][0]["select"] = json!({ "state": "ghost" }),
+        "E_UI_STATE_UNKNOWN",
+        ".layers[0].select",
+    );
+    one(
+        &|v| v["layers"][1]["select"] = json!({ "state": "picked" }),
+        "E_UI_VIZ_LAYER",
+        ".layers[1].select",
+    );
+    // an area is drawn: no query, and somewhere to put it
+    one(
+        &|v| v["layers"][5]["query"] = json!("places"),
+        "E_UI_VIZ_LAYER",
+        ".layers[5].query",
+    );
+    one(
+        &|v| {
+            v["layers"][5].as_object_mut().unwrap().remove("select");
+        },
+        "E_UI_VIZ_LAYER",
+        ".layers[5].select",
+    );
+    one(
+        &|v| v["layers"][0]["title"] = json!(" "),
+        "E_UI_TEXT",
+        ".layers[0].title",
+    );
+    // only a map has a connection and layers
+    let mut n = timed_bars();
+    n["viz"]["connection"] = json!("basemap");
+    n["viz"]["layers"] = map()["viz"]["layers"].clone();
+    assert_eq!(
+        travel_errors(n),
+        vec![
+            ("E_UI_VIZ_CONNECTION".into(), format!("{at}.connection")),
+            ("E_UI_VIZ_LAYER".into(), format!("{at}.layers")),
+        ]
+    );
+}

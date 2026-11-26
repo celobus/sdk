@@ -8,6 +8,7 @@ using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Celobus.V1;
 using Google.Protobuf;
@@ -30,10 +31,13 @@ internal sealed class Runtime
     /// <summary>The reserved method of the run-change hook (a leading <c>_</c>: the platform's own requests).</summary>
     internal const string RunChangeMethod = "_RunChange";
     private static readonly TimeSpan RunChangeTimeout = TimeSpan.FromSeconds(30);
+    /// <summary>How long the settings check hook may take.</summary>
+    private static readonly TimeSpan SettingsCheckTimeout = TimeSpan.FromSeconds(10);
 
     private readonly PluginDefinition _def;
     private readonly Dictionary<string, EndpointRegistration> _routes;
     private readonly string _runChangePath;
+    private readonly string _settingsCheckPath;
     private readonly JsonLogger _log;
     private readonly PluginInfo _info;
     private readonly Dictionary<string, JobRegistration> _jobs;
@@ -50,12 +54,15 @@ internal sealed class Runtime
         _def = def;
         _routes = def.Endpoints.ToDictionary(e => Names.Path(def.Id, e.Name), StringComparer.Ordinal);
         _runChangePath = Names.Path(def.Id, RunChangeMethod);
+        _settingsCheckPath = Names.Path(def.Id, SettingsDescribe.CheckMethod);
         _log = new JsonLogger("celobus.sdk", [new("plugin", def.Id)]);
         _jobs = [];
         foreach (var j in def.Jobs) _jobs.TryAdd(j.Key, j);
         _info = new PluginInfo(def.Id, def.Version)
         {
             JobKeys = def.Jobs.GroupBy(j => j.Payload).ToDictionary(g => g.Key, g => g.First().Key),
+            // the settings the platform sends at registration and on each change, kept across sessions
+            SettingsCache = def.Settings is { } s ? new SettingsCache(s.Type) : null,
         };
     }
 
@@ -161,6 +168,12 @@ internal sealed class Runtime
                     case CelldMessage.KindOneofCase.Registered:
                         registered = true;
                         _log.LogInformation("registered as {instance}", msg.Registered.InstanceId);
+                        if (_info.SettingsCache?.Update(msg.Registered.SettingsRev, msg.Registered.Settings.Span, registered: true) == false)
+                            _log.LogWarning("the settings the platform sent are not JSON; kept the previous ones");
+                        break;
+                    case CelldMessage.KindOneofCase.SettingsChanged:
+                        if (_info.SettingsCache?.Update(msg.SettingsChanged.Rev, msg.SettingsChanged.Json.Span, registered: false) == true)
+                            _log.LogInformation("the settings changed (revision {rev})", msg.SettingsChanged.Rev);
                         break;
                     case CelldMessage.KindOneofCase.Request:
                         var req = msg.Request;
@@ -258,10 +271,12 @@ internal sealed class Runtime
         if (q >= 0) path = path[..q];
         // the run-change hook is a request of the platform itself: it carries no caller, so one with a caller came from outside
         var hook = _def.OnRunChange is not null && path == _runChangePath && req.Principal is null ? _def.OnRunChange : null;
+        // so is the settings check hook
+        var check = _def.Settings?.OnChange is { } c && path == _settingsCheckPath && req.Principal is null ? c : null;
         EndpointRegistration? route = null;
-        if (hook is null && !_routes.TryGetValue(path, out route))
+        if (hook is null && check is null && !_routes.TryGetValue(path, out route))
             return Error(new PluginError(404, "unknown_endpoint", $"no endpoint {path}"));
-        var name = route?.Name ?? RunChangeMethod;
+        var name = route?.Name ?? (check is not null ? SettingsDescribe.CheckMethod : RunChangeMethod);
         if (!req.Method.Equals("POST", StringComparison.OrdinalIgnoreCase))
             return Error(new PluginError(405, "method_not_allowed", $"{name} takes POST, not {req.Method}"));
         var contentType = Header(req, "content-type");
@@ -271,7 +286,25 @@ internal sealed class Runtime
         // the handler: its answer's bytes, null when it returned null
         Func<Ctx, Task<byte[]?>> handle;
         TimeSpan timeout;
-        if (route is null)
+        if (check is not null)
+        {
+            JsonNode? body;
+            try
+            {
+                body = req.Body.IsEmpty ? new JsonObject() : JsonNode.Parse(req.Body.Span);
+            }
+            catch (JsonException e)
+            {
+                return Error(PluginError.Invalid($"malformed settings change: {e.Message}"));
+            }
+            timeout = SettingsCheckTimeout;
+            handle = async ctx =>
+            {
+                await check(ctx, body);
+                return "{}"u8.ToArray();
+            };
+        }
+        else if (route is null)
         {
             RunChange change;
             try

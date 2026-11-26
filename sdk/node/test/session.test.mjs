@@ -301,14 +301,14 @@ test("ctx.agents starts, follows and stops the runs of the plugin's agents over 
   ]);
   const { _session: unsaid, ...first } = sent[0].agentRun;
   assert.equal(unsaid, undefined, "a start that does not say `session` leaves it to the agent's declaration");
-  assert.deepEqual(first, { agent: "assistant", input: "what does tea cost?", engine: "", model: "", timeoutS: 0, requestId: "77", group: "", notify: false, notifyLink: null, topic: "", topicKey: "" });
+  assert.deepEqual(first, { agent: "assistant", input: "what does tea cost?", engine: "", model: "", timeoutS: 0, requestId: "77", group: "", notify: false, notifyLink: null, topic: "", topicKey: "", files: [] });
   const { _session: said, ...second } = sent[1].agentRun;
   assert.equal(said, "session");
-  assert.deepEqual(second, { agent: "assistant", input: "what does tea cost?", engine: "pi", model: "claude-opus-5-5", session: false, timeoutS: 600, requestId: "77", group: "", notify: false, notifyLink: null, topic: "", topicKey: "" });
+  assert.deepEqual(second, { agent: "assistant", input: "what does tea cost?", engine: "pi", model: "claude-opus-5-5", session: false, timeoutS: 600, requestId: "77", group: "", notify: false, notifyLink: null, topic: "", topicKey: "", files: [] });
   assert.deepEqual({ ...sent[3].agentEvents }, { runId: "run-1", after: "1", limit: 50 });
   assert.deepEqual({ ...sent[4].agentRuns }, { agent: "assistant", limit: 10, group: "" });
   assert.deepEqual({ ...sent[5].agentRuns }, { agent: "", limit: 0, group: "" });
-  assert.deepEqual({ ...sent[6].agentSend }, { runId: "run-1", text: "and coffee?", requestId: "77" });
+  assert.deepEqual({ ...sent[6].agentSend }, { runId: "run-1", text: "and coffee?", requestId: "77", files: [] });
 
   stop.abort();
   await serving;
@@ -560,4 +560,125 @@ test("while draining, new requests are refused with retry-after and those in fli
   assert.equal((await inFlight).status, 200);
   await serving;
   await fake.close();
+});
+
+test("ctx.files reads, writes and looks up files over signed URLs, resuming a read past an expired URL and a cut", async () => {
+  const http = await import("node:http");
+  const content = Buffer.from("é,b\r\nc,d\ne,f", "utf8");
+  const puts = [];
+  let gets = 0;
+  const store = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      if (req.method === "PUT") {
+        const n = Number(req.url.split("/").pop());
+        puts.push([n, Buffer.concat(chunks).toString()]);
+        res.writeHead(200, { etag: `"e${n}"` }).end();
+        return;
+      }
+      gets += 1;
+      const sig = new URL(req.url, "http://x").searchParams.get("sig");
+      if (sig === "1") return res.writeHead(403).end("Request has expired");
+      if (sig === "2") {
+        // one byte (half of `é`), then the connection drops
+        res.writeHead(200, { "content-length": String(content.length) });
+        res.write(content.subarray(0, 1), () => setTimeout(() => res.socket.destroy(), 20));
+        return;
+      }
+      const from = Number(/bytes=(\d+)-/.exec(req.headers.range ?? "")?.[1] ?? 0);
+      res.writeHead(from ? 206 : 200, { "content-length": String(content.length - from) }).end(content.subarray(from));
+    });
+  });
+  await new Promise((resolve) => store.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${store.address().port}`;
+  const later = String(Date.now() + 3_600_000);
+  const wireIn = { id: "f-in", name: "in.csv", contentType: "text/csv", size: String(content.length) };
+  let opens = 0;
+  let written = 0;
+  const answer = (s) => {
+    if (s.filesOpen) {
+      opens += 1;
+      return { filesRead: { file: wireIn, url: `${base}/obj?sig=${opens}`, expiresAtMs: later } };
+    }
+    if (s.filesCreate) return { filesUpload: { id: "f-out", partSize: "4", parts: 0, first: 1, urls: [`${base}/put/1`], done: [], expiresAtMs: later } };
+    if (s.filesParts) {
+      const n = s.filesParts.from;
+      return { filesUpload: { id: "f-out", partSize: "4", parts: 0, first: n, urls: [`${base}/put/${n}`, `${base}/put/${n + 1}`], done: [], expiresAtMs: later } };
+    }
+    if (s.filesFinish) return { file: { id: "f-out", name: "out.csv", contentType: "text/csv", size: String(written) } };
+    if (s.filesHead) {
+      if (s.filesHead.id === "f-gone") return { error: "file_gone: the file was collected" };
+      return { fileInfo: { file: wireIn, etag: '"abc"', createdAtMs: "1000", createdBy: "u1" } };
+    }
+    if (s.agentRun) {
+      return {
+        agentRun: {
+          id: "run-1", agent: "reader", plugin: "docs", engine: "claude", status: "starting", input: s.agentRun.input,
+          startedBy: { userId: "u1", displayName: "Sarah" }, createdAt: "1", updatedAt: "1", deadlineAt: "2", turn: 0,
+          lastSeq: "1", pod: "", group: "run-1",
+        },
+      };
+    }
+    return undefined;
+  };
+
+  const out = {};
+  const readIt = endpoint({
+    input: { file: t.file({ accept: ["text/csv"] }) },
+    output: { lines: t.array(t.text()), made: t.file(), etag: t.text(), createdBy: t.text() },
+    async handler(ctx, { file }) {
+      out.file = file;
+      const lines = [];
+      for await (const line of (await ctx.files.open(file)).lines()) lines.push(line);
+      const w = await ctx.files.create("out.csv", "text/csv");
+      for (const part of ["id,text\n", "1,tea\n"]) {
+        await w.write(part);
+        written += Buffer.byteLength(part);
+      }
+      const made = await w.finish();
+      const info = await ctx.files.head(file);
+      out.gone = await ctx.files.head({ id: "f-gone" }).then(() => "answered", (e) => `${e.status} ${e.code}`);
+      await ctx.agents.run("reader", "summarise it", { files: [file] });
+      return { lines, made, etag: info.etag, createdBy: info.createdBy };
+    },
+  });
+  const p = plugin({ id: "docs", version: "0.1.0", agents: { reader: {} }, endpoints: { readIt } });
+  const fake = await fakePlatform(undefined, answer);
+  const stop = new AbortController();
+  const serving = p.serve({ argv: ["node", "main.js"], addr: fake.addr, signals: false, stop: stop.signal });
+  await fake.sessionOpened;
+
+  const r = await fake.request(77, "/docs.v1.Docs/ReadIt", { file: { id: "f-in", name: "in.csv", type: "text/csv", size: 12 } });
+  assert.equal(r.status, 200, r.body.toString());
+  assert.deepEqual(out.file, { id: "f-in", name: "in.csv", type: "text/csv", size: 12 });
+  assert.deepEqual(JSON.parse(r.body.toString()), {
+    lines: ["é,b", "c,d", "e,f"],
+    made: { id: "f-out", name: "out.csv", type: "text/csv", size: "14" },
+    etag: '"abc"',
+    createdBy: "u1",
+  });
+  assert.equal(out.gone, "410 file_gone");
+
+  // the read: an expired URL renewed, a cut resumed from the byte it stopped at with a Range
+  const sent = fake.seen.syscalls;
+  assert.deepEqual(sent.filter((s) => s.filesOpen).map((s) => [s.filesOpen.id, s.filesOpen.offset, s.filesOpen.requestId]), [
+    ["f-in", "0", "77"], ["f-in", "0", "77"], ["f-in", "1", "77"],
+  ]);
+  assert.equal(gets, 3);
+  // the write: parts of 4 bytes from 1, the last the remainder, the URLs asked for page by page, the ETags in order
+  assert.deepEqual(puts, [[1, "id,t"], [2, "ext\n"], [3, "1,te"], [4, "a\n"]]);
+  const create = sent.find((s) => s.filesCreate).filesCreate;
+  assert.deepEqual([create.name, create.contentType, create.requestId, create.size ?? undefined], ["out.csv", "text/csv", "77", undefined]);
+  assert.deepEqual(sent.filter((s) => s.filesParts).map((s) => s.filesParts.from), [2, 4]);
+  assert.deepEqual({ ...sent.find((s) => s.filesFinish).filesFinish }, { id: "f-out", etags: ['"e1"', '"e2"', '"e3"', '"e4"'], requestId: "77" });
+  // the run is given the file
+  assert.deepEqual(sent.find((s) => s.agentRun).agentRun.files.map((f) => ({ ...f })), [
+    { id: "f-in", name: "in.csv", contentType: "text/csv", size: "12" },
+  ]);
+
+  stop.abort();
+  await serving;
+  await fake.close();
+  store.close();
 });

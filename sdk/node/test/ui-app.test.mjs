@@ -167,7 +167,7 @@ test("steps: draft, reply_to, scroll_to, copy, merge; form values and pick value
   assert.deepEqual(ui.pickedCount(inviteRequest.f.people).gt(1n).json(), { gt: [{ form: "people.count" }, { lit: "1" }] });
   assert.deepEqual(ui.pickedAgents(inviteRequest.f.people).json(), { form: "people.agents" });
   assert.deepEqual(ui.pickedFirst(inviteRequest.f.people).json(), { form: "people.first" });
-  assert.deepEqual(d.ui.catalog, 3);
+  assert.deepEqual(d.ui.catalog, 4);
 });
 
 test("options of catalog 1 nodes: split fill, resize and expand; list; toggle; formats; agent_run's log", () => {

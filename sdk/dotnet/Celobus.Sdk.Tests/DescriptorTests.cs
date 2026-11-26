@@ -11,7 +11,7 @@ public class DescriptorTests
         var plugin = HelloPlugin.Define();
         Assert.Empty(plugin.Check());
         var actual = JsonNode.Parse(plugin.DescriptorJson());
-        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "expected.json")));
+        var expected = JsonNode.Parse(System.IO.File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "expected.json")));
         Assert.True(JsonNode.DeepEquals(expected, actual), actual!.ToJsonString());
     }
 
@@ -197,7 +197,7 @@ public class DescriptorTests
         });
         var field = errors.First(e => e.Code == "E_FIELD_TYPE");
         Assert.Equal("error[E_FIELD_TYPE] at messages.Unsupported.fields.tags: `Dictionary<String, String>` is not a field type " +
-                     "(a scalar, Id<T>, an enum, a [Message] type or a list of them)", field.ToString());
+                     "(a scalar, Id<T>, File, an enum, a [Message] type or a list of them)", field.ToString());
         Assert.Contains(errors, e => e.Code == "E_PLUGIN_ID" || e.Code == "E_PLUGIN_ID_RESERVED");
         Assert.Contains(Plugin.Create("Bad_Id").Version("1.0.0").Check(), e => e.Code == "E_PLUGIN_ID");
     }

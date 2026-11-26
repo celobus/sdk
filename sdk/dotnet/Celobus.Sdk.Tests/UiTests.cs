@@ -82,7 +82,7 @@ public class UiTests
         var plugin = ShopPlugin.Define();
         Assert.Empty(plugin.Check());
         var actual = JsonNode.Parse(plugin.DescriptorJson());
-        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "shop.json")));
+        var expected = JsonNode.Parse(System.IO.File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "shop.json")));
         Assert.True(JsonNode.DeepEquals(expected, actual), actual!.ToJsonString());
     }
 
@@ -565,8 +565,8 @@ public class UiTests
         Same("""{"viz":{"family":"meter","kind":"meterList"}}""", c[4]);
 
         // a constructor per kind of the catalogue, from the table the validator reads
-        Assert.Equal(9, Viz.Kinds.Count);
-        Assert.Equal(82, Viz.Kinds.Values.Sum(k => k.Length));
+        Assert.Equal(10, Viz.Kinds.Count);
+        Assert.Equal(83, Viz.Kinds.Values.Sum(k => k.Length));
         foreach (var (family, kinds) in Viz.Kinds)
         {
             var group = typeof(Viz).GetProperty(char.ToUpperInvariant(family[0]) + family[1..])!.GetValue(null)!;
@@ -576,7 +576,7 @@ public class UiTests
                 Assert.True(JsonNode.DeepEquals(new JsonObject { ["viz"] = new JsonObject { ["family"] = family, ["kind"] = kind } }, J(node)));
             }
         }
-        Assert.Equal(82, typeof(Viz).GetProperties().Sum(p => p.PropertyType.GetMethods().Count(m => m.ReturnType == typeof(VizNode))));
+        Assert.Equal(83, typeof(Viz).GetProperties().Sum(p => p.PropertyType.GetMethods().Count(m => m.ReturnType == typeof(VizNode))));
         Same("""{"viz":{"family":"flow","kind":"funnel"}}""", J(Viz.Flow.Funnel()));
         Same("""{"viz":{"family":"bar","kind":"funnel"}}""", J(Viz.Bar.Funnel()));
 
@@ -597,7 +597,61 @@ public class UiTests
               "open":{"screen":"invoices"}}}
             """, ui["home"]![0]!["node"]);
         Same("""{"en":{"viz.share":"Share"}}""", ui["texts"]);
-        Assert.Equal(3, ui["catalog"]!.GetValue<int>());
+        Assert.Equal(4, ui["catalog"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void TimeTravelAndMaps()
+    {
+        TimeSpec<Invoice>? noAt = null;
+        var j = ScreenJson(s =>
+        {
+            var search = s.Param(p => p.Search);
+            var then = s.State("then", "");
+            var width = s.State("width", 1);
+            var upto = s.State("upto", 0);
+            var picked = s.State("picked", "");
+            var q = s.Query("invoices", Query.Call(ListInvoices.Ref).Arg(r => r.Search, search).Rows(r => r.Invoices));
+            noAt = Time.Flow(q, i => i.Number, i => i.Currency);
+            return U.Board()
+                .Half(Viz.Bar.Bar()
+                    .Rows(q, ("name", i => i.Number), ("value", i => i.Amount))
+                    .Time(Time.Flow(q, i => i.Number, i => i.Currency)
+                        .At(search)
+                        .Track(i => i.Amount)
+                        .Window(width)
+                        .Compare(then)
+                        .CompareBy(TimeCompare.Previous)
+                        .Upto(upto)
+                        .Control(TimeControl.Brush)
+                        .Grain(TimeGrain.Quarter)))
+                .Half(Viz.Geo.Map()
+                    .Title("Deals")
+                    .Connection("models.osm")
+                    .Layer(MapLayer.Points(q).Lat(i => i.Share).Lon(i => i.Share).Value(i => i.Amount).Id(i => i.Id)
+                        .Title("Deals").Option("size", true).SelectState(picked))
+                    .Layer(MapLayer.Flows(q).From(i => i.Share, i => i.Share).To(i => i.Share, i => i.Share))
+                    .Layer(MapLayer.Area().SelectParam(search)));
+        });
+        var items = j["layout"]!["board"]!["children"]!;
+        Same(
+            """
+            {"read":"flow","control":"brush",
+             "periods":{"query":"invoices","value":"number","label":"currency","track":"amount"},
+             "at":{"param":"search"},"window":{"state":"width"},"then":{"state":"then"},
+             "compare":"previous","upto":{"state":"upto"},"grain":"quarter"}
+            """, items[0]!["node"]!["viz"]!["time"]);
+        Same(
+            """
+            {"viz":{"family":"geo","kind":"map","title":"Deals","connection":"models.osm","layers":[
+               {"type":"points","query":"invoices","fields":{"lat":"share","lon":"share","value":"amount","id":"id"},
+                "title":"Deals","options":{"size":true},"select":{"state":"picked"}},
+               {"type":"flows","query":"invoices",
+                "fields":{"from_lat":"share","from_lon":"share","to_lat":"share","to_lon":"share"}},
+               {"type":"area","select":{"param":"search"}}]}}
+            """, items[1]!["node"]);
+        // time travel names the shown period
+        Assert.Throws<InvalidOperationException>(() => Viz.Bar.Bar().Time(noAt!));
     }
 
     [Fact]
@@ -868,7 +922,7 @@ public class UiTests
                 .Text("de", "nav.billing", "Abrechnung")
                 .Text("en", "cmd.pay", "Pay one");
                 var j = ui.Build();
-                Assert.Equal(3, j["catalog"]!.GetValue<int>());
+                Assert.Equal(4, j["catalog"]!.GetValue<int>());
                 Same(
                 """
             [{"title":{"key":"nav.billing"},"icon":"receipt","entries":[
@@ -894,6 +948,6 @@ public class UiTests
 
         // building twice gives the same document
         Assert.True(JsonNode.DeepEquals(j, ui.Build()));
-        Same("""{"catalog":3}""", new PluginUi().Build());
+        Same("""{"catalog":4}""", new PluginUi().Build());
     }
 }

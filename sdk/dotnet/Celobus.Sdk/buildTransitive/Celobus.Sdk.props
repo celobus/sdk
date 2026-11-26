@@ -1,0 +1,4 @@
+<Project>
+  <!-- The same alias for a project that references the SDK through another package. -->
+  <Import Project="../build/Celobus.Sdk.props" />
+</Project>

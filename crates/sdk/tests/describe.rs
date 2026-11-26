@@ -504,3 +504,113 @@ fn column_modifiers_are_printed_on_the_entity() {
         celobus_descriptor::validate(&celobus_descriptor::parse(d.to_string().as_bytes()).unwrap());
     assert_eq!(errors, vec![]);
 }
+
+#[derive(Entity, Clone, Debug)]
+pub struct Report {
+    pub id: Id<Report>,
+    pub title: String,
+    #[field(max_size = "1 GiB", accept = ["image/*", "application/pdf"])]
+    pub scans: Vec<File>,
+    pub cover: Option<File>,
+    pub signed: File,
+}
+
+#[derive(Message, Clone, Debug)]
+pub struct ImportCsvRequest {
+    #[field(accept = ["text/csv"], max_size = 1048576)]
+    pub file: File,
+}
+
+#[derive(Message, Clone, Debug)]
+pub struct Imported {
+    pub rows: i64,
+}
+
+async fn import_csv(_: Ctx, _: ImportCsvRequest) -> Result<Imported> {
+    Ok(Imported { rows: 0 })
+}
+
+#[test]
+fn file_fields_and_their_options_are_printed() {
+    let json = Plugin::new("reports", "0.1.0")
+        .entity::<Report>()
+        .endpoint(Endpoint::new(import_csv))
+        .describe_json()
+        .unwrap();
+    let d: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let fields = &d["entities"][0]["fields"];
+    assert_eq!(
+        fields[2],
+        serde_json::json!({ "name": "scans", "number": 3, "type": "file", "repeated": true, "optional": false,
+                            "description": "", "max_size": 1u64 << 30, "accept": ["image/*", "application/pdf"] })
+    );
+    assert_eq!(
+        (&fields[3]["type"], &fields[3]["optional"]),
+        (&serde_json::json!("file"), &serde_json::json!(true))
+    );
+    assert!(fields[3].get("max_size").is_none() && fields[3].get("accept").is_none());
+    assert_eq!(
+        (
+            &fields[4]["type"],
+            &fields[4]["optional"],
+            &fields[4]["repeated"]
+        ),
+        (
+            &serde_json::json!("file"),
+            &serde_json::json!(false),
+            &serde_json::json!(false)
+        )
+    );
+    // the entity's message keeps the options too
+    let report = d["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "Report")
+        .unwrap();
+    assert_eq!(report["fields"][2]["max_size"], 1u64 << 30);
+    let import = d["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "ImportCsvRequest")
+        .unwrap();
+    assert_eq!(
+        import["fields"][0]["accept"],
+        serde_json::json!(["text/csv"])
+    );
+    assert_eq!(import["fields"][0]["max_size"], 1_048_576);
+    let errors = celobus_descriptor::validate(&celobus_descriptor::parse(json.as_bytes()).unwrap());
+    assert_eq!(errors, vec![]);
+}
+
+#[test]
+fn a_file_value_reads_and_writes_its_json() {
+    let f = File {
+        id: "0193".into(),
+        name: "ads.csv".into(),
+        content_type: "text/csv".into(),
+        size: 2_100_000,
+    };
+    let json = serde_json::json!({ "id": "0193", "name": "ads.csv", "type": "text/csv", "size": "2100000" });
+    assert_eq!(serde_json::to_value(&f).unwrap(), json);
+    let req = ImportCsvRequest { file: f.clone() };
+    assert_eq!(req.to_json(), serde_json::json!({ "file": json }));
+    // a size as a number reads the same
+    let back = ImportCsvRequest::from_json(
+        &serde_json::json!({ "file": { "id": "0193", "name": "ads.csv", "type": "text/csv", "size": 2_100_000 } }),
+        "",
+    )
+    .unwrap();
+    assert_eq!(back.file, f);
+    let serde_back: File =
+        serde_json::from_value(serde_json::json!({ "id": "0193", "size": 7 })).unwrap();
+    assert_eq!(serde_back.size, 7);
+    assert_eq!(serde_json::from_value::<File>(json).unwrap(), f);
+    // a file without an id is refused
+    assert!(
+        ImportCsvRequest::from_json(&serde_json::json!({ "file": { "name": "x" } }), "").is_err()
+    );
+    // and a missing single file is required
+    assert!(ImportCsvRequest::from_json(&serde_json::json!({}), "").is_err());
+}

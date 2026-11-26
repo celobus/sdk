@@ -19,6 +19,11 @@
 // async handler(ctx, p) { .. } })`, listed in `plugin({ jobs: { remindUnpaid } })`, started with
 // `ctx.jobs.enqueue(remindUnpaid, { olderThanDays: 7 })`.
 //
+// Files: a field `t.file({ maxSize: '1 GiB', accept: ['text/csv'] })` (a list: `t.array(t.file())`) holds a `File`
+// (`{ id, name, type, size }`), never its bytes; `ctx.files.open(file)` streams them (`.lines()`),
+// `ctx.files.create(name, type)` writes a new file (`write`, then `finish` gives its `File`), `ctx.files.head(file)`.
+// Screens bind them with `f.upload(..)` in a form, `.attach(..)` on a composer, `.files(..)` on a post, a `file` column.
+//
 // An analytic view: `export const sales = view({ columns: { day: t.date(), amount: t.decimal() }, query: (q) =>
 // q.from(orderLine).join(order, orderLine.f.orderId).where(order.f.paidAt.geCol(daysAgo(365)))
 // .columns({ day: order.f.paidAt.day(), amount: orderLine.f.amount }) })`, listed in `plugin({ views: { sales } })`,
@@ -56,6 +61,8 @@ export {
   view,
   t,
   type AnyField,
+  type File,
+  type FileOptions,
   type EntityOptions,
   type ForeignEntityOptions,
   type FieldRefs,
@@ -86,7 +93,12 @@ export {
   type HistoryOptions,
   type ParseKind,
   type ParseValue,
+  type MessageKind,
+  type MessageOptions,
+  type SettingBound,
 } from "./schema.js";
+export { Secret } from "./secret.js";
+export { SettingsDef, settingsDef, type SettingsChange, type SettingsOptions } from "./settings.js";
 export {
   HistoryDef,
   historyOf,
@@ -202,6 +214,7 @@ export {
   type AgentRun,
   type AgentRunOptions,
   type AgentRunStatus,
+  type AgentSendOptions,
   type Agents,
   type AvailableAgent,
   type CallerKind,
@@ -255,6 +268,15 @@ export { type LogFields, type Logger, type LogLevel } from "./log.js";
 export { Plugin, plugin } from "./plugin.js";
 export { testCtx, type TestCaller, type TestCtxOptions, type TestRun } from "./testing.js";
 export {
+  MemoryFiles,
+  type CreateOptions,
+  type FileInfo,
+  type FileStream,
+  type FileWriter,
+  type Files,
+  type OpenOptions,
+} from "./files.js";
+export {
   ActionRef,
   AgentRunB,
   ConversationB,
@@ -301,6 +323,8 @@ export {
   UiDoc,
   Val,
   VizB,
+  TimeB,
+  MapLayerB,
   WidgetBuilder,
   CardB,
   ComposerB,
@@ -339,6 +363,11 @@ export {
   type VizAs,
   type VizCatalogue,
   type VizFamily,
+  type TimeRead,
+  type TimeControl,
+  type TimeCompare,
+  type TimeGrain,
+  type MapLayerKind,
   type VizKind,
   type VizSource,
 } from "./ui.js";

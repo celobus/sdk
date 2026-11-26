@@ -236,6 +236,8 @@ pub enum ConnectionKind {
     Llm,
     /// Speech recognition, for the workspace's dictation.
     Stt,
+    /// A basemap provider, for the plugin's maps (and its dependents').
+    Maps,
 }
 
 impl ConnectionKind {
@@ -243,6 +245,7 @@ impl ConnectionKind {
         match self {
             ConnectionKind::Llm => "llm",
             ConnectionKind::Stt => "stt",
+            ConnectionKind::Maps => "maps",
         }
     }
 }
@@ -284,6 +287,12 @@ impl Connection {
     /// Speech recognition for dictation.
     pub fn stt(name: impl Into<String>) -> Self {
         Self::new(name, ConnectionKind::Stt)
+    }
+
+    /// A basemap provider for maps: a map (`viz::geo::map().connection(..)`) names it. Not set up, it draws
+    /// OpenStreetMap; an owner or admin may choose another provider and give its key.
+    pub fn maps(name: impl Into<String>) -> Self {
+        Self::new(name, ConnectionKind::Maps)
     }
 
     /// Its display name (at most 80 characters).

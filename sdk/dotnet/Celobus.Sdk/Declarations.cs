@@ -305,6 +305,8 @@ public enum ConnectionKind
     Llm,
     /// <summary>Speech recognition, for the workspace's dictation.</summary>
     Stt,
+    /// <summary>A basemap provider, for the plugin's maps (and its dependents').</summary>
+    Maps,
 }
 
 /// <summary>
@@ -327,6 +329,11 @@ public sealed class Connection
 
     /// <summary>Speech recognition for dictation, named <paramref name="name"/> (snake_case).</summary>
     public static Connection Stt(string name) => new(name, ConnectionKind.Stt);
+
+    /// <summary>A basemap provider for maps, named <paramref name="name"/> (snake_case): a map
+    /// (<c>Viz.Geo.Map().Connection(..)</c>) names it. Not set up, it draws OpenStreetMap; an owner or admin may choose
+    /// another provider and give its key.</summary>
+    public static Connection Maps(string name) => new(name, ConnectionKind.Maps);
 
     /// <summary>Its display name (at most 80 characters).</summary>
     public Connection Title(string title)

@@ -1386,7 +1386,34 @@ impl<'a> Check<'a> {
                     );
                 }
             }
+            Step::Download(f) => self.download(f, p, ctx),
             Step::Close {} | Step::Back {} => {}
+        }
+    }
+
+    /// A `download` step: a single `file` field of the answer of the call before it.
+    fn download(&mut self, f: &str, p: &str, ctx: &Ctx) {
+        let Some(m) = ctx.result.clone() else {
+            self.err(
+                "E_UI_REF_CONTEXT",
+                p,
+                "download reads a file of a call's answer: put it after a call",
+            );
+            return;
+        };
+        match self.path(&m, f) {
+            None => self.err("E_UI_FIELD_UNKNOWN", p, format!("{m} has no field {f}")),
+            Some(x) if !x.is_file() => self.err(
+                "E_UI_ARG_TYPE",
+                p,
+                format!("{m}.{f} is {}; download takes a file field", x.ty),
+            ),
+            Some(x) if x.repeated => self.err(
+                "E_UI_ARG_TYPE",
+                p,
+                format!("{m}.{f} is a list of files; download takes one file"),
+            ),
+            Some(_) => {}
         }
     }
 
@@ -1591,6 +1618,19 @@ impl<'a> Check<'a> {
                         }) = &c.format
                         {
                             self.row_field(&msg, cur, &format!("{p}.columns[{}].format", c.field));
+                        }
+                        if c.format == Some(Format::File {})
+                            && let Some(f) = self.path(&msg, &c.field)
+                            && !f.is_file()
+                        {
+                            self.err(
+                                "E_UI_ARG_TYPE",
+                                format!("{p}.columns[{}].format", c.field),
+                                format!(
+                                    "{} is {}; the file format shows a file field",
+                                    c.field, f.ty
+                                ),
+                            );
                         }
                     }
                     let rc = Ctx {
@@ -2490,6 +2530,448 @@ impl<'a> Check<'a> {
         if let Some(t) = &v.open {
             self.target(t, &format!("{p}.open"), sc, ctx, screens, false);
         }
+        self.viz_map(v, p, sc);
+        if let Some(t) = &v.time {
+            self.viz_time(v, t, &format!("{p}.time"), sc);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ catalog 4
+
+    /// A state or a param of the frame, by a `Bind`; its type when it is declared.
+    fn bound(&mut self, b: &Bind, p: &str, sc: &Scope<'a>) -> Option<&'a str> {
+        let (name, found, code, what) = match b {
+            Bind::State(n) => (n, sc.state.get(n.as_str()), "E_UI_STATE_UNKNOWN", "state"),
+            Bind::Param(n) => (n, sc.params.get(n.as_str()), "E_UI_PARAM_UNKNOWN", "param"),
+        };
+        if found.is_none() {
+            self.err(code, p, format!("{what} {name} is not declared"));
+        }
+        found.copied()
+    }
+
+    /// A row field a role reads, of the kind the role takes.
+    fn typed_field(&mut self, msg: &str, f: &str, want: RoleType, p: &str) {
+        let Some(field) = self.row_field(msg, f, p) else {
+            return;
+        };
+        let ty = field.ty.as_str();
+        let ok = match want {
+            RoleType::Any => true,
+            _ if field.repeated => false,
+            RoleType::Number => matches!(ty, "double" | "decimal" | "int32" | "int64"),
+            RoleType::Bool => ty == "bool",
+            RoleType::Shape => matches!(ty, "json" | "string"),
+        };
+        if !ok {
+            let need = match want {
+                RoleType::Number => "a number (double, decimal, int32 or int64)",
+                RoleType::Bool => "a bool",
+                RoleType::Shape => "a GeoJSON geometry: a json field, or a string holding its text",
+                RoleType::Any => "",
+            };
+            self.err(
+                "E_UI_ARG_TYPE",
+                p,
+                format!(
+                    "{msg}.{f} is {}{ty}; this role reads {need}",
+                    if field.repeated { "a list of " } else { "" }
+                ),
+            );
+        }
+    }
+
+    /// The queries a `viz` reads: its binds' and its layers'.
+    fn viz_queries(v: &Viz) -> Vec<&str> {
+        let mut out: Vec<&str> = vec![];
+        for b in &v.bind {
+            match &b.from {
+                VizSource::Column { query, .. }
+                | VizSource::Series { query, .. }
+                | VizSource::Pivot { query, .. }
+                | VizSource::Rows { query, .. } => out.push(query),
+                VizSource::Value(Value::Data { query, .. }) => out.push(query),
+                VizSource::Value(_) => {}
+            }
+        }
+        out.extend(v.layers.iter().filter_map(|l| l.query.as_deref()));
+        out
+    }
+
+    /// Time travel: the periods are rows of a query in scope, `at`, `window` and `then` are distinct states or
+    /// params of the frame, a query of the card passes `at`, and the kind can draw what is asked of it.
+    fn viz_time(&mut self, v: &Viz, t: &VizTime, p: &str, sc: &Scope<'a>) {
+        use crate::viz_kinds::{AXIS_KINDS, COMPARE_KINDS};
+        let pp = format!("{p}.periods");
+        if let Some(msg) = self.rows_message(&t.periods.query, sc, &pp) {
+            self.typed_field(
+                &msg,
+                &t.periods.value,
+                RoleType::Any,
+                &format!("{pp}.value"),
+            );
+            self.typed_field(
+                &msg,
+                &t.periods.label,
+                RoleType::Any,
+                &format!("{pp}.label"),
+            );
+            for (name, f, want) in [
+                ("date", &t.periods.date, RoleType::Any),
+                ("track", &t.periods.track, RoleType::Number),
+                ("partial", &t.periods.partial, RoleType::Bool),
+            ] {
+                if let Some(f) = f {
+                    self.typed_field(&msg, f, want, &format!("{pp}.{name}"));
+                }
+            }
+        }
+        let at_declared = self.bound(&t.at, &format!("{p}.at"), sc).is_some();
+        if let Some(w) = &t.window
+            && let Some(ty) = self.bound(w, &format!("{p}.window"), sc)
+            && !matches!(ty, "int32" | "int64")
+        {
+            self.err(
+                "E_UI_ARG_TYPE",
+                format!("{p}.window"),
+                format!("the window is a number of periods: an int32 or int64, not {ty}"),
+            );
+        }
+        if let Some(th) = &t.then {
+            self.bound(th, &format!("{p}.then"), sc);
+        }
+        let upto_declared = t.upto.as_ref().map(|u| {
+            let ty = self.bound(u, &format!("{p}.upto"), sc);
+            if let Some(ty) = ty
+                && !matches!(ty, "int32" | "int64")
+            {
+                self.err(
+                    "E_UI_ARG_TYPE",
+                    format!("{p}.upto"),
+                    format!("the cut is a number of days: an int32 or int64, not {ty}"),
+                );
+            }
+            ty.is_some()
+        });
+        let targets = [
+            Some(&t.at),
+            t.window.as_ref(),
+            t.then.as_ref(),
+            t.upto.as_ref(),
+        ];
+        let named: Vec<&Bind> = targets.into_iter().flatten().collect();
+        if named
+            .iter()
+            .enumerate()
+            .any(|(i, b)| named[..i].contains(b))
+        {
+            self.err(
+                "E_UI_VIZ_TIME",
+                p.to_string(),
+                "at, window, then and upto are different states or params",
+            );
+        }
+        // the period must reach the data: a query of the card passes `at` (and the cut, `upto`)
+        let value_of = |b: &Bind| match b {
+            Bind::State(n) => Value::State(n.clone()),
+            Bind::Param(n) => Value::Param(n.clone()),
+        };
+        let queries = Self::viz_queries(v);
+        let passed = |b: &Bind| {
+            let value = value_of(b);
+            queries.iter().any(|q| {
+                sc.queries
+                    .get(q)
+                    .is_some_and(|q| q.args.iter().any(|a| a.value == value))
+            })
+        };
+        let passes = passed(&t.at);
+        // (an undeclared `at`, or a map without layers, is reported already)
+        let no_reads = v.family == "geo" && v.layers.is_empty();
+        let reported = !at_declared || no_reads;
+        if let Some(u) = &t.upto
+            && upto_declared == Some(true)
+            && !no_reads
+            && !passed(u)
+        {
+            self.errors.push(
+                Error::new(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.upto"),
+                    "no query this card reads passes the cut: the earlier period would be read whole",
+                )
+                .help("pass it in an argument of the card's query: .arg(Request::upto, upto)"),
+            );
+        }
+        if !passes && !reported {
+            self.errors.push(
+                Error::new(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.at"),
+                    "no query this card reads passes the shown period: moving it would change nothing",
+                )
+                .help("pass it in an argument of the card's query: .arg(Request::period, at)"),
+            );
+        }
+        let kind = (v.family.as_str(), v.kind.as_str());
+        let control = t.control.unwrap_or(TimeControl::Strip);
+        if control == TimeControl::Axis && !AXIS_KINDS.contains(&kind) {
+            self.err(
+                "E_UI_VIZ_TIME",
+                format!("{p}.control"),
+                format!(
+                    "{}.{} has no time axis of its own; the axis control is for {}",
+                    v.family,
+                    v.kind,
+                    kind_list(AXIS_KINDS)
+                ),
+            );
+        }
+        if t.then.is_some() {
+            if !COMPARE_KINDS.contains(&kind) {
+                self.err(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.then"),
+                    format!(
+                        "{}.{} has no way to show a second period; these kinds have one: {}",
+                        v.family,
+                        v.kind,
+                        kind_list(COMPARE_KINDS)
+                    ),
+                );
+            }
+            if matches!(control, TimeControl::Axis | TimeControl::Screen) {
+                self.err(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.then"),
+                    "a card on its own axis or on the screen's clock does not compare",
+                );
+            }
+            if kind == ("table", "grid") && t.key.is_none() {
+                self.err(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.key"),
+                    "a grid that compares names the column its change column compares (key)",
+                );
+            }
+        }
+        if let Some(c) = t.compare {
+            if t.then.is_none() {
+                self.err(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.compare"),
+                    "what Compare offers first needs the second pin (then)",
+                );
+            } else if c == TimeCompare::Year && t.grain.is_none() {
+                self.err(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.compare"),
+                    "a year before is counted in periods of the grain: name the grain",
+                );
+            }
+        }
+        if t.upto.is_some() {
+            if t.read == TimeRead::State {
+                self.err(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.upto"),
+                    "a level on a date has no part of a period to cut",
+                );
+            }
+            if t.periods.partial.is_none() {
+                self.err(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.periods.partial"),
+                    "the cut is of the running period: name it (partial)",
+                );
+            }
+            if t.grain.is_none() {
+                self.err(
+                    "E_UI_VIZ_TIME",
+                    format!("{p}.grain"),
+                    "the cut counts days from the running period's start: name the grain",
+                );
+            }
+        }
+        if t.window.is_some() && t.read == TimeRead::State {
+            self.err(
+                "E_UI_VIZ_TIME",
+                format!("{p}.window"),
+                "a level on a date sums no window of periods",
+            );
+        }
+        if t.read == TimeRead::Scheduled && t.periods.partial.is_none() {
+            self.err(
+                "E_UI_VIZ_TIME",
+                format!("{p}.periods.partial"),
+                "dates still to come need the running period (partial): the Today line is in it",
+            );
+        }
+    }
+
+    /// A map names a `maps` connection and has layers over queries in scope; no other kind has either.
+    fn viz_map(&mut self, v: &Viz, p: &str, sc: &Scope<'a>) {
+        let map = v.family == "geo";
+        if !map {
+            if v.connection.is_some() {
+                self.err(
+                    "E_UI_VIZ_CONNECTION",
+                    format!("{p}.connection"),
+                    "only a map (geo.map) names a connection",
+                );
+            }
+            if !v.layers.is_empty() {
+                self.err(
+                    "E_UI_VIZ_LAYER",
+                    format!("{p}.layers"),
+                    "only a map (geo.map) has layers",
+                );
+            }
+            return;
+        }
+        match v.connection.as_deref() {
+            None => self.errors.push(
+                Error::new(
+                    "E_UI_VIZ_CONNECTION",
+                    format!("{p}.connection"),
+                    "a map names the maps connection its basemap comes from",
+                )
+                .help("declare Connection::maps(\"maps\") and name it: .connection(\"maps\")"),
+            ),
+            Some(c) => {
+                if let Err(why) = self.maps_connection(c) {
+                    self.errors.push(
+                        Error::new("E_UI_VIZ_CONNECTION", format!("{p}.connection"), format!("{c:?} {why}"))
+                            .help("a maps connection of this plugin by its name, or <dependency>.<connection> of a plugin in dependencies"),
+                    );
+                }
+            }
+        }
+        if v.layers.is_empty() {
+            self.err(
+                "E_UI_VIZ_LAYER",
+                format!("{p}.layers"),
+                "a map draws at least one layer",
+            );
+        }
+        if v.layers.len() > MAP_MAX_LAYERS {
+            self.err(
+                "E_UI_LIMIT",
+                format!("{p}.layers"),
+                format!("{} layers, at most {MAP_MAX_LAYERS}", v.layers.len()),
+            );
+        }
+        for (i, l) in v.layers.iter().enumerate() {
+            let lp = format!("{p}.layers[{i}]");
+            let ty = l.kind.name();
+            if let Some(t) = &l.title {
+                self.text(t, &format!("{lp}.title"));
+            }
+            let size = serde_json::to_string(&l.options).map_or(0, |s| s.len());
+            if size > VIZ_MAX_OPTIONS {
+                self.err(
+                    "E_UI_LIMIT",
+                    format!("{lp}.options"),
+                    format!("the options are {size} bytes, at most {VIZ_MAX_OPTIONS}"),
+                );
+            }
+            if let Some(b) = &l.select {
+                if matches!(
+                    l.kind,
+                    MapLayerKind::Hex
+                        | MapLayerKind::Flows
+                        | MapLayerKind::Rings
+                        | MapLayerKind::Share
+                ) {
+                    self.err(
+                        "E_UI_VIZ_LAYER",
+                        format!("{lp}.select"),
+                        format!("nothing is picked on a {ty} layer"),
+                    );
+                } else {
+                    self.bound(b, &format!("{lp}.select"), sc);
+                }
+            }
+            if l.kind == MapLayerKind::Area {
+                if l.query.is_some() || !l.fields.is_empty() {
+                    self.err(
+                        "E_UI_VIZ_LAYER",
+                        format!("{lp}.query"),
+                        "an area is drawn by the member: it reads no query",
+                    );
+                }
+                if l.select.is_none() {
+                    self.errors.push(
+                        Error::new(
+                            "E_UI_VIZ_LAYER",
+                            format!("{lp}.select"),
+                            "an area writes the drawn polygon into a state or a param (select)",
+                        )
+                        .help("the screen's queries pass it to filter by the area"),
+                    );
+                }
+                continue;
+            }
+            let Some(query) = &l.query else {
+                self.err(
+                    "E_UI_VIZ_LAYER",
+                    format!("{lp}.query"),
+                    format!("a {ty} layer draws the rows of a query"),
+                );
+                continue;
+            };
+            let roles = l.kind.roles();
+            for role in l.fields.keys() {
+                if !roles.iter().any(|(r, _, _)| r == role) {
+                    let names: Vec<&str> = roles.iter().map(|(r, _, _)| *r).collect();
+                    self.errors.push(
+                        Error::new(
+                            "E_UI_VIZ_LAYER",
+                            format!("{lp}.fields.{role}"),
+                            format!("a {ty} layer has no role {role}"),
+                        )
+                        .help(format!("the roles of {ty}: {}", names.join(", "))),
+                    );
+                }
+            }
+            for (role, required, _) in roles {
+                if *required && !l.fields.contains_key(*role) {
+                    self.err(
+                        "E_UI_VIZ_LAYER",
+                        format!("{lp}.fields"),
+                        format!("a {ty} layer needs the role {role}"),
+                    );
+                }
+            }
+            if let Some(msg) = self.rows_message(query, sc, &lp) {
+                for (role, f) in &l.fields {
+                    if let Some((_, _, want)) = roles.iter().find(|(r, _, _)| r == role) {
+                        self.typed_field(&msg, f, *want, &format!("{lp}.fields.{role}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// A map's connection: `<name>` of a `maps` connection of this plugin, or `<dependency>.<name>` of a declared
+    /// dependency (whose connections are checked when the plugin is installed and the screen reads it).
+    fn maps_connection(&self, c: &str) -> Result<(), &'static str> {
+        match c.split_once('.') {
+            None => match self.d.connections.iter().find(|x| x.name == c) {
+                None => Err("is not a connection of this plugin"),
+                Some(x) if x.kind != "maps" => Err("is not a maps connection"),
+                Some(_) => Ok(()),
+            },
+            Some((dep, name)) => {
+                if !celobus_manifest::connection_name_ok(name) {
+                    Err("is not <dependency>.<connection>")
+                } else if !self.d.dependencies.iter().any(|d| d.plugin == dep) {
+                    Err("names a plugin that is not in dependencies")
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------------------------------------ catalog 3
@@ -3095,6 +3577,16 @@ impl<'a> Check<'a> {
         if let Some(c) = tile.and_then(|t| t.when.as_ref()) {
             self.cond(c, &format!("{p}.avatar.tile.when"), sc, rc);
         }
+        if let (Some(files), Some(msg)) = (&x.files, rc.row.clone())
+            && let Some(f) = self.row_path(&msg, &rc.joins, files, &format!("{p}.files"))
+            && !f.is_file()
+        {
+            self.err(
+                "E_UI_ARG_TYPE",
+                format!("{p}.files"),
+                format!("{files} is {}; a post's files are a file field", f.ty),
+            );
+        }
         if let Some(b) = &x.badge {
             self.text_val(&b.text, &format!("{p}.badge.text"), sc, rc);
             if let Some(c) = &b.when {
@@ -3447,6 +3939,7 @@ impl<'a> Check<'a> {
             ..ctx.clone()
         };
         self.use_action(&x.send, &format!("{p}.send"), sc, &fc);
+        self.attach(x, p, sc);
         if let Some(s) = &x.stop {
             self.use_action(&s.action, &format!("{p}.stop"), sc, ctx);
             if let Some(c) = &s.when {
@@ -3505,6 +3998,67 @@ impl<'a> Check<'a> {
         }
     }
 
+    /// The composer's `attach` tool and its `files`: a file field of the request of the send action's first call.
+    fn attach(&mut self, x: &ComposerNode, p: &str, sc: &Scope<'a>) {
+        let attach = x.tools.contains(&ComposerTool::Attach);
+        let Some(field) = &x.files else {
+            if attach {
+                self.err(
+                    "E_UI_SHAPE",
+                    format!("{p}.tools"),
+                    "the attach tool names the file field its files go in (files)",
+                );
+            }
+            return;
+        };
+        let fp = format!("{p}.files");
+        if !attach {
+            self.err(
+                "E_UI_SHAPE",
+                &fp,
+                "files belongs to the attach tool: add attach to tools",
+            );
+        }
+        let call = sc.actions.get(x.send.as_str()).and_then(|a| {
+            a.steps.iter().find_map(|s| match s {
+                Step::Call(c) => Some(c),
+                _ => None,
+            })
+        });
+        let Some(call) = call else {
+            if sc.actions.contains_key(x.send.as_str()) {
+                self.err(
+                    "E_UI_SHAPE",
+                    &fp,
+                    format!(
+                        "the send action {} calls no endpoint for the files to go to",
+                        x.send
+                    ),
+                );
+            }
+            return;
+        };
+        let Some(e) = self.d.endpoints.iter().find(|e| e.name == call.endpoint) else {
+            return;
+        };
+        match self.path(&e.input, field) {
+            None => self.err(
+                "E_UI_FIELD_UNKNOWN",
+                &fp,
+                format!("{} has no field {field}", e.input),
+            ),
+            Some(f) if !f.is_file() => self.err(
+                "E_UI_ARG_TYPE",
+                &fp,
+                format!(
+                    "{}.{field} is {}; the attach tool fills a file field",
+                    e.input, f.ty
+                ),
+            ),
+            Some(_) => {}
+        }
+    }
+
     /// The request message of the first form in a frame's layout.
     fn form_request(&self, n: &Node) -> Option<String> {
         if let Kind::Form(f) = &n.kind {
@@ -3546,6 +4100,45 @@ impl<'a> Check<'a> {
                     format!("{req} has no field {}", i.name),
                 ),
                 Some(f) => {
+                    if i.control == Control::Upload
+                        && f.is_file()
+                        && (i.multiple != f.repeated
+                            || i.max_size != f.max_size
+                            || i.accept != f.accept)
+                    {
+                        self.err(
+                            "E_UI_ARG_TYPE",
+                            p,
+                            format!(
+                                "an upload input carries its field's options: multiple {}, max_size {:?}, \
+                                 accept {:?} (the field {})",
+                                f.repeated, f.max_size, f.accept, i.name
+                            ),
+                        );
+                    }
+                    if (i.control == Control::Upload) != f.is_file() {
+                        self.err(
+                            "E_UI_ARG_TYPE",
+                            p,
+                            format!(
+                                "an upload input fills a file field (File or a list of them), and a file field is \
+                                 filled by an upload input; {} is {} and the input is {:?}",
+                                i.name,
+                                f.ty,
+                                i.control
+                            ),
+                        );
+                    }
+                    if i.control == Control::Secret && (f.ty != "string" || f.repeated) {
+                        self.err(
+                            "E_UI_ARG_TYPE",
+                            p,
+                            format!(
+                                "a secret input fills a string field; {} is {}",
+                                i.name, f.ty
+                            ),
+                        );
+                    }
                     if i.control == Control::Repeat {
                         let Some(FieldType::Message(m)) =
                             FieldType::parse(&f.ty).filter(|_| f.repeated)
@@ -3563,6 +4156,22 @@ impl<'a> Check<'a> {
                     }
                 }
             }
+        }
+        if i.control != Control::Upload
+            && (i.multiple || i.max_size.is_some() || !i.accept.is_empty())
+        {
+            self.err(
+                "E_UI_SHAPE",
+                p,
+                "multiple, max_size and accept belong to an upload input",
+            );
+        }
+        if param && i.control == Control::Upload {
+            self.err(
+                "E_UI_SHAPE",
+                p,
+                "an upload input belongs to a form: it fills a file field of the form's request",
+            );
         }
         if let Some(v) = &i.initial {
             self.value(v, &format!("{p}.initial"), sc, ctx);
@@ -4063,6 +4672,15 @@ fn merge(ctxs: &[Ctx]) -> Ctx {
 
 /// A name of a `viz` option or of a key of its rows: letters, digits and `_` (an index in a path is a name too);
 /// never a name a JavaScript object treats specially (the client writes the bound data under it).
+/// `bar.bar, bar.column, …`
+fn kind_list(kinds: &[(&str, &str)]) -> String {
+    kinds
+        .iter()
+        .map(|(f, k)| format!("{f}.{k}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn option_name(s: &str) -> bool {
     (1..=63).contains(&s.len())
         && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
@@ -4087,7 +4705,9 @@ fn compatible(want: &str, got: &str) -> bool {
         }
     };
     let (w, g) = (norm(want), norm(got));
-    w == g || w == "string" && g != "bool" && !g.starts_with("message:") || w == "json"
+    w == g
+        || w == "string" && !matches!(g.as_str(), "bool" | "file") && !g.starts_with("message:")
+        || w == "json"
 }
 
 /// A scalar as a link carries it (`30` and `"30"` are the same param value).
@@ -4121,6 +4741,9 @@ fn lit_fits(ty: &str, repeated: bool, v: &serde_json::Value) -> bool {
         (Some(FieldType::Enum(_)), _) => false,
         (Some(FieldType::Ref { .. }), J::String(_)) => true,
         (Some(FieldType::Ref { .. }), _) => false,
+        // a file the caller may read, by its id
+        (Some(FieldType::Scalar("file")), J::Object(o)) => o.get("id").is_some_and(J::is_string),
+        (Some(FieldType::Scalar("file")), _) => false,
         _ => true,
     }
 }

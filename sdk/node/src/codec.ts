@@ -2,7 +2,7 @@
 // mapping. Field names are the protobuf JSON names (lowerCamelCase: the TypeScript keys); the snake_case
 // descriptor names are accepted on input too. int64 is a string (a number is accepted on input), enums are their
 // value names, `decimal` is a string, `timestamp` an RFC 3339 string, `date` `YYYY-MM-DD`, `bytes` base64,
-// `json` the value itself. Unknown fields are ignored.
+// `json` the value itself, `file` `{"id", "name", "type", "size"}` (the size a string). Unknown fields are ignored.
 //
 // Absent fields follow proto3: a required scalar, enum, ref or repeated field that is absent reads as its
 // default (`""`, `0`, `0n`, `false`, the first enum value, `[]`), a required message as the message read from `{}`
@@ -10,6 +10,7 @@
 // invalid. Output emits every field that has a value, defaults included, except in an `omitDefaults` message.
 import { Decimal } from "./decimal.js";
 import { jsonName, snake } from "./names.js";
+import { Secret } from "./secret.js";
 import { EntityDef, Field, MessageDef, PlatformEntity, type AnyField, type KeyType, type LakeSource, type RefTarget, type ViewDef } from "./schema.js";
 
 /** What has fields the codec reads and writes: a message, an entity's message, a view's or a lake table's row. */
@@ -130,6 +131,8 @@ function defaultValue(field: AnyField, path: string, errors: FieldErrors): unkno
         case "string":
         case "uuid":
           return "";
+        case "secret":
+          return new Secret("");
         case "bool":
           return false;
         case "int32":
@@ -184,6 +187,8 @@ function decodeValue(field: AnyField, raw: unknown, path: string, errors: FieldE
       return typeof raw === "string" ? raw : fail("expected a string");
     case "uuid":
       return typeof raw === "string" && UUID.test(raw) ? raw : fail("expected a uuid");
+    case "secret":
+      return typeof raw === "string" ? new Secret(raw) : fail("expected a string");
     case "bool":
       return typeof raw === "boolean" ? raw : fail("expected true or false");
     case "int32": {
@@ -224,7 +229,35 @@ function decodeValue(field: AnyField, raw: unknown, path: string, errors: FieldE
       return typeof raw === "string" && BASE64.test(raw) ? Buffer.from(raw, "base64") : fail("expected base64");
     case "json":
       return raw;
+    case "file":
+      return decodeFile(raw, path, errors);
   }
+}
+
+/** A `File` from its JSON (`{"id", "name", "type", "size"}`, the size a string or a number); the id is required. */
+function decodeFile(raw: unknown, path: string, errors: FieldErrors): unknown {
+  if (!isObject(raw)) {
+    errors[path] = "expected a file ({id, name, type, size})";
+    return undefined;
+  }
+  const text = (k: string): string | undefined => {
+    const v = raw[k];
+    if (v === undefined || v === null) return "";
+    if (typeof v === "string") return v;
+    errors[`${path}.${k}`] = "expected a string";
+    return undefined;
+  };
+  const id = text("id");
+  if (id === "") errors[`${path}.id`] = "expected a file id";
+  const name = text("name");
+  const type = text("type");
+  let size = 0;
+  const s = raw.size;
+  if (typeof s === "number" && Number.isSafeInteger(s) && s >= 0) size = s;
+  else if (typeof s === "string" && /^\d+$/.test(s) && Number.isSafeInteger(Number(s))) size = Number(s);
+  else if (s !== undefined && s !== null) errors[`${path}.size`] = "expected a number of bytes";
+  if (!id || name === undefined || type === undefined) return undefined;
+  return { id, name, type, size };
 }
 
 function validDate(s: string): boolean {
@@ -324,6 +357,8 @@ function encodeValue(field: AnyField, v: unknown, path: string): unknown {
     case "string":
     case "uuid":
       return typeof v === "string" ? v : fail("expected a string");
+    case "secret":
+      return v instanceof Secret ? v.expose() : typeof v === "string" ? v : fail("expected a Secret");
     case "bool":
       return typeof v === "boolean" ? v : fail("expected a boolean");
     case "int32":
@@ -352,6 +387,14 @@ function encodeValue(field: AnyField, v: unknown, path: string): unknown {
       return v instanceof Uint8Array ? Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString("base64") : fail("expected a Uint8Array");
     case "json":
       return v;
+    case "file": {
+      if (!isObject(v) || typeof v.id !== "string" || v.id === "") return fail("expected a File ({ id, name, type, size })");
+      const size = v.size ?? 0;
+      if (!((typeof size === "number" && Number.isSafeInteger(size) && size >= 0) || (typeof size === "bigint" && size >= 0n))) {
+        return fail("expected a File whose size is a number of bytes");
+      }
+      return { id: v.id, name: String(v.name ?? ""), type: String(v.type ?? ""), size: String(size) };
+    }
   }
 }
 

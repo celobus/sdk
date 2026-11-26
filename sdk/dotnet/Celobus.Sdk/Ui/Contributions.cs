@@ -11,8 +11,8 @@ namespace Celobus.Sdk.Ui;
 /// </summary>
 public sealed class PluginUi
 {
-    /// <summary>The catalog revision the document is written for (2: charts and figures, <see cref="Viz"/>, and dashboards, <see cref="BoardNode"/>; 3: the app-like primitives).</summary>
-    public const int Catalog = 3;
+    /// <summary>The catalog revision the document is written for (2: charts and figures, <see cref="Viz"/>, and dashboards, <see cref="BoardNode"/>; 3: the app-like primitives; 4: time travel, <c>Time</c>, and maps, <c>Viz.Geo.Map()</c>).</summary>
+    public const int Catalog = 4;
 
     private readonly List<object> _nav = [];
     private readonly List<object> _home = [];

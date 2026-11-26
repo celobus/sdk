@@ -40,6 +40,9 @@ mod db_tests;
 pub mod descriptor;
 pub mod endpoint;
 pub mod error;
+pub mod files;
+#[cfg(test)]
+mod files_tests;
 #[cfg(test)]
 mod history_tests;
 pub mod identity;
@@ -62,13 +65,16 @@ pub mod plugin;
 pub mod query;
 pub mod runlog;
 mod session;
+pub mod settings;
+#[cfg(test)]
+mod settings_tests;
 pub mod sql;
 pub mod types;
 pub mod ui;
 
 pub use agents::{
     AgentActor, AgentEvent, AgentEvents, AgentPartial, AgentPartialMessage, AgentRun,
-    AgentRunError, AgentRunStatus, AvailableAgent, RunChange, RunOptions,
+    AgentRunError, AgentRunStatus, AvailableAgent, RunChange, RunOptions, SendInput, StartRun,
 };
 pub use celobus_sdk_derive::{Entity, LakeTable, Message, View};
 pub use ctx::{Caller, CallerKind, Ctx, PluginInfo, RequestInfo};
@@ -79,6 +85,7 @@ pub use db::{
 pub use descriptor::{DescribeError, DescribeErrors, Descriptor};
 pub use endpoint::{Auth, Endpoint, Idempotency};
 pub use error::{Error, ErrorCode, Result};
+pub use files::{FileInfo, FileReader, FileWriter, Files};
 pub use identity::{
     Agent, AgentEngine, Capability, Connection, ConnectionKind, DefaultFor, Role, Scope,
 };
@@ -92,8 +99,9 @@ pub use notify::Notifications;
 pub use plugin::Plugin;
 pub use query::Query;
 pub use runlog::run_log_layer;
+pub use settings::{Secret, Settings, SettingsChange};
 pub use sql::{Exported, Read, Sql};
-pub use types::{Date, Decimal, Id, Json, Timestamp, Uuid};
+pub use types::{Date, Decimal, File, Id, Json, Timestamp, Uuid};
 
 /// `use celobus_sdk::prelude::*;`: everything a plugin file needs.
 pub mod prelude {
@@ -105,6 +113,7 @@ pub mod prelude {
     pub use crate::db::{Filter, Page, Patch, Row, Tx, TxOptions};
     pub use crate::endpoint::{Auth, Endpoint, Idempotency};
     pub use crate::error::{Error, ErrorCode, Result};
+    pub use crate::files::{FileInfo, FileReader, FileWriter};
     pub use crate::identity::{
         Agent, AgentEngine, Capability, Connection, ConnectionKind, DefaultFor, Role, Scope,
     };
@@ -114,9 +123,12 @@ pub mod prelude {
     pub use crate::platform;
     pub use crate::plugin::Plugin;
     pub use crate::query::{ColumnCompare, View, days_ago};
+    pub use crate::settings::{Secret, Settings, SettingsChange};
     pub use crate::sql::{Exported, Read, Sql};
-    pub use crate::types::{Date, Decimal, Id, Json, Timestamp, Uuid};
+    pub use crate::types::{Date, Decimal, File, Id, Json, Timestamp, Uuid};
     pub use celobus_sdk_derive::{Entity, LakeTable, Message, View};
+    /// `read_to_end`, `write_all` and the rest on a file's reader and writer.
+    pub use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
 }
 
 /// Used by the code the derives generate; not a public API.

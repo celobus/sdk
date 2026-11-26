@@ -762,7 +762,7 @@ fn value_fits(d: &Descriptor, f: &crate::Field, v: &Value) -> bool {
             "bool" => v.is_boolean(),
             "int32" | "double" => v.is_number(),
             "int64" | "decimal" => v.is_number() || v.is_string(),
-            "json" | "bytes" => false,
+            "json" | "bytes" | "file" => false,
             _ => v.is_string(),
         },
         Some(FieldType::Enum(name)) => v.as_str().is_some_and(|x| {

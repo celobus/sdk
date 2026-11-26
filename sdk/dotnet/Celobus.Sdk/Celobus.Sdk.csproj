@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PackageId>Celobus.Sdk</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <Authors>Celobus</Authors>
@@ -25,6 +25,9 @@
     <None Include="README.md" Pack="true" PackagePath="" />
     <None Include="LICENSE" Pack="true" PackagePath="" />
     <None Include="icon.png" Pack="true" PackagePath="" />
+    <!-- `global using File = Celobus.Sdk.File;` in the projects that reference the package (File.cs says why) -->
+    <None Include="build/Celobus.Sdk.props" Pack="true" PackagePath="build" />
+    <None Include="buildTransitive/Celobus.Sdk.props" Pack="true" PackagePath="buildTransitive" />
   </ItemGroup>
   <ItemGroup>
     <!-- The analyzers ship inside this package (analyzers/dotnet/cs): a plugin references Celobus.Sdk alone. -->

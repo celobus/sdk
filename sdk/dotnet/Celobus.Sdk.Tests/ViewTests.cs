@@ -46,7 +46,7 @@ public class ViewTests
     {
         var platform = new FakeSyscalls(_ => new SyscallResult { DbRows = new DbRows() });
         var q = Estimates(Context(platform));
-        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/estimates.json")));
+        var expected = JsonNode.Parse(System.IO.File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/estimates.json")));
         var tree = JsonNode.Parse(q.TreeJson());
         Assert.True(JsonNode.DeepEquals(expected, tree), tree!.ToJsonString());
         await q.ToListAsync();
@@ -65,7 +65,7 @@ public class ViewTests
     {
         var platform = new FakeSyscalls(_ => new SyscallResult { DbRows = new DbRows() });
         var q = Weekly(Context(platform));
-        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/weekly.json")));
+        var expected = JsonNode.Parse(System.IO.File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance/weekly.json")));
         var tree = JsonNode.Parse(q.TreeJson());
         Assert.True(JsonNode.DeepEquals(expected, tree), tree!.ToJsonString());
         await q.ToListAsync();
@@ -81,7 +81,7 @@ public class ViewTests
         var plugin = J.JobsdemoPlugin.Define();
         Assert.Empty(plugin.Check());
         var d = JsonNode.Parse(plugin.DescriptorJson())!;
-        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "jobs.json")))!;
+        var expected = JsonNode.Parse(System.IO.File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "jobs.json")))!;
         Assert.True(JsonNode.DeepEquals(expected["views"], d["views"]), d["views"]!.ToJsonString());
         // the views' rows follow the topics' keys, the lake tables' rows follow them
         Assert.Equal(["RecentTask", "TasksByWeek", "LongEstimate", "TaskLoadRow", "TaskDay", "TaskHours", "IssueWeek", "BudgetCopy",

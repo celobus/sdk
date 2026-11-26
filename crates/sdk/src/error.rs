@@ -223,8 +223,15 @@ impl From<anyhow::Error> for Error {
     }
 }
 
+/// An I/O error, `internal`; an SDK error carried through I/O (a file's reader or writer) comes back as it was.
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
+        if e.get_ref().is_some_and(|inner| inner.is::<Error>()) {
+            return match e.into_inner().map(|inner| inner.downcast::<Error>()) {
+                Some(Ok(err)) => *err,
+                _ => Self::internal("an I/O error"),
+            };
+        }
         Self::internal(e)
     }
 }

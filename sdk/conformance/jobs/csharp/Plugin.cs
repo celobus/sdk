@@ -2,7 +2,9 @@
 // A task is created and its processing enqueued in one transaction (a request that asks to fail rolls both back);
 // a daily report is enqueued once per day (a singleton); a heartbeat runs every minute and logs a few lines; a flaky
 // job fails its first attempt and succeeds on the second; a doomed job fails for good; a slow job works in steps of
-// a second and stops when it is aborted (its timeout is 10 s). Its `--describe` must equal ../descriptor.json.
+// a second and stops when it is aborted (its timeout is 10 s). Files: a document keeps the files it was given (a
+// field with a size limit and accepted types), its first file is imported by a job that reads it line by line, and an
+// export answers a file it writes. Its `--describe` must equal ../descriptor.json.
 using Celobus.Sdk;
 using Celobus.Sdk.Linq;
 
@@ -33,12 +35,20 @@ public static class JobsdemoPlugin
             a.Read(Member);
             a.Mask(b => b.Notes, Member);
         })
+        .Entity<Document>()
+        .Access<Document>(a =>
+        {
+            a.Read(Member);
+            a.Create(Member);
+        })
         .Capability(Capability.AuthzBypass, "The lake's models copy the estimates and the budgets")
         .Bypass<Estimate>(Perm.Read)
         .Bypass<Budget>(Perm.Read)
         .Endpoint<CreateTask>()
         .Endpoint<EnqueueReport>()
         .Endpoint<CancelRun>()
+        .Endpoint<AddDocument>()
+        .Endpoint<ExportTasks>()
         .Endpoint<LoadTasks>()
         .Endpoint<TaskDays>()
         .Endpoint<RefreshTables>()
@@ -46,6 +56,7 @@ public static class JobsdemoPlugin
         .Endpoint<LoadStageDays>()
         .Endpoint<StageDays>()
         .Job<ProcessTaskJob>()
+        .Job<ImportFileJob>()
         .Job<DailyReportJob>()
         .Job<HeartbeatJob>()
         .Job<FlakyJob>()

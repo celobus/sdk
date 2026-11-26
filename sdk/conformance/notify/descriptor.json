@@ -565,7 +565,7 @@
   "scopes": [],
   "title": "Notify",
   "ui": {
-    "catalog": 3,
+    "catalog": 4,
     "overlays": [
       {
         "id": "order_panel",

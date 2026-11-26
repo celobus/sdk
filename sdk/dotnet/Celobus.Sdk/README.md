@@ -3,6 +3,8 @@
 The [Celobus](https://celobus.com) plugin SDK for .NET: a plugin's identity, endpoints, entities, screens, agents
 and jobs declared in code, the descriptor it prints for `--describe`, and its session with the platform. .NET 10.
 The package carries its analyzers: a query the SDK cannot translate is a build error (`CELOBUS060`).
+It also declares `global using File = Celobus.Sdk.File;` in the project: `File` is a file field's type
+(`ctx.Files` reads and writes its bytes) and the file system's is written `System.IO.File`.
 
 ```sh
 dotnet add package Celobus.Sdk

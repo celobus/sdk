@@ -21,6 +21,7 @@ macro_rules! viz_catalogue {
                 funnel, icicle, layers, matrix, network, outline, paths, polar, quadrant, radar, route, sankey,
                 steps, tilemap, tree, words
             }
+            geo { map }
             line { bump, line, multiples, slope }
             meter {
                 bullet, checklist, gauge, level, meter, meter_list "meterList", range, rating, ring, steps, versus
@@ -59,6 +60,28 @@ macro_rules! table {
 }
 viz_catalogue!(table);
 
+/// The kinds that show a second period of time travel (`time.then`) with an option of their own for "the period
+/// before" (bars paired with it, a ghost of the columns, a delta on a metric, an inner ring of a donut, the change
+/// of a share in points, two series of a funnel, a dumbbell, a treemap shaded by change, a change column of a
+/// grid, the earlier period's line, quiet, under a line, a map's change between the two dates).
+pub const COMPARE_KINDS: &[(&str, &str)] = &[
+    ("bar", "bar"),
+    ("bar", "column"),
+    ("bar", "dotplot"),
+    ("bar", "funnel"),
+    ("figure", "metric"),
+    ("figure", "metrics"),
+    ("geo", "map"),
+    ("line", "line"),
+    ("part", "donut"),
+    ("part", "share"),
+    ("part", "treemap"),
+    ("table", "grid"),
+];
+
+/// The kinds whose own axis is time: with the control `axis` a click on a mark moves the shown period.
+pub const AXIS_KINDS: &[(&str, &str)] = &[("bar", "column"), ("line", "line")];
+
 /// Whether the catalogue has this kind in this family.
 pub fn known(family: &str, kind: &str) -> bool {
     kinds(family).is_some_and(|k| k.contains(&kind))
@@ -78,8 +101,11 @@ mod tests {
 
     #[test]
     fn the_catalogue_is_sorted_and_whole() {
-        assert_eq!(FAMILIES.len(), 9);
-        assert_eq!(FAMILIES.iter().map(|(_, k)| k.len()).sum::<usize>(), 82);
+        assert_eq!(FAMILIES.len(), 10);
+        assert_eq!(FAMILIES.iter().map(|(_, k)| k.len()).sum::<usize>(), 83);
+        for (f, k) in COMPARE_KINDS.iter().chain(AXIS_KINDS) {
+            assert!(known(f, k), "{f}.{k}");
+        }
         assert!(FAMILIES.windows(2).all(|w| w[0].0 < w[1].0));
         for (family, kinds) in FAMILIES {
             assert!(kinds.windows(2).all(|w| w[0] < w[1]), "{family}");

@@ -540,6 +540,12 @@ public sealed class PostTemplate<TRow>
         return this;
     }
 
+    /// <summary>
+    /// The files of the row (a <c>File</c> or <c>List&lt;File&gt;</c> field): images as a grid, audio and video as
+    /// players, other files as cards with Download.
+    /// </summary>
+    public PostTemplate<TRow> Files<T>(Expression<Func<TRow, T>> field) => Put("files", P(field));
+
     /// <summary>A recording: its duration (s); <see cref="AudioMore"/> adds its label, URL and timed words.</summary>
     public PostTemplate<TRow> Audio<T>(Expression<Func<TRow, T>> duration) => Put("audio", new UiObj { ["duration"] = P(duration) });
 
@@ -1059,6 +1065,18 @@ public sealed class ComposerNode : Node
         _tools.Clear();
         _tools.AddRange(tools.Select(t => UiJson.Name(t)));
         return this;
+    }
+
+    /// <summary>
+    /// The paperclip, paste and drop: files are uploaded for <paramref name="field"/> (a <c>File</c> or
+    /// <c>List&lt;File&gt;</c> field of the request the send action calls) and their ids go in it with the text. Adds
+    /// the <see cref="ComposerTool.Attach"/> tool.
+    /// </summary>
+    public ComposerNode Attach<TReq, T>(Expression<Func<TReq, T>> field)
+    {
+        var attach = UiJson.Name(ComposerTool.Attach);
+        if (!_tools.Contains(attach)) _tools.Add(attach);
+        return Put("files", FieldPath.Of(field));
     }
 
     /// <summary>The mention picker's directory.</summary>

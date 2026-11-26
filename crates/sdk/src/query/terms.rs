@@ -69,7 +69,8 @@ nullable!(
     crate::types::Decimal,
     crate::types::Uuid,
     crate::types::Timestamp,
-    crate::types::Date
+    crate::types::Date,
+    crate::types::File
 );
 impl<T: FieldValue> Nullable for Option<T> {
     type Opt = Option<T>;

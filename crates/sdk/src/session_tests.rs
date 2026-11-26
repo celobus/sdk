@@ -136,6 +136,7 @@ fn request(
             roles: vec!["workspace.member".into(), "echo.clerk".into()],
             groups: vec![],
             scopes: vec!["echo:write".into()],
+            agent_run: String::new(),
         }),
         ..Default::default()
     }
@@ -884,6 +885,7 @@ async fn session_with_a_fake_celld() {
     outbound
         .send(to_plugin(celld_message::Kind::Registered(pb::Registered {
             instance_id: "i-1".into(),
+            ..Default::default()
         })))
         .await
         .unwrap();
@@ -1056,4 +1058,106 @@ async fn session_with_a_fake_celld() {
         .await
         .unwrap()
         .unwrap();
+}
+
+#[derive(Message, Clone, Debug)]
+#[message(settings)]
+pub struct EchoSettings {
+    #[field(default = 1, min = 1, max = 9)]
+    pub times: i32,
+}
+
+#[derive(Message, Clone, Debug)]
+pub struct TimesRequest {}
+
+#[derive(Message, Clone, Debug)]
+pub struct TimesReply {
+    pub times: i32,
+}
+
+async fn times(ctx: Ctx, _: TimesRequest) -> Result<TimesReply> {
+    Ok(TimesReply {
+        times: ctx.settings::<EchoSettings>()?.times,
+    })
+}
+
+/// The settings arrive with the registration and with each change; a stale change is ignored.
+#[tokio::test]
+async fn settings_arrive_over_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("celld.sock");
+    let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+    let (sessions_tx, mut sessions) = mpsc::channel(4);
+    tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(pb::celld_server::CelldServer::new(FakeCelld {
+                sessions: sessions_tx,
+            }))
+            .serve_with_incoming(UnixListenerStream::new(listener)),
+    );
+    let plugin = Plugin::new("echo", "1.0.0")
+        .endpoint(Endpoint::new(times))
+        .settings(Settings::<EchoSettings>::new());
+    let service = Arc::new(Service::new(plugin).unwrap());
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let addr = format!("unix:{}", sock.display());
+    let plugin_task = tokio::spawn(async move {
+        serve_until(service, &addr, async {
+            let _ = stop_rx.await;
+        })
+        .await
+    });
+    let (mut inbound, outbound) = tokio::time::timeout(Duration::from_secs(5), sessions.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let _register = inbound.next().await.unwrap().unwrap();
+    let send = |kind| {
+        let outbound = outbound.clone();
+        async move { outbound.send(to_plugin(kind)).await.unwrap() }
+    };
+    let mut asked = 0;
+    let mut ask = async || {
+        asked += 1;
+        send(celld_message::Kind::Request(request(
+            asked,
+            "POST",
+            "/echo.v1.Echo/Times",
+            None,
+            "{}",
+        )))
+        .await;
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(5), inbound.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let Some(plugin_message::Kind::Response(r)) = msg.kind {
+                break body(&r)["times"].clone();
+            }
+        }
+    };
+    send(celld_message::Kind::Registered(pb::Registered {
+        instance_id: "i-1".into(),
+        settings: br#"{"times": 3}"#.to_vec().into(),
+        settings_rev: 2,
+    }))
+    .await;
+    assert_eq!(ask().await, json!(3));
+    send(celld_message::Kind::SettingsChanged(pb::SettingsChanged {
+        rev: 3,
+        json: b"{}".to_vec().into(),
+    }))
+    .await;
+    assert_eq!(ask().await, json!(1), "back to the default");
+    send(celld_message::Kind::SettingsChanged(pb::SettingsChanged {
+        rev: 1,
+        json: br#"{"times": 7}"#.to_vec().into(),
+    }))
+    .await;
+    assert_eq!(ask().await, json!(1), "a stale change is ignored");
+    stop_tx.send(()).unwrap();
+    drop(outbound);
+    let _ = tokio::time::timeout(Duration::from_secs(5), plugin_task).await;
 }

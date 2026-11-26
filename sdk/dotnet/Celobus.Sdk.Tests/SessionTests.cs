@@ -135,7 +135,7 @@ public sealed class SessionTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         if (_app != null) await _app.DisposeAsync();
-        File.Delete(_socket);
+        System.IO.File.Delete(_socket);
     }
 
     private static Request Hello(ulong id, string json)

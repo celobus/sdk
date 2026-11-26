@@ -13,6 +13,7 @@ pub mod lake_model;
 pub mod load;
 pub mod lock;
 pub mod proto;
+pub mod settings;
 pub mod ui;
 pub mod ui_check;
 mod validate;
@@ -121,6 +122,10 @@ pub struct Descriptor {
     /// when the plugin asks for a snapshot. Written only when declared; not in the manifest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loads: Vec<load::Load>,
+    /// The plugin's settings ([`settings`]): the message whose fields they are, whether the plugin checks a change
+    /// (`on_change`), and the form owners and admins fill. Written only when declared; not in the manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<settings::Settings>,
 }
 
 /// The most retries a job declares, and the default.
@@ -248,6 +253,16 @@ pub const RUN_CHANGE_METHOD: &str = "_RunChange";
 /// The method path of a plugin's run-change hook.
 pub fn run_change_path(id: &str) -> String {
     method_path(id, RUN_CHANGE_METHOD)
+}
+
+/// The method of the settings check hook: a system request the platform sends to a plugin whose descriptor says
+/// `settings.on_change`, before it saves a change of the settings ([`settings`]). Reserved like
+/// [`RUN_CHANGE_METHOD`].
+pub const SETTINGS_CHECK_METHOD: &str = "_SettingsCheck";
+
+/// The method path of a plugin's settings check hook.
+pub fn settings_check_path(id: &str) -> String {
+    method_path(id, SETTINGS_CHECK_METHOD)
 }
 
 /// A method path whose name the platform keeps for its own requests (a leading `_`).
@@ -457,14 +472,14 @@ pub struct Agent {
     pub topic: String,
 }
 
-/// A connection the plugin declares: a language model provider (`llm`) or speech recognition (`stt`) the workspace's
-/// owner or admin fills in.
+/// A connection the plugin declares: a language model provider (`llm`), speech recognition (`stt`) or a basemap
+/// provider for its maps (`maps`) the workspace's owner or admin fills in.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Connection {
     /// snake_case, at most 32 characters, unique in the plugin
     pub name: String,
-    /// `llm` | `stt`
+    /// `llm` | `stt` | `maps`
     pub kind: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
@@ -639,13 +654,13 @@ fn default_key() -> String {
     "uuid".into()
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Field {
     pub name: String,
     pub number: u32,
-    /// `string`, `bool`, `int32`, `int64`, `double`, `decimal`, `uuid`, `timestamp`, `date`, `bytes`, `json`,
-    /// `message:<Name>`, `enum:<Name>`, `ref:<plugin>.<entity>` (see [`FieldType`]).
+    /// `string`, `bool`, `int32`, `int64`, `double`, `decimal`, `uuid`, `timestamp`, `date`, `bytes`, `json`, `file`,
+    /// `secret` (settings only), `message:<Name>`, `enum:<Name>`, `ref:<plugin>.<entity>` (see [`FieldType`]).
     #[serde(rename = "type")]
     pub ty: String,
     #[serde(default)]
@@ -683,6 +698,136 @@ pub struct Field {
     /// An entity column whose changes its history keeps ([`history`]); written only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub history: bool,
+    /// A `file` field's largest file, in bytes (at most [`MAX_FILE_SIZE`]); unset: the workspace's limit. Written only
+    /// when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
+    /// A `file` field's accepted types: MIME types (`text/csv`) or patterns (`image/*`), lowercase; empty: any type.
+    /// Written only when declared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accept: Vec<String>,
+    // What follows belongs to the fields of the settings message only ([`settings`]; elsewhere
+    // `E_FIELD_VALIDATOR_SCOPE`). Each is written only when declared.
+    /// The form's label of the field (absent: the name, humanized).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The value it has until someone sets one, as the settings API writes values (numbers, decimals as strings,
+    /// dates as `YYYY-MM-DD`, an enum's value name, a list as an array).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+    /// The form's section the field is in (absent: the first, untitled one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// A string drawn as a text area.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multiline: bool,
+    /// The smallest and the largest value of a number, a decimal (a string) or a date (`YYYY-MM-DD`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<Value>,
+    /// The shortest and the longest string or secret, in characters (Unicode code points).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_len: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_len: Option<u32>,
+    /// A regular expression a string matches somewhere (anchor it with `^` and `$` to match it whole).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// `url` or `email`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// The fewest and the most items of a list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u32>,
+    /// The plugin's own text for a value its validators refuse (instead of the platform's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// The type of a settings field holding a secret (an API key, a token): a string the plugin reads, kept encrypted and
+/// never shown again once saved.
+pub const SECRET_TYPE: &str = "secret";
+
+/// The type of a field holding files: `File` (`{"id", "name", "type", "size"}` in JSON), a list of them when repeated.
+pub const FILE_TYPE: &str = "file";
+
+/// The largest `max_size` a file field declares: 5 TiB, the largest object an S3-compatible store keeps.
+pub const MAX_FILE_SIZE: u64 = 5 << 40;
+
+/// The most patterns a file field's `accept` lists.
+pub const MAX_ACCEPT: usize = 32;
+
+/// Reads a size as the SDKs take it: bytes (`1048576`), or a number and a unit, binary (`KiB`, `MiB`, `GiB`, `TiB`:
+/// powers of 1024) or decimal (`B`, `KB`, `MB`, `GB`, `TB`: powers of 1000), a space between them optional, the unit's
+/// case ignored (`1 GiB`, `500MB`, `1.5 GiB`). A fraction of a byte is dropped. `None` when it is not a size.
+pub fn parse_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let split = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
+    let (num, unit) = (&s[..split], s[split..].trim());
+    if num.is_empty() || num.starts_with('.') || num.ends_with('.') || num.matches('.').count() > 1
+    {
+        return None;
+    }
+    let mult: u64 = match unit.to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "kb" => 1_000,
+        "mb" => 1_000_000,
+        "gb" => 1_000_000_000,
+        "tb" => 1_000_000_000_000,
+        "kib" => 1 << 10,
+        "mib" => 1 << 20,
+        "gib" => 1 << 30,
+        "tib" => 1 << 40,
+        _ => return None,
+    };
+    let (whole, frac) = num.split_once('.').unwrap_or((num, ""));
+    let whole: u64 = whole.parse().ok()?;
+    let mut bytes = whole.checked_mul(mult)?;
+    if !frac.is_empty() {
+        let digits = frac.len().min(18) as u32;
+        let frac: u64 = frac[..digits as usize].parse().ok()?;
+        let scale = 10u128.pow(digits);
+        let part = (u128::from(frac) * u128::from(mult)) / scale;
+        bytes = bytes.checked_add(u64::try_from(part).ok()?)?;
+    }
+    Some(bytes)
+}
+
+/// Whether `s` is an `accept` pattern: `type/subtype` or `type/*`, lowercase MIME tokens.
+pub fn accept_pattern_ok(s: &str) -> bool {
+    let token = |t: &str| {
+        !t.is_empty()
+            && t.len() <= 127
+            && t.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"!#$&^_.+-".contains(&b))
+    };
+    match s.split_once('/') {
+        Some((ty, sub)) => token(ty) && (sub == "*" || token(sub)),
+        None => false,
+    }
+}
+
+/// Whether a file's type matches one of the `accept` patterns (`image/*` matches `image/png`); an empty list accepts
+/// every type.
+pub fn accepts(accept: &[String], content_type: &str) -> bool {
+    let ct = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    accept.is_empty()
+        || accept.iter().any(|p| match p.strip_suffix("/*") {
+            Some(ty) => ct.split_once('/').is_some_and(|(t, _)| t == ty),
+            None => *p == ct,
+        })
 }
 
 /// `on_delete` of a ref to an entity of the same plugin: `restrict` (the default: the target is not deleted while
@@ -732,6 +877,11 @@ pub const SEARCH_LANGUAGES: &[&str] = &[
 ];
 
 impl Field {
+    /// Whether it holds files (`file`, single or a list).
+    pub fn is_file(&self) -> bool {
+        self.ty == FILE_TYPE
+    }
+
     /// The forward navigation of a single ref column: its declared `nav`, else its name without `_id`
     /// (`customer_id` → `customer`; `created_by` stays `created_by`). `None` for any other field.
     pub fn nav_name(&self) -> Option<String> {
@@ -895,6 +1045,8 @@ pub const SCALARS: &[&str] = &[
     "date",
     "bytes",
     "json",
+    "file",
+    "secret",
 ];
 
 impl FieldType {

@@ -86,6 +86,7 @@ pub struct Msg {
     pub run: String,
     pub can_retry: bool,
     pub duration: String,
+    pub files: Vec<File>,
 }
 
 #[derive(Message, Clone, Debug, Default)]
@@ -185,6 +186,8 @@ pub struct PostRequest {
     pub reply: String,
     pub also: bool,
     pub audio: String,
+    #[field(max_size = "2 GiB")]
+    pub files: Vec<File>,
 }
 
 #[derive(Message, Clone, Debug, Default)]
@@ -403,6 +406,7 @@ fn channel_screen() -> Screen {
             .badge("AGENT", row_at(who.f(Face::agent)).eq(true))
             .markdown(Msg::text)
             .writing(Msg::writing)
+            .files(Msg::files)
             .audio(Msg::duration)
             .edited(Msg::edited)
             .pinned(Msg::pinned, lit(true))
@@ -525,6 +529,7 @@ fn channel_screen() -> Screen {
             composer(&send)
                 .for_stream("messages")
                 .primary()
+                .attach(PostRequest::files)
                 .placeholder(channel.field(ChannelView::placeholder))
                 .mentions(
                     mentions(&people, Face::name)
@@ -646,7 +651,7 @@ fn an_app_like_screen_describes_and_validates() {
     assert!(errors.is_empty(), "{errors:#?}\n{json}");
     assert_eq!(celobus_descriptor::ui_check::ui_warnings(&d), vec![]);
     let ui = d.ui.as_ref().unwrap();
-    assert_eq!(ui.catalog, 3);
+    assert_eq!(ui.catalog, 4);
     let r = celobus_descriptor::ui_check::requirements(ui);
     assert_eq!(r["channel"].compat(3), "full");
     assert_eq!(r["channel"].compat(2), "unsupported");
@@ -668,6 +673,9 @@ fn an_app_like_screen_describes_and_validates() {
     assert_eq!(post["hover"][2]["style"], "text");
     assert!(col[2]["stream"]["item"]["post"]["summary"].is_null());
     assert_eq!(col[3]["composer"]["for"], "messages");
+    assert_eq!(col[3]["composer"]["tools"], serde_json::json!(["attach"]));
+    assert_eq!(col[3]["composer"]["files"], "files");
+    assert_eq!(post["files"], "files");
     assert_eq!(col[3]["composer"]["caption"][0]["style"], "route");
     let panel = &split["detail"]["stack"]["children"];
     assert_eq!(

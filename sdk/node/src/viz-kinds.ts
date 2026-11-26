@@ -7,6 +7,7 @@ export const VIZ_KINDS = {
   dist: ["candles", "correlation", "cumulative", "density", "densitygrid", "histogram", "parallel", "scatter", "spread"],
   figure: ["chips", "hero", "metric", "metrics", "stats", "versus"],
   flow: ["funnel", "icicle", "layers", "matrix", "network", "outline", "paths", "polar", "quadrant", "radar", "route", "sankey", "steps", "tilemap", "tree", "words"],
+  geo: ["map"],
   line: ["bump", "line", "multiples", "slope"],
   meter: ["bullet", "checklist", "gauge", "level", "meter", "meterList", "range", "rating", "ring", "steps", "versus"],
   part: ["budget", "donut", "onein", "overlap", "pictogram", "rose", "share", "sharetile", "split", "squares", "treemap", "waffle"],

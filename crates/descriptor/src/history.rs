@@ -208,6 +208,9 @@ pub fn source_fields(owner: &str, d: &Descriptor, e: &Entity, each_day: bool) ->
         inverse: String::new(),
         on_delete: String::new(),
         history: false,
+        max_size: None,
+        accept: vec![],
+        ..Default::default()
     };
     let mut out = vec![f("id", format!("ref:{owner}.{}", e.name), false)];
     for c in columns(d, e) {

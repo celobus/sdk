@@ -25,10 +25,15 @@ fn proto_type(f: &Field) -> (String, Option<String>) {
         Some(FieldType::Scalar(s)) => match s {
             "string" | "bool" | "int32" | "int64" | "double" | "bytes" => (s.to_string(), None),
             "decimal" => ("string".into(), Some("decimal".into())),
+            "secret" => ("string".into(), Some("secret".into())),
             "uuid" => ("string".into(), Some("uuid".into())),
             "date" => ("string".into(), Some("date, YYYY-MM-DD".into())),
             "timestamp" => ("google.protobuf.Timestamp".into(), None),
             "json" => ("google.protobuf.Value".into(), None),
+            "file" => (
+                "celobus.v1.File".into(),
+                Some("file: id, name, type, size".into()),
+            ),
             _ => (s.to_string(), None),
         },
         Some(FieldType::Message(m)) => (m, None),

@@ -44,6 +44,9 @@ struct Route {
 
 /// How long the run-change hook may take.
 const RUN_CHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the settings check hook may take.
+const SETTINGS_CHECK_TIMEOUT: Duration =
+    Duration::from_millis(celobus_descriptor::settings::SETTINGS_CHECK_TIMEOUT_MS);
 
 /// A plugin ready to serve: its routes by path.
 pub(crate) struct Service {
@@ -86,6 +89,21 @@ impl Service {
                 };
                 (celobus_descriptor::run_change_path(&plugin.id), route)
             }))
+            .chain(
+                plugin
+                    .settings
+                    .as_ref()
+                    .and_then(|s| s.on_change.clone())
+                    .map(|handler| {
+                        let route = Route {
+                            name: celobus_descriptor::SETTINGS_CHECK_METHOD,
+                            handler,
+                            timeout: SETTINGS_CHECK_TIMEOUT,
+                            system: true,
+                        };
+                        (celobus_descriptor::settings_check_path(&plugin.id), route)
+                    }),
+            )
             .collect();
         let jobs: HashMap<String, JobHandler> = plugin
             .jobs
@@ -96,7 +114,8 @@ impl Service {
         Ok(Self {
             info: Arc::new(
                 PluginInfo::new(plugin.id.clone(), plugin.version.clone())
-                    .with_jobs(plugin.jobs.iter().map(|j| (j.payload, j.name.clone()))),
+                    .with_jobs(plugin.jobs.iter().map(|j| (j.payload, j.name.clone())))
+                    .with_settings_message(plugin.settings.as_ref().map(|s| s.message)),
             ),
             jobs,
             job_slots,
@@ -538,6 +557,15 @@ async fn session(
         match msg?.kind {
             Some(celld_message::Kind::Registered(r)) => {
                 tracing::info!(plugin = service.info.id(), instance = %r.instance_id, "registered with the platform");
+                service
+                    .info
+                    .settings_cache()
+                    .update(r.settings_rev, &r.settings, true);
+            }
+            Some(celld_message::Kind::SettingsChanged(c)) => {
+                if service.info.settings_cache().update(c.rev, &c.json, false) {
+                    tracing::info!(rev = c.rev, "the settings changed");
+                }
             }
             Some(celld_message::Kind::Request(req)) => {
                 let busy =
@@ -615,3 +643,48 @@ async fn unix_channel(addr: &str) -> anyhow::Result<tonic::transport::Channel> {
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
+
+/// Dispatching a request without a session, for the tests of other modules.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use super::*;
+
+    async fn dispatch(service: &Service, path: &str, body: &Value, member: bool) -> (u32, Value) {
+        let req = pb::Request {
+            id: 1,
+            method: "POST".into(),
+            path: path.into(),
+            headers: vec![header("content-type", "application/json")],
+            body: Bytes::from(body.to_string()),
+            principal: member.then(|| pb::Principal {
+                user_id: "u-1".into(),
+                kind: pb::principal::Kind::Person as i32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let resp = service.dispatch(Arc::new(Link::detached()), req).await;
+        (
+            resp.status,
+            serde_json::from_slice(&resp.body).unwrap_or(Value::Null),
+        )
+    }
+
+    /// A request of the platform itself (no caller).
+    pub(crate) async fn dispatch_system(
+        service: &Service,
+        path: &str,
+        body: &Value,
+    ) -> (u32, Value) {
+        dispatch(service, path, body, false).await
+    }
+
+    /// A request of a member.
+    pub(crate) async fn dispatch_member(
+        service: &Service,
+        path: &str,
+        body: &Value,
+    ) -> (u32, Value) {
+        dispatch(service, path, body, true).await
+    }
+}

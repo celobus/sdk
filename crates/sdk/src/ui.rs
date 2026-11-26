@@ -67,6 +67,11 @@ impl<M, T> Clone for Field<M, T> {
 
 impl<M, T> Copy for Field<M, T> {}
 
+/// The field types a `download` step takes: one file, maybe absent (a list of files is not one).
+pub trait OneFile {}
+impl OneFile for crate::File {}
+impl OneFile for Option<crate::File> {}
+
 /// A value of type `T` from somewhere: a literal, a param, state, a query field, a row field, a form field, the
 /// caller, a call result.
 pub struct Val<T> {
@@ -806,6 +811,9 @@ impl<T> ParamRef<T> {
             min_items: None,
             max_items: None,
             pick: None,
+            max_size: None,
+            accept: vec![],
+            multiple: false,
         })
     }
 
@@ -1439,6 +1447,14 @@ impl Chain {
         self
     }
 
+    /// Downloads the file the last call answered in `f` (a `File` or `Option<File>` field of its answer), then goes
+    /// on: `a.call(export_orders, |c| c).download(ExportOrdersReply::file)`. The person's browser saves it; an
+    /// answer without the file stops the chain like a failed step (`on_error` runs).
+    pub fn download<M, T: OneFile>(&mut self, f: Field<M, T>) -> &mut Self {
+        self.steps.push(Step::Download(f.name.into()));
+        self
+    }
+
     /// The steps run when a step fails.
     pub fn on_error(&mut self, f: impl FnOnce(&mut Chain) -> &mut Chain) -> &mut Self {
         let mut c = Chain::new();
@@ -1781,6 +1797,11 @@ impl<R> TableB<R> {
         self.column(f, title, Some(Format::Mono {}))
     }
 
+    /// A file column (a `File` field): its icon, name and size; a click opens or downloads it.
+    pub fn file<T>(self, f: Field<R, T>, title: impl Into<Txt>) -> Self {
+        self.column(f, title, Some(Format::File {}))
+    }
+
     pub fn number<T>(self, f: Field<R, T>, title: impl Into<Txt>) -> Self {
         let mut s = self.column(f, title, Some(Format::Number { decimals: None }));
         s.t.columns.last_mut().unwrap().align = Some(doc::Align::End);
@@ -1952,6 +1973,13 @@ impl<R> ListB<R> {
     pub fn meta_relative<T>(mut self, f: Field<R, T>) -> Self {
         self.l.meta = Some(f.name.into());
         self.l.meta_format = Some(Format::Relative { short: false });
+        self
+    }
+
+    /// The meta is a file (a `File` field): its icon, name and size.
+    pub fn meta_file<T>(mut self, f: Field<R, T>) -> Self {
+        self.l.meta = Some(f.name.into());
+        self.l.meta_format = Some(Format::File {});
         self
     }
 
@@ -2304,6 +2332,9 @@ pub fn viz(family: &str, kind: &str) -> VizB {
             height: None,
             select: None,
             open: None,
+            time: None,
+            connection: None,
+            layers: vec![],
         },
     }
 }
@@ -2334,6 +2365,357 @@ macro_rules! viz_constructors {
     };
 }
 celobus_descriptor::viz_catalogue!(viz_constructors);
+
+// ---------------------------------------------------------------------------------------------- time travel
+
+pub use celobus_descriptor::ui::{TimeCompare, TimeControl, TimeGrain};
+
+/// Time travel of a chart or figure (catalog revision 4), for [`VizB::time`]: what the numbers are, the periods
+/// (rows of a query: their key and label), and the state or param that holds the shown period.
+///
+/// ```ignore
+/// Time::flow(&quarters, Quarter::key, Quarter::label)
+///     .at(quarter)                 // a param or a state: the period's key
+///     .track(Quarter::total)       // the headline per period, drawn in the control
+///     .partial(Quarter::running)   // the period still running ("to date")
+///     .compare(then)               // the second pin: "Compare" in the head
+///     .compare_by(TimeCompare::Year) // what Compare offers first
+///     .upto(upto)                  // the days a running period has run: the earlier one is cut at the same day
+///     .control(TimeControl::Brush)
+///     .window(window)              // how many periods the card sums
+///     .grain(TimeGrain::Quarter)
+/// ```
+pub struct Time;
+
+impl Time {
+    fn of<Resp, R, V, L>(
+        read: doc::TimeRead,
+        q: &Q<Resp, R>,
+        value: Field<R, V>,
+        label: Field<R, L>,
+    ) -> TimeB {
+        TimeB {
+            t: doc::VizTime {
+                read,
+                control: None,
+                periods: doc::TimePeriods {
+                    query: q.name.clone(),
+                    value: value.name.into(),
+                    label: label.name.into(),
+                    date: None,
+                    track: None,
+                    partial: None,
+                },
+                at: doc::Bind::Param(String::new()),
+                window: None,
+                then: None,
+                compare: None,
+                upto: None,
+                grain: None,
+                key: None,
+            },
+            at: false,
+        }
+    }
+
+    /// Sums over a period (revenue in a quarter); the periods are the rows of `q`, `value` their key (written into
+    /// the state or param of `.at(..)` and passed to the endpoints) and `label` their name.
+    pub fn flow<Resp, R, V, L>(q: &Q<Resp, R>, value: Field<R, V>, label: Field<R, L>) -> TimeB {
+        Self::of(doc::TimeRead::Flow, q, value, label)
+    }
+
+    /// Levels on a date (stock at the quarter's end): the head says "On …" with the period's `.date(..)`.
+    pub fn state<Resp, R, V, L>(q: &Q<Resp, R>, value: Field<R, V>, label: Field<R, L>) -> TimeB {
+        Self::of(doc::TimeRead::State, q, value, label)
+    }
+
+    /// Dates still to come (deliveries booked): the periods after the running one (`.partial(..)`, which this read
+    /// needs) are outlined, past a Today line.
+    pub fn scheduled<Resp, R, V, L>(
+        q: &Q<Resp, R>,
+        value: Field<R, V>,
+        label: Field<R, L>,
+    ) -> TimeB {
+        Self::of(doc::TimeRead::Scheduled, q, value, label)
+    }
+}
+
+/// A [`Time`] being built: `.at(..)` is required.
+#[derive(Clone, Debug)]
+pub struct TimeB {
+    t: doc::VizTime,
+    at: bool,
+}
+
+impl TimeB {
+    /// The state or param that holds the shown period (a period's key). Empty: the latest period that is not still
+    /// to come.
+    pub fn at(mut self, target: impl SegmentedBind) -> Self {
+        self.t.at = target.segmented_bind();
+        self.at = true;
+        self
+    }
+
+    /// The state or param of the second pin: the head gets "Compare", whose menu offers the same period a year
+    /// before, the period before, or one picked by hand; the card's queries are read once more with it in place
+    /// of the shown period.
+    pub fn compare(mut self, then: impl SegmentedBind) -> Self {
+        self.t.then = Some(then.segmented_bind());
+        self
+    }
+
+    /// What "Compare" offers first: `Year` (the same period a year before; needs [`grain`](Self::grain), and is
+    /// the default with one) or `Previous` (the period just before; the default without a grain).
+    pub fn compare_by(mut self, by: TimeCompare) -> Self {
+        self.t.compare = Some(by);
+        self
+    }
+
+    /// The state or param (an integer) of the cut of a running period: while the shown period still runs, the
+    /// client writes into it the days of that period run so far (from its start, today included: Q4 to Nov 26
+    /// is 57) and passes it to both reads, so the endpoint answers the earlier period cut at the same day.
+    /// Empty when the shown period is whole. Needs [`partial`](Self::partial) and [`grain`](Self::grain).
+    pub fn upto(mut self, upto: impl SegmentedBind) -> Self {
+        self.t.upto = Some(upto.segmented_bind());
+        self
+    }
+
+    /// The state or param (an integer) of how many periods the card sums: the brush's width.
+    pub fn window(mut self, window: impl SegmentedBind) -> Self {
+        self.t.window = Some(window.segmented_bind());
+        self
+    }
+
+    /// The control's form (`Strip` when not set).
+    pub fn control(mut self, control: TimeControl) -> Self {
+        self.t.control = Some(control);
+        self
+    }
+
+    /// The length of a period: the words of a window, how far "a year before" goes back and the calendar
+    /// [`upto`](Self::upto) counts in (without it "Compare" offers the period before).
+    pub fn grain(mut self, grain: TimeGrain) -> Self {
+        self.t.grain = Some(grain);
+        self
+    }
+
+    /// A number field of the periods' rows: the card's headline per period, drawn in the control.
+    pub fn track<R, T>(mut self, f: Field<R, T>) -> Self {
+        self.t.periods.track = Some(f.name.into());
+        self
+    }
+
+    /// A bool field of the periods' rows: the period still running ("to date").
+    pub fn partial<R>(mut self, f: Field<R, bool>) -> Self {
+        self.t.periods.partial = Some(f.name.into());
+        self
+    }
+
+    /// A field of the periods' rows: the date a level is on (`30 Sep 2026`), for [`Time::state`].
+    pub fn date<R, T>(mut self, f: Field<R, T>) -> Self {
+        self.t.periods.date = Some(f.name.into());
+        self
+    }
+
+    /// A grid that compares: the column (its index in a row) its change column compares.
+    pub fn key(mut self, column: u32) -> Self {
+        self.t.key = Some(column);
+        self
+    }
+
+    fn build(self) -> doc::VizTime {
+        assert!(
+            self.at,
+            "time travel needs the state or param of the shown period: .at(..)"
+        );
+        self.t
+    }
+}
+
+// ---------------------------------------------------------------------------------------------- maps
+
+/// A layer of a map (`viz::geo::map()`, catalog revision 4), for [`VizB::layer`]: the rows of a query in lat/lon
+/// (or GeoJSON shapes) with their values. Each role has its method; the field types are checked by `celobus
+/// plugin check`.
+pub struct MapLayer;
+
+impl MapLayer {
+    fn over<Resp, R>(kind: doc::MapLayerKind, q: &Q<Resp, R>) -> MapLayerB<R> {
+        MapLayerB {
+            l: doc::MapLayer {
+                kind,
+                query: Some(q.name.clone()),
+                fields: BTreeMap::new(),
+                title: None,
+                options: serde_json::Map::new(),
+                select: None,
+            },
+            _r: PhantomData,
+        }
+    }
+
+    /// Places as dots (`lat`, `lon`; `value`, `name`, `id`, `group`, `stage`, `flag`): sized by the value with
+    /// `.option("size", true)`.
+    pub fn points<Resp, R>(q: &Q<Resp, R>) -> MapLayerB<R> {
+        Self::over(doc::MapLayerKind::Points, q)
+    }
+
+    /// The points summed into hexagons (`lat`, `lon`; `value`).
+    pub fn hex<Resp, R>(q: &Q<Resp, R>) -> MapLayerB<R> {
+        Self::over(doc::MapLayerKind::Hex, q)
+    }
+
+    /// Polygons filled by their value, group or order (`shape`: a GeoJSON geometry; `value`, `name`, `id`,
+    /// `group`).
+    pub fn regions<Resp, R>(q: &Q<Resp, R>) -> MapLayerB<R> {
+        Self::over(doc::MapLayerKind::Regions, q)
+    }
+
+    /// Marks over the regions: squares or rings at places, their area the value (`lat`, `lon`; `value`, `name`,
+    /// `id`).
+    pub fn marks<Resp, R>(q: &Q<Resp, R>) -> MapLayerB<R> {
+        Self::over(doc::MapLayerKind::Marks, q)
+    }
+
+    /// Lines between places, their width the value (`.from(lat, lon)`, `.to(lat, lon)`; `value`, `name`).
+    pub fn flows<Resp, R>(q: &Q<Resp, R>) -> MapLayerB<R> {
+        Self::over(doc::MapLayerKind::Flows, q)
+    }
+
+    /// Rings at distances round each place (`lat`, `lon`; `name`): `.option("distances", json!([1, 2, 3]))`.
+    pub fn rings<Resp, R>(q: &Q<Resp, R>) -> MapLayerB<R> {
+        Self::over(doc::MapLayerKind::Rings, q)
+    }
+
+    /// Places new, still there or gone between two dates (`lat`, `lon`, `state`; `value`, `name`, `id`).
+    pub fn change<Resp, R>(q: &Q<Resp, R>) -> MapLayerB<R> {
+        Self::over(doc::MapLayerKind::Change, q)
+    }
+
+    /// Our share of the points in each hexagon, against the market's (`lat`, `lon`, `ours`).
+    pub fn share<Resp, R>(q: &Q<Resp, R>) -> MapLayerB<R> {
+        Self::over(doc::MapLayerKind::Share, q)
+    }
+
+    /// An area the member draws: its polygon (GeoJSON text) goes to the state or param of `.select_state(..)` /
+    /// `.select_param(..)`, which the screen's queries pass to filter by it.
+    pub fn area() -> MapLayerB<()> {
+        MapLayerB {
+            l: doc::MapLayer {
+                kind: doc::MapLayerKind::Area,
+                query: None,
+                fields: BTreeMap::new(),
+                title: None,
+                options: serde_json::Map::new(),
+                select: None,
+            },
+            _r: PhantomData,
+        }
+    }
+}
+
+/// A [`MapLayer`] being built over rows of type `R`.
+pub struct MapLayerB<R> {
+    l: doc::MapLayer,
+    _r: PhantomData<fn() -> R>,
+}
+
+impl<R> MapLayerB<R> {
+    /// The row field of a role of the layer's type (`lat`, `value`, `frame`, …).
+    pub fn field<T>(mut self, role: &str, f: Field<R, T>) -> Self {
+        self.l.fields.insert(role.into(), f.name.into());
+        self
+    }
+
+    pub fn lat<T>(self, f: Field<R, T>) -> Self {
+        self.field("lat", f)
+    }
+
+    pub fn lon<T>(self, f: Field<R, T>) -> Self {
+        self.field("lon", f)
+    }
+
+    pub fn value<T>(self, f: Field<R, T>) -> Self {
+        self.field("value", f)
+    }
+
+    pub fn name<T>(self, f: Field<R, T>) -> Self {
+        self.field("name", f)
+    }
+
+    /// What a pick writes to the layer's `select` (else its `name`); how a place is paired between two periods.
+    pub fn id<T>(self, f: Field<R, T>) -> Self {
+        self.field("id", f)
+    }
+
+    pub fn group<T>(self, f: Field<R, T>) -> Self {
+        self.field("group", f)
+    }
+
+    pub fn stage<T>(self, f: Field<R, T>) -> Self {
+        self.field("stage", f)
+    }
+
+    /// A bool: the place is ringed (a deal at offer too long).
+    pub fn flag(self, f: Field<R, bool>) -> Self {
+        self.field("flag", f)
+    }
+
+    /// Small multiples: rows with the same frame go on one small map, the maps side by side on one scale.
+    pub fn frame<T>(self, f: Field<R, T>) -> Self {
+        self.field("frame", f)
+    }
+
+    /// A GeoJSON geometry (a `Polygon` or `MultiPolygon`): a JSON field, or a string holding its text.
+    pub fn shape<T>(self, f: Field<R, T>) -> Self {
+        self.field("shape", f)
+    }
+
+    /// `new`, `still` or `gone`, for [`MapLayer::change`].
+    pub fn state<T>(self, f: Field<R, T>) -> Self {
+        self.field("state", f)
+    }
+
+    /// True (or 1) for ours, for [`MapLayer::share`].
+    pub fn ours<T>(self, f: Field<R, T>) -> Self {
+        self.field("ours", f)
+    }
+
+    /// Where a flow starts.
+    pub fn from<A, B>(self, lat: Field<R, A>, lon: Field<R, B>) -> Self {
+        self.field("from_lat", lat).field("from_lon", lon)
+    }
+
+    /// Where a flow ends.
+    pub fn to<A, B>(self, lat: Field<R, A>, lon: Field<R, B>) -> Self {
+        self.field("to_lat", lat).field("to_lon", lon)
+    }
+
+    /// The layer's name in the key.
+    pub fn title(mut self, t: impl Into<Txt>) -> Self {
+        self.l.title = Some(txt(t));
+        self
+    }
+
+    /// A static option of the layer: `.option("size", true)`, `.option("fmt", "money")`.
+    pub fn option(mut self, name: &str, value: impl Into<Json>) -> Self {
+        self.l.options.insert(name.into(), value.into());
+        self
+    }
+
+    /// The state that receives what the member picks (a place's `id`, else its `name`; the drawn polygon of an
+    /// area), or null when nothing is picked.
+    pub fn select_state<T>(mut self, state: &StateRef<T>) -> Self {
+        self.l.select = Some(doc::Bind::State(state.name.clone()));
+        self
+    }
+
+    /// The same, into a param of the screen (it is in the URL).
+    pub fn select_param<T>(mut self, param: ParamRef<T>) -> Self {
+        self.l.select = Some(doc::Bind::Param(param.name.into()));
+        self
+    }
+}
 
 /// What a `viz` option may be bound to with [`VizB::value`]: a [`Val`] of any type (`q.field(Summary::revenue)`),
 /// a state, a param or a literal.
@@ -2683,6 +3065,29 @@ impl VizB {
         self
     }
 
+    /// Time travel (catalog revision 4): the period the card shows, moved by a control at its foot, and a second
+    /// period to compare with: `.time(Time::flow(&quarters, Quarter::key, Quarter::label).at(quarter))`. The
+    /// card's queries pass the shown period (`.arg(Request::quarter, quarter)`); the client reads them again when
+    /// it moves.
+    pub fn time(mut self, t: TimeB) -> Self {
+        self.v.time = Some(t.build());
+        self
+    }
+
+    /// A map's basemap (`viz::geo::map()`): the `maps` connection it comes from, a connection of this plugin by
+    /// its name (`"maps"`) or `<dependency>.<name>`.
+    pub fn connection(mut self, name: impl Into<String>) -> Self {
+        self.v.connection = Some(name.into());
+        self
+    }
+
+    /// A layer of a map, drawn over the ones before it (at most 8): `.layer(MapLayer::points(&deals).lat(Deal::lat)
+    /// .lon(Deal::lon))`.
+    pub fn layer<R>(mut self, l: MapLayerB<R>) -> Self {
+        self.v.layers.push(l.l);
+        self
+    }
+
     /// What an older client draws instead (a table, a metric, a text); answers the node.
     pub fn fallback(self, n: impl Into<N>) -> N {
         N::from(self).fallback(n.into())
@@ -3005,6 +3410,31 @@ pub struct FormB<Req> {
 }
 
 impl<Req> FormB<Req> {
+    /// The form of a plugin's settings (`Settings::form`): its inputs and sections only.
+    pub(crate) fn settings() -> Self {
+        Self {
+            sections: vec![doc::FormSection {
+                title: None,
+                inputs: vec![],
+            }],
+            cancel: None,
+            summary: None,
+            note: None,
+            alternate: None,
+            notes: vec![],
+            phone_submit: None,
+            _r: PhantomData,
+        }
+    }
+
+    /// Its sections, an empty untitled first one left out.
+    pub(crate) fn into_sections(self) -> Vec<doc::FormSection> {
+        self.sections
+            .into_iter()
+            .filter(|s| s.title.is_some() || !s.inputs.is_empty())
+            .collect()
+    }
+
     fn add(&mut self, i: doc::Input) -> &mut doc::Input {
         let s = self.sections.last_mut().unwrap();
         s.inputs.push(i);
@@ -3036,6 +3466,9 @@ impl<Req> FormB<Req> {
             min_items: None,
             max_items: None,
             pick: None,
+            max_size: None,
+            accept: vec![],
+            multiple: false,
         }))
     }
 
@@ -3089,6 +3522,29 @@ impl<Req> FormB<Req> {
 
     pub fn member<T>(&mut self, f: Field<Req, T>, label: impl Into<Txt>) -> InputRef<'_> {
         self.input(f, Control::Member, label)
+    }
+
+    /// A write-only text drawn as a password field: a settings `Secret`, or a string an endpoint takes (a value already
+    /// saved is never shown).
+    pub fn secret<T>(&mut self, f: Field<Req, T>, label: impl Into<Txt>) -> InputRef<'_> {
+        self.input(f, Control::Secret, label)
+    }
+
+    /// A select that takes several of an enum's values (a list of them).
+    pub fn multi_select<T: SelectOptions>(
+        &mut self,
+        f: Field<Req, Vec<T>>,
+        label: impl Into<Txt>,
+    ) -> InputRef<'_> {
+        let r = self.input(f, Control::MultiSelect, label);
+        r.0.options = T::options();
+        r
+    }
+
+    /// A drop zone and a picker for a `File` or `Vec<File>` field, within its `max_size` and `accept`: files upload as
+    /// they are picked and their ids go with the form.
+    pub fn upload<T>(&mut self, f: Field<Req, T>, label: impl Into<Txt>) -> InputRef<'_> {
+        self.input(f, Control::Upload, label)
     }
 
     /// A select over an enum's values.
@@ -3826,6 +4282,9 @@ impl<T> RowForm<T> {
             aside: None,
             add_label: None,
             pick: None,
+            max_size: None,
+            accept: vec![],
+            multiple: false,
         });
         self.inputs.last_mut().unwrap()
     }

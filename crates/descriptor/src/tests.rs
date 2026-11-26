@@ -342,6 +342,7 @@ fn connections_are_declared_and_named_by_agents() {
     v["connections"] = json!([
         { "name": "research", "kind": "llm", "title": "Research model" },
         { "name": "speech", "kind": "stt" },
+        { "name": "basemap", "kind": "maps", "title": "Maps" },
     ]);
     v["agents"][0]["connection"] = json!("research");
     v["agents"][0]["ssh_key"] = json!(true);
@@ -349,7 +350,8 @@ fn connections_are_declared_and_named_by_agents() {
     assert_eq!(validate(&d), vec![]);
     // the connections, the agent's connection and its key are in the manifest: whoever installs the plugin sees them
     let m = to_manifest(&d);
-    assert_eq!(m.connections.len(), 2);
+    assert_eq!(m.connections.len(), 3);
+    assert_eq!(m.connections[2].kind, "maps");
     assert_eq!(
         (m.agents[0].connection.as_str(), m.agents[0].ssh_key),
         ("research", true)
@@ -362,14 +364,15 @@ fn connections_are_declared_and_named_by_agents() {
 
     let with = |f: &dyn Fn(&mut Value)| {
         codes_after(|v| {
-            v["connections"] =
-                json!([{ "name": "research", "kind": "llm" }, { "name": "speech", "kind": "stt" }]);
+            v["connections"] = json!([{ "name": "research", "kind": "llm" }, { "name": "speech", "kind": "stt" },
+                       { "name": "basemap", "kind": "maps" }]);
             f(v)
         })
     };
     for (connection, why) in [
         ("ghost", "not a connection"),
         ("speech", "not llm"),
+        ("basemap", "maps, not llm"),
         ("crm.models", "no dependency"),
         ("customers.Models", "bad shape"),
     ] {
@@ -1448,4 +1451,153 @@ fn job_errors() {
     expect_job!("E_SCHEMA", "jobs[0].retry.backoff", |v| {
         v["jobs"][0]["retry"]["backoff"] = json!("linear")
     });
+}
+
+/// `orders` with file fields: `attachments` (a list, with options) on `order` and `receipt` on `PlaceOrderRequest`,
+/// then changed by `f`.
+fn files_after(f: impl FnOnce(&mut Value)) -> Vec<(&'static str, String)> {
+    codes_after(|v| {
+        v["entities"][0]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(
+                { "name": "attachments", "number": 7, "type": "file", "repeated": true,
+                  "max_size": 1_073_741_824u64, "accept": ["image/*", "application/pdf"] }
+            ));
+        v["messages"][0]["fields"].as_array_mut().unwrap().push(json!(
+            { "name": "receipt", "number": 3, "type": "file", "optional": true, "accept": ["text/csv"] }
+        ));
+        f(v)
+    })
+}
+
+#[test]
+fn file_fields_and_their_options() {
+    assert_eq!(files_after(|_| {}), vec![]);
+    let field = |v: &mut Value, k: &str, x: Value| v["entities"][0]["fields"][6][k] = x;
+    let expect = |errs: Vec<(&'static str, String)>, code: &str, path: &str| {
+        assert!(
+            has(&errs, code, path),
+            "expected {code} at {path}, got {errs:?}"
+        );
+    };
+    // options on a field that holds no files
+    expect(
+        files_after(|v| v["entities"][0]["fields"][4]["max_size"] = json!(10)),
+        "E_FILE_OPTION",
+        "entities[order].fields[total]",
+    );
+    expect(
+        files_after(|v| v["messages"][1]["fields"][0]["accept"] = json!(["text/csv"])),
+        "E_FILE_OPTION",
+        "messages[Line].fields[sku]",
+    );
+    // limits and patterns
+    for bad in [json!(0), json!(super::MAX_FILE_SIZE + 1)] {
+        expect(
+            files_after(|v| field(v, "max_size", bad)),
+            "E_FILE_OPTION",
+            "entities[order].fields[attachments].max_size",
+        );
+    }
+    for bad in ["csv", "Text/CSV", "image/", "*/png", ".csv"] {
+        expect(
+            files_after(|v| field(v, "accept", json!([bad]))),
+            "E_FILE_OPTION",
+            "entities[order].fields[attachments].accept[0]",
+        );
+    }
+    expect(
+        files_after(|v| field(v, "accept", json!(["text/csv", "text/csv"]))),
+        "E_FILE_OPTION",
+        "entities[order].fields[attachments].accept[1]",
+    );
+    // a file column is never encrypted, directly or inside a message column
+    expect(
+        files_after(|v| field(v, "encrypted", json!(true))),
+        "E_FILE_ENCRYPTED",
+        "entities[order].fields[attachments]",
+    );
+    expect(
+        files_after(|v| {
+            v["messages"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({ "name": "Scan", "fields": [
+                { "name": "file", "number": 1, "type": "file" }] }));
+            v["entities"][0]["fields"].as_array_mut().unwrap().push(json!(
+                { "name": "scan", "number": 8, "type": "message:Scan", "optional": true, "encrypted": true }
+            ));
+        }),
+        "E_FILE_ENCRYPTED",
+        "entities[order].fields[scan]",
+    );
+    // a file column is no key of an index
+    expect(
+        files_after(|v| {
+            field(v, "repeated", json!(false));
+            field(v, "unique", json!(true));
+        }),
+        "E_UNIQUE_TYPE",
+        "entities[order].fields[attachments]",
+    );
+}
+
+#[test]
+fn a_file_field_round_trips_and_has_no_default() {
+    let mut v = orders();
+    v["entities"][0]["fields"].as_array_mut().unwrap().push(json!(
+        { "name": "photo", "number": 7, "type": "file", "repeated": false, "optional": false, "description": "",
+          "max_size": 5_000_000u64, "accept": ["image/png"] }
+    ));
+    let d = parse(v.to_string().as_bytes()).unwrap();
+    let f = d.entities[0]
+        .fields
+        .iter()
+        .find(|f| f.name == "photo")
+        .unwrap();
+    assert!(f.is_file());
+    assert_eq!(f.max_size, Some(5_000_000));
+    assert_eq!(f.accept, vec!["image/png".to_string()]);
+    // written back as declared; a field without options writes neither
+    let back = serde_json::to_value(f).unwrap();
+    assert_eq!(back["max_size"], json!(5_000_000u64));
+    assert!(
+        serde_json::to_value(&d.entities[0].fields[0])
+            .unwrap()
+            .get("accept")
+            .is_none()
+    );
+    // a scheduled job's payload cannot leave a single file empty
+    assert_eq!(
+        validate::required_without_default(&d, "Order"),
+        Some("Order.photo".to_string())
+    );
+}
+
+#[test]
+fn sizes_and_types() {
+    assert_eq!(parse_size("1048576"), Some(1 << 20));
+    assert_eq!(parse_size("1 GiB"), Some(1 << 30));
+    assert_eq!(parse_size("1gib"), Some(1 << 30));
+    assert_eq!(parse_size("500MB"), Some(500_000_000));
+    assert_eq!(parse_size("1.5 KiB"), Some(1536));
+    assert_eq!(parse_size(" 2 TiB "), Some(2 << 40));
+    for bad in [
+        "",
+        "GiB",
+        "1 GB B",
+        "-1",
+        "1.2.3 MB",
+        "1 PiB",
+        ".5 MB",
+        "99999999999 TiB",
+    ] {
+        assert_eq!(parse_size(bad), None, "{bad}");
+    }
+    let accept = vec!["image/*".to_string(), "text/csv".to_string()];
+    assert!(accepts(&accept, "image/png"));
+    assert!(accepts(&accept, "text/csv; charset=utf-8"));
+    assert!(!accepts(&accept, "application/pdf"));
+    assert!(accepts(&[], "application/pdf"));
 }

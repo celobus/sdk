@@ -395,6 +395,13 @@ public sealed class Chain
     public Chain OpenUrl(Val<string> url) => Step("open_url", new JsonObject { ["value"] = Val<string>.Json(url) });
 
     /// <summary>
+    /// Downloads the file the last call answered in <paramref name="field"/> (a <c>File</c> field of its answer, not a
+    /// list), then goes on: <c>a.Call(ExportOrders.Ref, ..).Download((ExportOrdersReply r) =&gt; r.File)</c>. The
+    /// person's browser saves it; an answer without the file stops the chain like a failed step (<c>OnError</c> runs).
+    /// </summary>
+    public Chain Download<TRes>(Expression<Func<TRes, Celobus.Sdk.File?>> field) => Step("download", FieldPath.Of(field));
+
+    /// <summary>
     /// Puts the text into the composer of the item's stream (or the frame's primary composer), focused, the caret at the
     /// end (catalog 3): <c>a.Draft(Ui.Text("ask", "@{who} about this: ").Arg("who", r.Get(who.F(p =&gt; p.Name))))</c>.
     /// </summary>
@@ -584,11 +591,12 @@ public sealed class FormBuilder<TReq>
 {
     internal sealed class FormSection(Txt? title)
     {
+        public Txt? Title { get; } = title;
         public List<object> Inputs { get; } = [];
 
         public UiObj ToObj()
         {
-            var o = new UiObj { ["title"] = title };
+            var o = new UiObj { ["title"] = Title };
             o.List("inputs").AddRange(Inputs);
             return o;
         }
@@ -647,6 +655,27 @@ public sealed class FormBuilder<TReq>
     public Input Switch(Expression<Func<TReq, bool>> field, Txt label) => Add(field, "switch", label);
 
     public Input Member<T>(Expression<Func<TReq, T>> field, Txt label) => Add(field, "member", label);
+
+    /// <summary>
+    /// A write-only text drawn as a password field: a settings <see cref="Sdk.Secret"/>, or a string an endpoint takes (a
+    /// value already saved is never shown).
+    /// </summary>
+    public Input Secret<T>(Expression<Func<TReq, T>> field, Txt label) => Add(field, "secret", label);
+
+    /// <summary>A select that takes several of an enum's values (a list of them).</summary>
+    public Input MultiSelect<T>(Expression<Func<TReq, IEnumerable<T>>> field, Txt label)
+    {
+        var i = Add(field, "multi_select", label);
+        i.Options.AddRange(UiJson.EnumOptions(typeof(T)));
+        return i;
+    }
+
+    /// <summary>
+    /// A drop zone and a picker for a <c>File</c> or <c>List&lt;File&gt;</c> field, within its <c>[MaxSize]</c> and
+    /// <c>[Accept]</c>: files upload as they are picked and their ids go with the form; an edit form shows the
+    /// record's files and sends the kept ones back.
+    /// </summary>
+    public Input Upload<T>(Expression<Func<TReq, T>> field, Txt label) => Add(field, "upload", label);
 
     /// <summary>A select over an enum's values (or <c>.Option(..)</c>).</summary>
     public Input Select<T>(Expression<Func<TReq, T>> field, Txt label)

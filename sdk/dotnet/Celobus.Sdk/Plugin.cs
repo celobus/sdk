@@ -73,6 +73,9 @@ internal sealed class PluginDefinition(string id, string version)
 
     /// <summary>The run-change hook (<c>.OnRunChange</c>).</summary>
     public Func<Ctx, RunChange, Task>? OnRunChange { get; set; }
+
+    /// <summary>The settings (<c>.Settings&lt;T&gt;()</c>).</summary>
+    public SettingsDecl? Settings { get; set; }
 }
 
 /// <summary>
@@ -483,6 +486,23 @@ public sealed class Plugin
     public Plugin OnRunChange(Func<Ctx, RunChange, Task> handler)
     {
         _def.OnRunChange = handler;
+        return this;
+    }
+
+    /// <summary>
+    /// The plugin's settings: what an owner or an admin of the workspace sets for it (a limit, a webhook, an API key),
+    /// one <c>[Message(Kind = MessageKind.Settings)]</c> record read with <c>ctx.Settings&lt;T&gt;()</c>. Its properties'
+    /// attributes give the form and the validators (<c>[Label]</c>, <c>[Section]</c>, <c>[Placeholder]</c>,
+    /// <c>[Multiline]</c>, <c>[Range]</c>, <c>[MinLength]</c>, <c>[MaxLength]</c>, <c>[Pattern]</c>, <c>[Url]</c>,
+    /// <c>[Email]</c>, <c>[MinItems]</c>, <c>[MaxItems]</c>, <c>[ValidationMessage]</c>), their initial values or
+    /// <c>[DefaultValue]</c> the defaults, <c>[Describe]</c> the help; a property that is neither nullable, a list nor
+    /// has a default is required. <c>.Settings&lt;ChatSettings&gt;(s =&gt; s.OnChange(Check).Form(f =&gt; ..))</c>.
+    /// </summary>
+    public Plugin Settings<T>(Action<SettingsOptions<T>>? configure = null) where T : class
+    {
+        var options = new SettingsOptions<T>();
+        configure?.Invoke(options);
+        _def.Settings = SettingsDecl.Of(options);
         return this;
     }
 

@@ -8,12 +8,15 @@ public enum OrderStatus { Placed, Paid, Cancelled }
 [Message]
 public sealed record Order(
     Guid Id, string Number, string Customer, string Email, decimal Total, string Currency, OrderStatus Status,
-    DateTimeOffset PlacedAt);
+    DateTimeOffset PlacedAt, File? Invoice);
 
 [Message] public sealed record ListOrdersRequest(OrderStatus? Status, string Text, string PageToken, int PageSize);
 [Message] public sealed record ListOrdersResponse(IReadOnlyList<Order> Orders, string NextPageToken, long Total);
 [Message] public sealed record GetOrderRequest(Guid Id);
-[Message] public sealed record CancelOrderRequest(Guid Id, string Reason);
+[Message]
+public sealed record CancelOrderRequest(Guid Id, string Reason, [MaxSize("10 MiB"), Accept("image/*", "application/pdf")] List<File> Scans);
+[Message] public sealed record ExportOrdersRequest(OrderStatus? Status);
+[Message] public sealed record ExportOrdersReply(File File);
 [Message] public sealed record CountOpenRequest;
 [Message] public sealed record CountResponse(long Count);
 
@@ -44,7 +47,7 @@ public sealed record Order(
 [Message]
 public sealed record Note(
     string Id, string By, string Time, string Text, string Kind, bool Edited, bool Mine, bool Pinned, string Receipt,
-    string ReceiptTone, IReadOnlyList<Reaction> Reactions, Replies? Replies, Job? Job, string JobId);
+    string ReceiptTone, IReadOnlyList<Reaction> Reactions, Replies? Replies, Job? Job, string JobId, List<File> Files);
 
 [Message] public sealed record Packing(string Job, string Agent, string Icon, string Engine, string State, long Since, long Until, string Sub, string Note);
 [Message] public sealed record GetActivityRequest(string Order, string PageToken, string Tab);

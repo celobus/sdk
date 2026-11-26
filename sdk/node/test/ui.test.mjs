@@ -28,6 +28,7 @@ test(".ui(), .readOnly() and .invalidates() return new endpoints that UI referen
       ["ListOrders", true, true, undefined],
       ["GetOrder", true, true, undefined],
       ["CancelOrder", true, undefined, 2],
+      ["ExportOrders", true, undefined, undefined],
       ["CountOpen", true, true, undefined],
       ["Sales", true, true, undefined],
       ["TopProducts", true, true, undefined],
@@ -113,7 +114,7 @@ test("screens: params from the message, state, queries and their options", () =>
     return ui.divider();
   });
   const sc = d.ui.screens[0];
-  assert.equal(d.ui.catalog, 3);
+  assert.equal(d.ui.catalog, 4);
   assert.equal(sc.title, "Items");
   assert.equal(sc.subtitle, "All of them");
   assert.deepEqual(sc.params, [
@@ -566,7 +567,7 @@ test("charts and figures: viz kinds, options, every bind source, selection, link
       ],
     },
   );
-  assert.equal(d.ui.catalog, 3);
+  assert.equal(d.ui.catalog, 4);
   const c = d.ui.screens[0].layout.stack.children;
   assert.deepEqual(c[0], {
     viz: {
@@ -640,8 +641,8 @@ test("charts and figures: viz kinds, options, every bind source, selection, link
   });
   // a constructor per kind of the catalogue, from the table the validator reads
   const kinds = Object.entries(VIZ_KINDS).flatMap(([family, list]) => list.map((kind) => [family, kind]));
-  assert.equal(Object.keys(VIZ_KINDS).length, 9);
-  assert.equal(kinds.length, 82);
+  assert.equal(Object.keys(VIZ_KINDS).length, 10);
+  assert.equal(kinds.length, 83);
   for (const [family, kind] of kinds) {
     assert.deepEqual(ui.viz[family][kind]().json().viz, { family, kind });
   }

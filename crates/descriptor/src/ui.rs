@@ -13,13 +13,13 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-/// The catalog revision this crate knows. Every primitive, option and step kind of revisions 1 to 3 is below
+/// The catalog revision this crate knows. Every primitive, option and step kind of revisions 1 to 4 is below
 /// (revision 2 added `viz`, the charts and figures of the charts catalogue, and `board`, the dashboard layout;
 /// revision 3 the app-like primitives `stream`, `post`, `process`, `strip`, `composer`, `header`, the `pick` input,
 /// options of `split`, `list`, `icon_button`, `agent_run` and state, the steps `draft`, `reply_to`, `scroll_to`,
 /// `copy`, `merge`, the query options `older`, `debounce_ms`, `join`, and the formats `elapsed`, `countdown`,
-/// `span`; it deprecated `chat`).
-pub const CATALOG: u32 = 3;
+/// `span`; it deprecated `chat`; revision 4 time travel in a `viz`, `time`, and maps, the family `geo`).
+pub const CATALOG: u32 = 4;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
@@ -315,6 +315,10 @@ pub enum Step {
         query: String,
         row: Value,
     },
+    /// Downloads the file at this path of the last call's answer (a `file` field, not a list): the client fetches it
+    /// through the workspace's download route as an attachment and goes on with the next steps. No file there stops
+    /// the chain like a failed step.
+    Download(String),
 }
 
 /// What a `copy` step copies: exactly one of a value and a link to an item.
@@ -969,6 +973,8 @@ pub enum Format {
     Tags {},
     Avatar {},
     Mono {},
+    /// A file (a `file` field): its icon by type, name and size; a click opens it or downloads it.
+    File {},
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -1223,6 +1229,279 @@ pub struct Viz {
     /// Where the card's link leads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open: Option<Target>,
+    /// Time travel (catalog revision 4): the period the card shows, moved by a control at its foot, and a second
+    /// period to compare with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<VizTime>,
+    /// A map's basemap (`geo` `map`, catalog revision 4): a `maps` connection of this plugin by its name, or
+    /// `<dependency>.<name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    /// A map's layers over the basemap, drawn in order (at most [`MAP_MAX_LAYERS`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<MapLayer>,
+}
+
+/// Time travel of a `viz`: the client draws the control, writes the shown period into `at` (and the second pin into
+/// `then`, the number of periods summed into `window`), and the screen's queries that pass them read again. For
+/// the second pin the client runs the queries this card reads once more with `then` in place of `at`, and the
+/// kind shows the earlier answer with its own "before" option.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct VizTime {
+    /// What the numbers are: sums over a period, levels on a date, or dates still to come.
+    pub read: TimeRead,
+    /// The control's form (`strip` when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<TimeControl>,
+    /// The clock: the rows of a query, one per period, oldest first.
+    pub periods: TimePeriods,
+    /// The state or param that holds the shown period (a period's `value`). Empty: the latest period that is not
+    /// still to come.
+    pub at: Bind,
+    /// The state or param of the number of periods the card sums (an integer; 1 when empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<Bind>,
+    /// The state or param of the second pin (a period's `value`): with it the head has "Compare"; empty: no
+    /// comparison is shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<Bind>,
+    /// What "Compare" offers first (`year` with a `grain`, else `previous`): the same period a year before, or
+    /// the period just before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compare: Option<TimeCompare>,
+    /// The state or param (an integer) of the cut of a running period: while the shown period still runs, the
+    /// client writes into it the days of that period run so far (counted from its start, today included) and
+    /// both reads, the shown period's and the compared one's, pass it, so the endpoint answers the earlier period
+    /// cut at the same day. Empty: the whole period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upto: Option<Bind>,
+    /// The length of a period: the words of a window (`4 quarters to Q3 2026`), how far "a year before" goes back
+    /// (365 days, 52 weeks, 12 months, 4 quarters, 1 year) and the calendar `upto` counts in. Absent: "Compare"
+    /// offers the period before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grain: Option<TimeGrain>,
+    /// `table` `grid`: the column (its index in a row) the change column compares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeRead {
+    /// Sums over a period (revenue in a quarter).
+    Flow,
+    /// Levels on a date (stock at the quarter's end).
+    State,
+    /// Dates still to come (deliveries booked): the periods after the running one are outlined, past a Today line.
+    Scheduled,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeControl {
+    /// Columns of the track (a level line for a state), a pin on the shown period.
+    Strip,
+    /// A window of several periods with two handles.
+    Brush,
+    /// A cell per period, no track.
+    Ruler,
+    /// A thin track and a knob: for narrow cards.
+    Slider,
+    /// ‹ › beside the period in the card's head.
+    Stepper,
+    /// The card follows the screen's clock (`at` is the screen's param); "Own date" leaves it.
+    Screen,
+    /// The chart's own time axis is the clock: a click on a mark moves the pin.
+    Axis,
+}
+
+/// What "Compare" offers first; the person may pick another in its menu.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeCompare {
+    /// The same period a year before (by the `grain`).
+    Year,
+    /// The period just before (a window: the window just before).
+    Previous,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeGrain {
+    Day,
+    Week,
+    Month,
+    Quarter,
+    Year,
+}
+
+/// The periods of a time control: row fields of a query's rows.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TimePeriods {
+    pub query: String,
+    /// The period's key, written into `at` and `then` and passed to the endpoints (`2026-Q3`).
+    pub value: String,
+    /// The period's name (`Q3 2026`).
+    pub label: String,
+    /// `state`: the date the level is on (`30 Sep 2026`), in the head as "On …".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// A number: the card's headline per period, drawn in the control (columns for a flow, a line for a state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<String>,
+    /// A bool: the period still running ("to date"; for `scheduled`, the Today line is in it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial: Option<String>,
+}
+
+/// The most layers of a map.
+pub const MAP_MAX_LAYERS: usize = 8;
+
+/// A layer of a map: rows of a query in lat/lon (or GeoJSON shapes) with their values, drawn by the client over
+/// the basemap. `fields` maps a role of the layer's type to a row field ([`MapLayerKind::roles`]).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MapLayer {
+    #[serde(rename = "type")]
+    pub kind: MapLayerKind,
+    /// The query whose rows the layer draws (every type but `area`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// Role → row field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
+    /// The layer's name in the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<Text>,
+    /// Static options of the layer (`{"size": true, "fmt": "money"}`).
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub options: serde_json::Map<String, Json>,
+    /// The state or param that receives what the member picks: a row's `id` (else its `name`) for points,
+    /// regions, marks and change; the drawn polygon (GeoJSON text) for `area`. Null when nothing is picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub select: Option<Bind>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MapLayerKind {
+    /// Places as dots: sized by a value, coloured by group or stage, flagged.
+    Points,
+    /// Points summed into hexagons the client computes.
+    Hex,
+    /// Polygons (GeoJSON) filled by a value, a group or an order.
+    Regions,
+    /// Marks over the regions: squares or rings at places, their area a value.
+    Marks,
+    /// Lines between places, their width a value.
+    Flows,
+    /// Rings at distances round a place.
+    Rings,
+    /// An area the member draws; the screen filters by it.
+    Area,
+    /// Places new, still there or gone between two dates.
+    Change,
+    /// Our share of the points in each hexagon, against the market's.
+    Share,
+}
+
+/// The kind of a role's field: a number, a bool, a GeoJSON geometry (a `json` field, or a `string` holding its
+/// text) or any field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleType {
+    Number,
+    Bool,
+    Shape,
+    Any,
+}
+
+impl MapLayerKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            MapLayerKind::Points => "points",
+            MapLayerKind::Hex => "hex",
+            MapLayerKind::Regions => "regions",
+            MapLayerKind::Marks => "marks",
+            MapLayerKind::Flows => "flows",
+            MapLayerKind::Rings => "rings",
+            MapLayerKind::Area => "area",
+            MapLayerKind::Change => "change",
+            MapLayerKind::Share => "share",
+        }
+    }
+
+    /// The roles of the type: (role, required, the kind of its field). Every type with a query also takes
+    /// `frame`: rows with the same frame go on one small map, the maps side by side on one scale.
+    pub fn roles(self) -> &'static [(&'static str, bool, RoleType)] {
+        use RoleType::*;
+        match self {
+            MapLayerKind::Points => &[
+                ("lat", true, Number),
+                ("lon", true, Number),
+                ("value", false, Number),
+                ("name", false, Any),
+                ("id", false, Any),
+                ("group", false, Any),
+                ("stage", false, Any),
+                ("flag", false, Bool),
+                ("frame", false, Any),
+            ],
+            MapLayerKind::Hex => &[
+                ("lat", true, Number),
+                ("lon", true, Number),
+                ("value", false, Number),
+                ("frame", false, Any),
+            ],
+            MapLayerKind::Regions => &[
+                ("shape", true, Shape),
+                ("value", false, Number),
+                ("name", false, Any),
+                ("id", false, Any),
+                ("group", false, Any),
+                ("frame", false, Any),
+            ],
+            MapLayerKind::Marks => &[
+                ("lat", true, Number),
+                ("lon", true, Number),
+                ("value", false, Number),
+                ("name", false, Any),
+                ("id", false, Any),
+                ("frame", false, Any),
+            ],
+            MapLayerKind::Flows => &[
+                ("from_lat", true, Number),
+                ("from_lon", true, Number),
+                ("to_lat", true, Number),
+                ("to_lon", true, Number),
+                ("value", false, Number),
+                ("name", false, Any),
+                ("frame", false, Any),
+            ],
+            MapLayerKind::Rings => &[
+                ("lat", true, Number),
+                ("lon", true, Number),
+                ("name", false, Any),
+            ],
+            MapLayerKind::Area => &[],
+            MapLayerKind::Change => &[
+                ("lat", true, Number),
+                ("lon", true, Number),
+                ("state", true, Any),
+                ("value", false, Number),
+                ("name", false, Any),
+                ("id", false, Any),
+                ("frame", false, Any),
+            ],
+            MapLayerKind::Share => &[
+                ("lat", true, Number),
+                ("lon", true, Number),
+                ("ours", true, Any),
+                ("frame", false, Any),
+            ],
+        }
+    }
 }
 
 /// The largest `options` of a `viz`, as compact JSON.
@@ -1412,12 +1691,17 @@ pub enum Control {
     Switch,
     RadioCards,
     Member,
+    /// A drop zone and a picker filling a `file` field (single or a list) within the field's `max_size` and `accept`:
+    /// files are uploaded as they are picked and their ids sent with the form.
     Upload,
     Repeat,
     Search,
     /// Chips over a directory (catalog 3): the input's `pick` names the rows; the value is the chosen values joined
     /// with `, `.
     Pick,
+    /// A write-only string drawn as a password field: what was typed is sent, a value already saved is never shown
+    /// (a settings `secret` field; on an endpoint's form, a string field).
+    Secret,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1467,6 +1751,14 @@ pub struct Input {
     /// `pick`: the directory the chips are chosen from (catalog 3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pick: Option<Pick>,
+    /// `upload`: the bound file field's own `max_size` (bytes) and `accept` (patterns), and `multiple` for a list of
+    /// files, so the client checks a file before uploading it (the SDKs copy them from the field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accept: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub multiple: bool,
 }
 
 /// The directory of a `pick` input: rows of a query (its `rows`, or the repeated field `rows`), each chosen by its
@@ -2312,6 +2604,10 @@ pub struct Post {
     pub text: Option<PostText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<PostAudio>,
+    /// A row field holding files (`file`, single or a list): images as a grid, audio and video as players, other files
+    /// as cards with their name, size and Download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<String>,
     /// A bool field: `(edited)` after the text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edited: Option<String>,
@@ -2751,6 +3047,10 @@ pub struct ComposerNode {
     /// `add`, `emoji`, `attach`; none when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ComposerTool>,
+    /// The `attach` tool's field: a `file` field of the request of the `send` action's call (`files`). Files picked,
+    /// pasted or dropped are uploaded for it, and their ids go in it with the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mentions: Option<Mentions>,
     /// `#word` becomes `#[word]` on send.
@@ -2977,6 +3277,14 @@ impl Kind {
             {
                 3
             }
+            Kind::Viz(v)
+                if v.time.is_some()
+                    || v.family == "geo"
+                    || v.connection.is_some()
+                    || !v.layers.is_empty() =>
+            {
+                4
+            }
             Kind::Viz(_) | Kind::Board(_) => 2,
             _ => 1,
         }
@@ -3001,6 +3309,7 @@ impl Step {
             Step::Refresh { .. } => "refresh",
             Step::Toast(_) => "toast",
             Step::OpenUrl { .. } => "open_url",
+            Step::Download(_) => "download",
         }
     }
 

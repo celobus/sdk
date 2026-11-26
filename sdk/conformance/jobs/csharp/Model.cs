@@ -18,6 +18,10 @@ public sealed partial record Estimate(Id<Estimate> Id, string Title, decimal Hou
 [Entity, History("audit", All = true)]
 public sealed partial record Budget(Id<Budget> Id, string Title, decimal? Hours, List<string> Tags, [Encrypted] string? Secret, string? Notes);
 
+// A document and the files it was given
+[Entity]
+public sealed partial record Document(Id<Document> Id, string Title, List<File> Files);
+
 [View(Name = "recent_task"), Describe("The titled tasks of the last 30 days, a row each, with the title of their stage.")]
 public sealed partial record RecentTask(DateOnly Day, string Title, string? Stage);
 
@@ -40,7 +44,18 @@ public sealed partial record LongEstimate(string Title, decimal Hours);
 // Cancelled false: the run had already ended
 [Message] public sealed partial record CancelRunReply(bool Cancelled);
 
+[Message]
+public sealed partial record AddDocumentRequest(string Title, [MaxSize("1 GiB"), Accept("text/csv", "image/*")] List<File> Files);
+
+// RunId: the import of its first file; empty: it has none
+[Message] public sealed partial record AddDocumentReply(Id<Document> Document, string RunId);
+
+// Day: 2026-11-20
+[Message] public sealed partial record ExportTasksRequest(string Day);
+[Message] public sealed partial record ExportTasksReply(File File);
+
 [Message(Kind = MessageKind.Job)] public sealed partial record ProcessTask(Id<Task> Task);
+[Message(Kind = MessageKind.Job)] public sealed partial record ImportFile([Accept("text/csv")] File File);
 [Message(Kind = MessageKind.Job)] public sealed partial record DailyReport(string Day);
 [Message(Kind = MessageKind.Job)] public sealed partial record Heartbeat;
 [Message(Kind = MessageKind.Job)] public sealed partial record Flaky;

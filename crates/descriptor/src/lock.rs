@@ -727,6 +727,7 @@ pub fn compare(old: &Descriptor, new: &Descriptor) -> Vec<Change> {
     changes.extend(gates(old, new));
     changes.extend(exports(old, new));
     changes.extend(crate::ui_check::ui_changes(old, new));
+    changes.extend(crate::settings::changes(old, new));
     changes
 }
 
@@ -843,19 +844,27 @@ impl Bump {
 }
 
 /// What a release from the published `old` to `new` needs: major for a breaking change ([`compare`]), minor when
-/// the contract grew (an endpoint, message, field, enum value, entity, role, scope, capability or agent), else
-/// patch. The second value names what decided it.
+/// the contract grew (an endpoint, message, field, enum value, entity, role, scope, capability or agent) or the
+/// settings changed without breaking ([`crate::settings::changes`]), else patch. The second value names what decided
+/// it.
 pub fn bump_needed(old: &Descriptor, new: &Descriptor) -> (Bump, Vec<String>) {
-    let breaking: Vec<String> = compare(old, new)
-        .into_iter()
+    let changes = compare(old, new);
+    let breaking: Vec<String> = changes
+        .iter()
         .filter(|c| c.breaking)
-        .map(|c| c.message)
+        .map(|c| c.message.clone())
         .collect();
     if !breaking.is_empty() {
         return (Bump::Major, breaking);
     }
     let (o, n) = (contract_names(old), contract_names(new));
-    let added: Vec<String> = n.difference(&o).cloned().collect();
+    let mut added: Vec<String> = n.difference(&o).cloned().collect();
+    added.extend(
+        changes
+            .into_iter()
+            .filter(|c| c.code.starts_with("W_SETTINGS_"))
+            .map(|c| c.message),
+    );
     if !added.is_empty() {
         return (Bump::Minor, added);
     }

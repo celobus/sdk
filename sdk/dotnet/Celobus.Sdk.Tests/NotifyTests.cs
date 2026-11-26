@@ -54,7 +54,7 @@ public class NotifyTests
         var plugin = N.NotifyPlugin.Define();
         Assert.Empty(plugin.Check());
         var actual = JsonNode.Parse(plugin.DescriptorJson());
-        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "notify.json")));
+        var expected = JsonNode.Parse(System.IO.File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "conformance", "notify.json")));
         Assert.True(JsonNode.DeepEquals(expected, actual), actual!.ToJsonString());
     }
 

@@ -11,6 +11,8 @@
     <!-- The plugin version: Plugin.Create("shop") reads it from the assembly. -->
     <Version>1.0.0</Version>
   </PropertyGroup>
+  <!-- what the package gives a plugin: `File` is Celobus.Sdk.File, not System.IO.File -->
+  <Import Project="../../../dotnet/Celobus.Sdk/build/Celobus.Sdk.props" />
   <ItemGroup>
     <ProjectReference Include="../../../dotnet/Celobus.Sdk/Celobus.Sdk.csproj" />
   </ItemGroup>

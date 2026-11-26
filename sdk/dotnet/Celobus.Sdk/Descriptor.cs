@@ -213,6 +213,11 @@ internal static partial class Descriptor
         // then the lake tables' rows (another plugin's table is not a message of this plugin)
         foreach (var t in p.LakeTables)
             if (Schema.IsLakeTable(t) && Schema.LakeOwner(t) is null) walk.Message(t);
+        // then the settings message
+        if (p.Settings is { } settingsDecl)
+            if (!Schema.IsMessage(settingsDecl.Type))
+                Error("E_SETTINGS_MESSAGE", "settings", $"`{settingsDecl.Type.Name}` has no [Message(Kind = MessageKind.Settings)] attribute");
+            else walk.Message(settingsDecl.Type);
 
         // --- messages and enums
         var messages = new JsonArray();
@@ -336,7 +341,7 @@ internal static partial class Descriptor
         if (p.Connections.Count > 0)
             json["connections"] = new JsonArray([.. p.Connections.Select(c =>
             {
-                var connection = new JsonObject { ["name"] = c.Name, ["kind"] = c.Kind == ConnectionKind.Llm ? "llm" : "stt" };
+                var connection = new JsonObject { ["name"] = c.Name, ["kind"] = c.Kind switch { ConnectionKind.Llm => "llm", ConnectionKind.Stt => "stt", _ => "maps" } };
                 if (c.TitleText.Length > 0) connection["title"] = c.TitleText;
                 if (c.Description.Length > 0) connection["description"] = c.Description;
                 return (JsonNode)connection;
@@ -349,7 +354,13 @@ internal static partial class Descriptor
         var loads = Loads(p, Error);
         if (loads.Count > 0) json["loads"] = loads;
         if (p.Topics.Count > 0) json["topics"] = new JsonArray([.. p.Topics.Select(t => (JsonNode)t.ToJson())]);
-        if (p.Ui is not null) json["ui"] = p.Ui.Build();
+        if (p.Ui is not null)
+        {
+            var ui = p.Ui.Build();
+            // upload inputs carry their file field's options, so a screen checks a file before uploading it
+            FillUploads(ui, endpoints, messages);
+            json["ui"] = ui;
+        }
 
         // notification kinds: written only when declared, every member of each; they need push:send
         if (p.Notifications.Count > 0 && p.Capabilities.All(x => x.Capability.Name != "push:send"))
@@ -373,6 +384,25 @@ internal static partial class Descriptor
         if (kinds.Count > 0) json["notifications"] = kinds;
         // what the plugin asks of agent runs: written only when it handles the run-change hook
         if (p.OnRunChange is not null) json["runs"] = new JsonObject { ["on_change"] = true };
+        // the settings: their message, whether the plugin checks a change, and their form (laid out and completed, or derived)
+        if (p.Settings is { } decl && Schema.IsMessage(decl.Type))
+        {
+            var schema = MessageSchema.For(decl.Type);
+            if (schema.Kind != MessageKind.Settings)
+                Error("E_SETTINGS_MESSAGE", "settings", $"{schema.Name} is not a message of kind settings: declare it with [Message(Kind = MessageKind.Settings)]");
+            var fields = messages.FirstOrDefault(m => (string?)m!["name"] == schema.Name)?["fields"]?.AsArray() ?? [];
+            var sections = decl.Form is null
+                ? SettingsDescribe.DeriveForm(fields, enums)
+                : SettingsDescribe.CompleteForm(decl.Form(), fields, enums);
+            json["settings"] = new JsonObject
+            {
+                ["message"] = schema.Name,
+                ["on_change"] = decl.OnChange is not null,
+                ["form"] = new JsonObject { ["sections"] = sections },
+            };
+        }
+        // the options of a setting and the secret type belong to the settings message; its fields and form
+        SettingsDescribe.Errors(messages, enums, json["settings"] as JsonObject, Error);
         // the background jobs: written only when declared
         var jobs = Jobs(p, Error);
         if (jobs.Count > 0) json["jobs"] = jobs;
@@ -905,6 +935,19 @@ internal static partial class Descriptor
             if (columns && !string.IsNullOrEmpty(f.Inverse)) field["inverse"] = f.Inverse;
             if (columns && !string.IsNullOrEmpty(f.OnDelete)) field["on_delete"] = f.OnDelete;
             if (columns && f.History && f.Name != "id") field["history"] = true;
+            // a file field's options, each written only when declared (on the entity's fields and its message's alike)
+            if (f.MaxSize is { } maxSize)
+            {
+                if (FileSize.Parse(maxSize) is { } bytes) field["max_size"] = bytes;
+                else error?.Invoke("E_FILE_OPTION", $"{path}.fields.{f.Name}.max_size",
+                    $"`{maxSize}` is not a size: bytes (1048576) or a number and a unit (\"1 GiB\", \"500 MB\"; KiB, MiB, GiB, TiB, KB, MB, GB, TB)");
+            }
+            if (f.Accept.Count > 0) field["accept"] = Strings(f.Accept);
+            if ((f.MaxSize is not null || f.Accept.Count > 0) && f.Kind != FieldKind.File)
+                error?.Invoke("E_FILE_OPTION", $"{path}.fields.{f.Name}",
+                    $"{f.Name} is not a file field: [MaxSize] and [Accept] belong to a File, File? or List<File>");
+            // a setting's options ([Label], [Range], a default, ..), each written only when declared
+            SettingsDescribe.Keys(f, field, $"{path}.fields.{f.Name}", error);
             fields.Add(field);
         }
         return fields;
@@ -927,6 +970,8 @@ internal static partial class Descriptor
         foreach (var f in schema.Fields)
         {
             var fp = $"{path}.fields.{f.Name}";
+            if (f.Encrypted && f.Kind == FieldKind.File)
+                error("E_FILE_ENCRYPTED", fp, $"{f.Name} holds files: a file column is never encrypted (its bytes are read directly by their URLs)");
             if (f.Searchable is { } lang)
             {
                 if (++searchable == 9) error("E_SEARCH_LIMIT", fp, "an entity has at most 8 searchable columns");
@@ -965,6 +1010,61 @@ internal static partial class Descriptor
     }
 
     private static JsonArray Strings(IEnumerable<string> values) => new([.. values.Select(v => (JsonNode)v)]);
+
+    /// <summary>
+    /// Copies each <c>upload</c> input's file field options into it (<c>multiple</c> for a list of files,
+    /// <c>max_size</c>, <c>accept</c>), from the request of its form's endpoint, inputs of a <c>repeat</c> included.
+    /// </summary>
+    private static void FillUploads(JsonNode? node, JsonArray endpoints, JsonArray messages)
+    {
+        switch (node)
+        {
+            case JsonObject o:
+                if (o["form"] is JsonObject form
+                    && form["endpoint"]?.GetValueKind() == JsonValueKind.String
+                    && endpoints.FirstOrDefault(e => (string?)e?["name"] == (string)form["endpoint"]!) is { } endpoint
+                    && form["sections"] is JsonArray sections)
+                    foreach (var s in sections)
+                        if (s?["inputs"] is JsonArray inputs)
+                            FillUploadInputs(inputs, (string)endpoint["input"]!, messages);
+                foreach (var (_, v) in o) FillUploads(v, endpoints, messages);
+                break;
+            case JsonArray a:
+                foreach (var v in a) FillUploads(v, endpoints, messages);
+                break;
+        }
+    }
+
+    private static void FillUploadInputs(JsonArray inputs, string message, JsonArray messages)
+    {
+        foreach (var node in inputs)
+        {
+            if (node is not JsonObject input || input["name"]?.GetValueKind() != JsonValueKind.String) continue;
+            if (FieldAt(messages, message, (string)input["name"]!) is not { } f) continue;
+            var type = (string?)f["type"] ?? "";
+            if ((string?)input["control"] == "upload" && type == "file")
+            {
+                if ((bool?)f["repeated"] == true) input["multiple"] = true;
+                if (f["max_size"] is { } max) input["max_size"] = max.DeepClone();
+                if (f["accept"] is JsonArray accept && accept.Count > 0) input["accept"] = accept.DeepClone();
+            }
+            if (type.StartsWith("message:", StringComparison.Ordinal) && input["fields"] is JsonArray nested)
+                FillUploadInputs(nested, type["message:".Length..], messages);
+        }
+    }
+
+    /// <summary>A field of a message by its path (<c>customer.name</c>), through nested messages.</summary>
+    private static JsonObject? FieldAt(JsonArray messages, string message, string path)
+    {
+        var dot = path.IndexOf('.');
+        var (head, rest) = dot < 0 ? (path, null) : (path[..dot], path[(dot + 1)..]);
+        var m = messages.FirstOrDefault(x => (string?)x?["name"] == message);
+        if (m?["fields"] is not JsonArray fields || fields.FirstOrDefault(x => (string?)x?["name"] == head) is not JsonObject f)
+            return null;
+        if (rest is null) return f;
+        var type = (string?)f["type"] ?? "";
+        return type.StartsWith("message:", StringComparison.Ordinal) ? FieldAt(messages, type["message:".Length..], rest) : null;
+    }
 
     /// <summary>Messages in order of first use (a message, then the messages its fields use); enums in order of first use.</summary>
     private sealed class Walk

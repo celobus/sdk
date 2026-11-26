@@ -262,6 +262,9 @@ public sealed class TableNode<TRow> : Node
 
     public TableNode<TRow> Mono<T>(Expression<Func<TRow, T>> field, Txt title) => Column(field, title, Formats.Of("mono"));
 
+    /// <summary>A file column (a <c>File</c> field): its icon, name and size; a click opens or downloads it.</summary>
+    public TableNode<TRow> File<T>(Expression<Func<TRow, T>> field, Txt title) => Column(field, title, Formats.Of("file"));
+
     public TableNode<TRow> Number<T>(Expression<Func<TRow, T>> field, Txt title) => Column(field, title, Formats.Of("number"), true);
 
     /// <summary>A decimal amount in the currency of another field of the row.</summary>
@@ -471,6 +474,14 @@ public sealed class ListNode<TRow> : Node
     {
         Body["meta"] = FieldPath.Of(field);
         Body["meta_format"] = Formats.Of("relative");
+        return this;
+    }
+
+    /// <summary>The meta is a file (a <c>File</c> field): its icon, name and size.</summary>
+    public ListNode<TRow> MetaFile<T>(Expression<Func<TRow, T>> field)
+    {
+        Body["meta"] = FieldPath.Of(field);
+        Body["meta_format"] = Formats.Of("file");
         return this;
     }
 
@@ -907,6 +918,287 @@ public sealed class VizNode : Node
     {
         Body["open"] = Target.Of(screen.Id, null, Args<TParams>.Build(args));
         return this;
+    }
+
+    /// <summary>Time travel (catalog revision 4): the period the card shows, moved by a control at its foot, and a
+    /// second period to compare with: <c>.Time(Time.Flow(quarters, q =&gt; q.Key, q =&gt; q.Label).At(quarter))</c>. The
+    /// card's queries pass the shown period; the client reads them again when it moves.</summary>
+    public VizNode Time<TRow>(TimeSpec<TRow> time)
+    {
+        Body["time"] = time.Build();
+        return this;
+    }
+
+    /// <summary>A map's basemap (<c>Viz.Geo.Map()</c>): the <c>maps</c> connection it comes from, a connection of this
+    /// plugin by its name (<c>"maps"</c>) or <c>&lt;dependency&gt;.&lt;name&gt;</c>.</summary>
+    public VizNode Connection(string name)
+    {
+        Body["connection"] = name;
+        return this;
+    }
+
+    /// <summary>A layer of a map, drawn over the ones before it (at most 8):
+    /// <c>.Layer(MapLayer.Points(deals).Lat(d =&gt; d.Lat).Lon(d =&gt; d.Lon))</c>.</summary>
+    public VizNode Layer<TRow>(MapLayerSpec<TRow> layer)
+    {
+        if (Body["layers"] is not List<object> list) list = Body.List("layers");
+        list.Add(layer.Build());
+        return this;
+    }
+}
+
+/// <summary>What the numbers of a card with time travel are.</summary>
+internal enum TimeRead { Flow, State, Scheduled }
+
+/// <summary>The form of a time control.</summary>
+public enum TimeControl
+{
+    /// <summary>Columns of the track (a level line for a state), a pin on the shown period.</summary>
+    Strip,
+    /// <summary>A window of several periods with two handles.</summary>
+    Brush,
+    /// <summary>A cell per period, no track.</summary>
+    Ruler,
+    /// <summary>A thin track and a knob: for narrow cards.</summary>
+    Slider,
+    /// <summary>‹ › beside the period in the card's head.</summary>
+    Stepper,
+    /// <summary>The card follows the screen's clock; "Own date" leaves it.</summary>
+    Screen,
+    /// <summary>The chart's own time axis is the clock: a click on a mark moves the pin.</summary>
+    Axis,
+}
+
+/// <summary>What "Compare" offers first; the person may pick another in its menu.</summary>
+public enum TimeCompare
+{
+    /// <summary>The same period a year before (by the grain).</summary>
+    Year,
+    /// <summary>The period just before (a window: the window just before).</summary>
+    Previous,
+}
+
+/// <summary>The length of a period: the words of a window and how far "Compare" goes back.</summary>
+public enum TimeGrain { Day, Week, Month, Quarter, Year }
+
+/// <summary>Time travel of a chart or figure (catalog revision 4), for <see cref="VizNode.Time{TRow}"/>: what the
+/// numbers are and the periods (rows of a query: their key and label).</summary>
+public static class Time
+{
+    /// <summary>Sums over a period (revenue in a quarter); <paramref name="value"/> is a period's key, written into
+    /// the state or param of <c>.At(..)</c> and passed to the endpoints, <paramref name="label"/> its name.</summary>
+    public static TimeSpec<TRow> Flow<TRes, TRow, TV, TL>(Q<TRes, TRow> periods, Expression<Func<TRow, TV>> value,
+        Expression<Func<TRow, TL>> label) => new("flow", periods.Name, FieldPath.Of(value), FieldPath.Of(label));
+
+    /// <summary>Levels on a date (stock at the quarter's end): the head says "On …" with the period's <c>.Date(..)</c>.</summary>
+    public static TimeSpec<TRow> State<TRes, TRow, TV, TL>(Q<TRes, TRow> periods, Expression<Func<TRow, TV>> value,
+        Expression<Func<TRow, TL>> label) => new("state", periods.Name, FieldPath.Of(value), FieldPath.Of(label));
+
+    /// <summary>Dates still to come (deliveries booked): needs <c>.Partial(..)</c>, the running period, where the
+    /// Today line is.</summary>
+    public static TimeSpec<TRow> Scheduled<TRes, TRow, TV, TL>(Q<TRes, TRow> periods, Expression<Func<TRow, TV>> value,
+        Expression<Func<TRow, TL>> label) => new("scheduled", periods.Name, FieldPath.Of(value), FieldPath.Of(label));
+}
+
+/// <summary>Time travel being built over periods of type <typeparamref name="TRow"/>: <c>.At(..)</c> is required.</summary>
+public sealed class TimeSpec<TRow>
+{
+    private readonly string _read;
+    private readonly UiObj _periods;
+    private string? _control, _grain, _compare;
+    private JsonObject? _at, _window, _then, _upto;
+    private int? _key;
+
+    internal TimeSpec(string read, string query, string value, string label)
+    {
+        _read = read;
+        _periods = new UiObj { ["query"] = query, ["value"] = value, ["label"] = label };
+    }
+
+    private static JsonObject Bind(string kind, string name) => new() { [kind] = name };
+
+    /// <summary>The param that holds the shown period (a period's key). Empty: the latest period that is not still to come.</summary>
+    public TimeSpec<TRow> At<T>(ParamRef<T> param) { _at = Bind("param", param.Name); return this; }
+
+    /// <summary>The state that holds the shown period.</summary>
+    public TimeSpec<TRow> At<T>(StateRef<T> state) { _at = Bind("state", state.Name); return this; }
+
+    /// <summary>The param of the second pin: "Compare" in the head, whose menu offers the same period a year before,
+    /// the period before, or one picked by hand; the card's queries are read once more with it in place of the shown
+    /// period.</summary>
+    public TimeSpec<TRow> Compare<T>(ParamRef<T> param) { _then = Bind("param", param.Name); return this; }
+
+    /// <summary>The state of the second pin.</summary>
+    public TimeSpec<TRow> Compare<T>(StateRef<T> state) { _then = Bind("state", state.Name); return this; }
+
+    /// <summary>What "Compare" offers first: <c>Year</c> (the same period a year before; needs <c>.Grain(..)</c>, and
+    /// is the default with one) or <c>Previous</c> (the period just before; the default without a grain).</summary>
+    public TimeSpec<TRow> CompareBy(TimeCompare by) { _compare = by.ToString().ToLowerInvariant(); return this; }
+
+    /// <summary>The param (an integer) of the cut of a running period: while the shown period still runs, the client
+    /// writes into it the days of that period run so far (from its start, today included: Q4 to Nov 26 is 57) and
+    /// passes it to both reads, so the endpoint answers the earlier period cut at the same day. Empty when the shown
+    /// period is whole. Needs <c>.Partial(..)</c> and <c>.Grain(..)</c>.</summary>
+    public TimeSpec<TRow> Upto<T>(ParamRef<T> param) { _upto = Bind("param", param.Name); return this; }
+
+    /// <summary>The state (an integer) of the cut of a running period.</summary>
+    public TimeSpec<TRow> Upto<T>(StateRef<T> state) { _upto = Bind("state", state.Name); return this; }
+
+    /// <summary>The param (an integer) of how many periods the card sums: the brush's width.</summary>
+    public TimeSpec<TRow> Window<T>(ParamRef<T> param) { _window = Bind("param", param.Name); return this; }
+
+    /// <summary>The state (an integer) of how many periods the card sums.</summary>
+    public TimeSpec<TRow> Window<T>(StateRef<T> state) { _window = Bind("state", state.Name); return this; }
+
+    /// <summary>The control's form (<c>Strip</c> when not set).</summary>
+    public TimeSpec<TRow> Control(TimeControl control) { _control = control.ToString().ToLowerInvariant(); return this; }
+
+    /// <summary>The length of a period: how far "a year before" goes back and the calendar <c>.Upto(..)</c> counts in
+    /// (without it "Compare" offers the period before).</summary>
+    public TimeSpec<TRow> Grain(TimeGrain grain) { _grain = grain.ToString().ToLowerInvariant(); return this; }
+
+    /// <summary>A number field of the periods' rows: the card's headline per period, drawn in the control.</summary>
+    public TimeSpec<TRow> Track<T>(Expression<Func<TRow, T>> field) { _periods["track"] = FieldPath.Of(field); return this; }
+
+    /// <summary>A bool field of the periods' rows: the period still running ("to date").</summary>
+    public TimeSpec<TRow> Partial(Expression<Func<TRow, bool>> field) { _periods["partial"] = FieldPath.Of(field); return this; }
+
+    /// <summary>A field of the periods' rows: the date a level is on (<c>30 Sep 2026</c>), for <c>Time.State</c>.</summary>
+    public TimeSpec<TRow> Date<T>(Expression<Func<TRow, T>> field) { _periods["date"] = FieldPath.Of(field); return this; }
+
+    /// <summary>A grid that compares: the column (its index in a row) its change column compares.</summary>
+    public TimeSpec<TRow> Key(int column) { _key = column; return this; }
+
+    internal UiObj Build()
+    {
+        if (_at is null) throw new InvalidOperationException("time travel needs the state or param of the shown period: .At(..)");
+        var o = new UiObj { ["read"] = _read };
+        if (_control is not null) o["control"] = _control;
+        o["periods"] = _periods;
+        o["at"] = _at.DeepClone();
+        if (_window is not null) o["window"] = _window.DeepClone();
+        if (_then is not null) o["then"] = _then.DeepClone();
+        if (_compare is not null) o["compare"] = _compare;
+        if (_upto is not null) o["upto"] = _upto.DeepClone();
+        if (_grain is not null) o["grain"] = _grain;
+        if (_key is int k) o["key"] = k;
+        return o;
+    }
+}
+
+/// <summary>The layers of a map (<c>Viz.Geo.Map()</c>, catalog revision 4), for <see cref="VizNode.Layer{TRow}"/>: the
+/// rows of a query in lat/lon (or GeoJSON shapes) with their values. Each role has its method.</summary>
+public static class MapLayer
+{
+    /// <summary>Places as dots (lat, lon; value, name, id, group, stage, flag): sized by the value with <c>.Option("size", true)</c>.</summary>
+    public static MapLayerSpec<TRow> Points<TRes, TRow>(Q<TRes, TRow> rows) => new("points", rows.Name);
+
+    /// <summary>The points summed into hexagons (lat, lon; value).</summary>
+    public static MapLayerSpec<TRow> Hex<TRes, TRow>(Q<TRes, TRow> rows) => new("hex", rows.Name);
+
+    /// <summary>Polygons filled by their value, group or order (shape; value, name, id, group).</summary>
+    public static MapLayerSpec<TRow> Regions<TRes, TRow>(Q<TRes, TRow> rows) => new("regions", rows.Name);
+
+    /// <summary>Marks over the regions (lat, lon; value, name, id).</summary>
+    public static MapLayerSpec<TRow> Marks<TRes, TRow>(Q<TRes, TRow> rows) => new("marks", rows.Name);
+
+    /// <summary>Lines between places (<c>.From(lat, lon)</c>, <c>.To(lat, lon)</c>; value, name).</summary>
+    public static MapLayerSpec<TRow> Flows<TRes, TRow>(Q<TRes, TRow> rows) => new("flows", rows.Name);
+
+    /// <summary>Rings at distances round each place (lat, lon; name): <c>.Option("distances", new JsonArray(1, 2, 3))</c>.</summary>
+    public static MapLayerSpec<TRow> Rings<TRes, TRow>(Q<TRes, TRow> rows) => new("rings", rows.Name);
+
+    /// <summary>Places new, still there or gone between two dates (lat, lon, state; value, name, id).</summary>
+    public static MapLayerSpec<TRow> Change<TRes, TRow>(Q<TRes, TRow> rows) => new("change", rows.Name);
+
+    /// <summary>Our share of the points in each hexagon (lat, lon, ours).</summary>
+    public static MapLayerSpec<TRow> Share<TRes, TRow>(Q<TRes, TRow> rows) => new("share", rows.Name);
+
+    /// <summary>An area the member draws: its polygon (GeoJSON text) goes to <c>.SelectState(..)</c> /
+    /// <c>.SelectParam(..)</c>, which the screen's queries pass to filter by it.</summary>
+    public static MapLayerSpec<object> Area() => new("area", null);
+}
+
+/// <summary>A map layer being built over rows of type <typeparamref name="TRow"/>.</summary>
+public sealed class MapLayerSpec<TRow>
+{
+    private readonly string _type;
+    private readonly string? _query;
+    private readonly UiObj _fields = new();
+    private bool _anyField;
+    private Txt? _title;
+    private JsonObject? _options;
+    private JsonObject? _select;
+
+    internal MapLayerSpec(string type, string? query) { (_type, _query) = (type, query); }
+
+    /// <summary>The row field of a role of the layer's type (<c>lat</c>, <c>value</c>, <c>frame</c>, …).</summary>
+    public MapLayerSpec<TRow> Field<T>(string role, Expression<Func<TRow, T>> field)
+    {
+        _fields[role] = FieldPath.Of(field);
+        _anyField = true;
+        return this;
+    }
+
+    public MapLayerSpec<TRow> Lat<T>(Expression<Func<TRow, T>> field) => Field("lat", field);
+    public MapLayerSpec<TRow> Lon<T>(Expression<Func<TRow, T>> field) => Field("lon", field);
+    public MapLayerSpec<TRow> Value<T>(Expression<Func<TRow, T>> field) => Field("value", field);
+    public MapLayerSpec<TRow> Name<T>(Expression<Func<TRow, T>> field) => Field("name", field);
+
+    /// <summary>What a pick writes to the layer's select (else its name); how a place is paired between two periods.</summary>
+    public MapLayerSpec<TRow> Id<T>(Expression<Func<TRow, T>> field) => Field("id", field);
+    public MapLayerSpec<TRow> Group<T>(Expression<Func<TRow, T>> field) => Field("group", field);
+    public MapLayerSpec<TRow> Stage<T>(Expression<Func<TRow, T>> field) => Field("stage", field);
+
+    /// <summary>A bool: the place is ringed.</summary>
+    public MapLayerSpec<TRow> Flag(Expression<Func<TRow, bool>> field) => Field("flag", field);
+
+    /// <summary>Small multiples: rows with the same frame go on one small map, side by side on one scale.</summary>
+    public MapLayerSpec<TRow> Frame<T>(Expression<Func<TRow, T>> field) => Field("frame", field);
+
+    /// <summary>A GeoJSON geometry (a Polygon or MultiPolygon): a JSON field, or a string holding its text.</summary>
+    public MapLayerSpec<TRow> Shape<T>(Expression<Func<TRow, T>> field) => Field("shape", field);
+
+    /// <summary><c>new</c>, <c>still</c> or <c>gone</c>, for <c>MapLayer.Change</c>.</summary>
+    public MapLayerSpec<TRow> State<T>(Expression<Func<TRow, T>> field) => Field("state", field);
+
+    /// <summary>True (or 1) for ours, for <c>MapLayer.Share</c>.</summary>
+    public MapLayerSpec<TRow> Ours<T>(Expression<Func<TRow, T>> field) => Field("ours", field);
+
+    /// <summary>Where a flow starts.</summary>
+    public MapLayerSpec<TRow> From<TA, TB>(Expression<Func<TRow, TA>> lat, Expression<Func<TRow, TB>> lon) =>
+        Field("from_lat", lat).Field("from_lon", lon);
+
+    /// <summary>Where a flow ends.</summary>
+    public MapLayerSpec<TRow> To<TA, TB>(Expression<Func<TRow, TA>> lat, Expression<Func<TRow, TB>> lon) =>
+        Field("to_lat", lat).Field("to_lon", lon);
+
+    /// <summary>The layer's name in the key.</summary>
+    public MapLayerSpec<TRow> Title(Txt title) { _title = title; return this; }
+
+    /// <summary>A static option of the layer: <c>.Option("size", true)</c>.</summary>
+    public MapLayerSpec<TRow> Option(string name, JsonNode? value)
+    {
+        _options ??= new JsonObject();
+        _options[name] = value?.DeepClone();
+        return this;
+    }
+
+    /// <summary>The state that receives what the member picks (a place's id, else its name; an area's polygon), or null.</summary>
+    public MapLayerSpec<TRow> SelectState<T>(StateRef<T> state) { _select = new JsonObject { ["state"] = state.Name }; return this; }
+
+    /// <summary>The same, into a param of the screen (it is in the URL).</summary>
+    public MapLayerSpec<TRow> SelectParam<T>(ParamRef<T> param) { _select = new JsonObject { ["param"] = param.Name }; return this; }
+
+    internal UiObj Build()
+    {
+        var o = new UiObj { ["type"] = _type };
+        if (_query is not null) o["query"] = _query;
+        if (_anyField) o["fields"] = _fields;
+        if (_title is not null) o["title"] = _title;
+        if (_options is not null) o["options"] = _options.DeepClone();
+        if (_select is not null) o["select"] = _select.DeepClone();
+        return o;
     }
 }
 

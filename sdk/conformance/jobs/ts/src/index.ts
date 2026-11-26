@@ -2,8 +2,9 @@
 // versions. A task is created and its processing enqueued in one transaction (a request that asks to fail rolls both
 // back); a daily report is enqueued once per day (a singleton); a heartbeat runs every minute and logs a few lines; a
 // flaky job fails its first attempt and succeeds on the second; a doomed job fails for good; a slow job works in steps
-// of a second and stops when it is aborted (its timeout is 10 s). `--describe` must print
-// sdk/conformance/jobs/descriptor.json.
+// of a second and stops when it is aborted (its timeout is 10 s). Files: a document keeps the files it was given (a
+// field with a size limit and accepted types), its first file is imported by a job that reads it line by line, and an
+// export answers a file it writes. `--describe` must print sdk/conformance/jobs/descriptor.json.
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Decimal, Filter, LoadTicket, daysAgo, endpoint, entity, historyOf, invalid, job, lakeTable, layer, permanent, plugin, role, t, unavailable, view } from '@celobus/sdk';
 import { count, sum, type Query } from '@celobus/sdk/query';
@@ -61,6 +62,15 @@ export const budget = entity({
   history: { layer: audit, all: true, read: [member] },
 });
 
+// A document and the files it was given
+export const document = entity({
+  columns: { title: t.text(), files: t.array(t.file()) },
+  access: (a) => {
+    a.read(member);
+    a.create(member);
+  },
+});
+
 // --- views ----------------------------------------------------------------------------------------
 
 /** A task's day, its title and its stage's title (the stage joined on its name, a plain column). */
@@ -107,6 +117,17 @@ export const processTask = job({
     const row = await ctx.db(task).get(p.task);
     ctx.log.info(`processing task ${row.title}`);
     await ctx.db(task).update(p.task, { status: 'processed' });
+  },
+});
+
+/** Reads the file line by line, never whole. */
+export const importFile = job({
+  description: 'Imports a file line by line',
+  payload: { file: t.file({ accept: ['text/csv'] }) },
+  async handler(ctx, p) {
+    let n = 0;
+    for await (const line of (await ctx.files.open(p.file)).lines()) if (line !== '') n += 1;
+    ctx.log.info(`imported ${n} lines of ${p.file.name}`);
   },
 });
 
@@ -558,6 +579,40 @@ export const cancelRun = endpoint({
   },
 });
 
+/** Keeps a document with its files and enqueues the import of its first file. */
+export const addDocument = endpoint({
+  description: 'Keeps a document with its files.',
+  input: t.message('AddDocumentRequest', {
+    title: t.text(),
+    files: t.array(t.file({ maxSize: '1 GiB', accept: ['text/csv', 'image/*'] })),
+  }),
+  output: t.message('AddDocumentReply', {
+    document: t.ref(() => document),
+    runId: t.text(), // the import of its first file; empty: it has none
+  }),
+  roles: [member],
+  async handler(ctx, req) {
+    const doc = await ctx.db(document).create({ title: req.title, files: req.files });
+    const first = req.files[0];
+    const runId = first ? (await ctx.jobs.enqueue(importFile, { file: first })).runId : '';
+    return { document: doc.id, runId };
+  },
+});
+
+/** Writes the day's export and answers it: the caller downloads it. */
+export const exportTasks = endpoint({
+  description: "Exports the day's tasks as a file.",
+  input: t.message('ExportTasksRequest', { day: t.text() }), // 2026-11-20
+  output: t.message('ExportTasksReply', { file: t.file() }),
+  roles: [member],
+  async handler(ctx, req) {
+    const w = await ctx.files.create(`tasks-${req.day}.csv`, 'text/csv');
+    await w.write('day,title\n');
+    await w.write(`${req.day},exported\n`);
+    return { file: await w.finish() };
+  },
+});
+
 export default plugin({
   id: 'jobsdemo',
   title: 'Jobs demo',
@@ -572,10 +627,10 @@ export default plugin({
       ],
     },
   },
-  entities: { task, stage, estimate, budget, stageDay },
+  entities: { task, stage, estimate, budget, document, stageDay },
   views: { recentTask, tasksByWeek, longEstimate },
-  endpoints: { createTask, enqueueReport, cancelRun, loadTasks, taskDays: readTaskDays, refreshTables, taskTrail, loadStageDays, stageDays: readStageDays },
-  jobs: { processTask, dailyReport, heartbeat, flaky, doomed, slow, taskBatch },
+  endpoints: { createTask, enqueueReport, cancelRun, addDocument, exportTasks, loadTasks, taskDays: readTaskDays, refreshTables, taskTrail, loadStageDays, stageDays: readStageDays },
+  jobs: { processTask, importFile, dailyReport, heartbeat, flaky, doomed, slow, taskBatch },
   layers: { raw, mart, audit },
   lakeTables: { taskLoad, taskDay, taskHours, issueWeek, budgetCopy, longEstimateCopy, openByDay },
   lakeDependencies: [trackerIssueDay],

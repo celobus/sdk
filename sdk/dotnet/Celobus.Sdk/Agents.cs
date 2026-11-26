@@ -284,6 +284,13 @@ public sealed record AgentRunOptions
     /// for this key re-read. Made with <see cref="Agents.TopicKey{TKey}"/>; null: every key.
     /// </summary>
     public string? TopicKey { get; init; }
+
+    /// <summary>
+    /// Files the run is given (the plugin's own: a request's <c>File</c> fields, a row's, files it made; another id is
+    /// 409 <c>file_unknown</c>). They are kept while the run lives, the agent may read them, and its input lists each
+    /// one; it downloads those it needs.
+    /// </summary>
+    public IReadOnlyList<File>? Files { get; init; }
 }
 
 /// <summary>
@@ -378,6 +385,7 @@ public readonly struct Agents
         if (options?.NotifyLink is { } link) start.NotifyLink = link.Wire();
         if (options?.Topic is { } topic) start.Topic = topic;
         if (options?.TopicKey is { } topicKey) start.TopicKey = topicKey;
+        if (options?.Files is { } files) start.Files.AddRange(files.Select(Sdk.Files.Wire));
         return RunOf(new Syscall { AgentRun = start });
     }
 
@@ -446,10 +454,17 @@ public readonly struct Agents
     /// Sends a follow-up message to a run that has not ended, as this request's caller; the sequence number of the
     /// input. 409 <c>run_ended</c> when the run is over.
     /// </summary>
-    public async Task<long> Send(string runId, string text)
+    public Task<long> Send(string runId, string text) => Send(runId, text, []);
+
+    /// <summary>
+    /// Sends a follow-up message with <paramref name="files"/> given to the run as <see cref="AgentRunOptions.Files"/>
+    /// are (the plugin's own files; 409 <c>file_unknown</c> otherwise).
+    /// </summary>
+    public async Task<long> Send(string runId, string text, IEnumerable<File> files)
     {
-        var call = new Syscall { AgentSend = new AgentRunSend { RunId = runId, Text = text, RequestId = _ctx.Request.Id } };
-        return (long)((await _ctx.Syscall(call)).AgentInput ?? throw Unexpected()).Seq;
+        var send = new AgentRunSend { RunId = runId, Text = text, RequestId = _ctx.Request.Id };
+        send.Files.AddRange(files.Select(Sdk.Files.Wire));
+        return (long)((await _ctx.Syscall(new Syscall { AgentSend = send })).AgentInput ?? throw Unexpected()).Seq;
     }
 
     /// <summary>Stops the run now; a run that ended stays as it is.</summary>

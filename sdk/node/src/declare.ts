@@ -6,6 +6,7 @@ import type { NotificationKind } from "./notify.js";
 import type { EntityDef, EnumDef, Infer, IoType, IoValue, MessageDef, Shape, ViewDef } from "./schema.js";
 import type { InvalidationLike, TopicLike, UiDoc } from "./ui.js";
 import type { LakeTableDef, LayerDef } from "./lake.js";
+import type { SettingsDef } from "./settings.js";
 
 export type DefaultFor = "none" | "member" | "admin";
 
@@ -286,10 +287,11 @@ export interface AgentOptions {
 /**
  * A connection the plugin declares: installing the plugin creates it, not set up, in the
  * workspace, and an owner or admin fills it in. `llm`: a language model provider for agents; `stt`: speech recognition
- * for dictation. The plugin's code never sees it.
+ * for dictation; `maps`: a basemap provider for the plugin's maps (`ui.viz.geo.map().connection(..)`; not set up, it
+ * draws OpenStreetMap). The plugin's code never sees it.
  */
 export interface ConnectionOptions {
-  kind: "llm" | "stt";
+  kind: "llm" | "stt" | "maps";
   /** Its display name (at most 80 characters). */
   title?: string;
   /** What it is for, in a sentence (at most 500 characters). */
@@ -378,4 +380,10 @@ export interface PluginOptions {
    * calls it when a run the plugin sees changes. The descriptor then says `runs: {on_change: true}`.
    */
   onRunChange?: RunChangeHandler;
+  /**
+   * The plugin's settings: what an owner or an admin of the workspace sets for it, one message of kind `settings` read
+   * with `ctx.settings(schema)`: `settings: settingsDef(chatSettings, { onChange })`. The descriptor then says
+   * `settings: {message, on_change, form}`.
+   */
+  settings?: SettingsDef<any>;
 }

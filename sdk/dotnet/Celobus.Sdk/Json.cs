@@ -29,6 +29,7 @@ public static class CelobusJson
         o.Converters.Add(new DateConverter());
         o.Converters.Add(new EnumConverterFactory());
         o.Converters.Add(new IdConverterFactory());
+        o.Converters.Add(new SecretConverter());
         o.Converters.Add(new MessageConverterFactory());
         o.MakeReadOnly(populateMissingResolver: true);
         return o;
@@ -189,7 +190,13 @@ internal sealed class MessageConverterFactory : JsonConverterFactory
             while (reader.Read())
             {
                 if (reader.TokenType == JsonTokenType.EndObject)
+                {
+                    // a single file that is not optional has no default: the JSON must give it
+                    foreach (var f in fields)
+                        if (f is { Kind: FieldKind.File, Optional: false, Repeated: false } && !present[f.Number - 1])
+                            throw new FieldJsonException(f.Name, "a file is required", null);
                     return (T)_schema.Create(values, present);
+                }
                 var name = reader.GetString()!;
                 reader.Read();
                 if (!_schema.ByJsonName.TryGetValue(name, out var field))

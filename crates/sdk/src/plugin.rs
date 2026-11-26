@@ -108,6 +108,8 @@ pub struct Plugin {
     lake_models: Vec<Result<celobus_descriptor::lake_model::LakeModel, String>>,
     /// the loads of entities stored in OLAP (or the mistake made building one)
     loads: Vec<Result<celobus_descriptor::load::Load, String>>,
+    /// the settings (`settings`)
+    pub(crate) settings: Option<crate::settings::SettingsDecl>,
 }
 
 /// A lake table as `lake_table::<T>()` declared it.
@@ -159,6 +161,7 @@ impl Plugin {
             lake_errors: Vec::new(),
             lake_models: Vec::new(),
             loads: Vec::new(),
+            settings: None,
         }
     }
 
@@ -481,6 +484,14 @@ impl Plugin {
         self
     }
 
+    /// The plugin's settings ([`crate::settings`]): what an owner or an admin of the workspace sets for it, one
+    /// `#[message(settings)]` struct read with `ctx.settings::<S>()`:
+    /// `.settings(Settings::<ChatSettings>::new().on_change(check))`.
+    pub fn settings<S: Message>(mut self, settings: crate::settings::Settings<S>) -> Self {
+        self.settings = Some(settings.into());
+        self
+    }
+
     /// A background job (`crate::jobs`): `.job(remind_unpaid::job())`.
     pub fn job<P: Message>(mut self, job: crate::jobs::Job<P>) -> Self {
         self.jobs.push(job.decl);
@@ -649,6 +660,10 @@ impl Plugin {
         for (register, _, _) in &self.lake_tables {
             register(&mut reg);
         }
+        // then the settings message
+        if let Some(s) = &self.settings {
+            (s.register)(&mut reg);
+        }
         errors.append(&mut reg.errors);
 
         // `columns`: an entity's fields, with their column modifiers (its message's copy has none)
@@ -671,6 +686,16 @@ impl Plugin {
                     inverse: if columns { f.inverse } else { "" }.to_string(),
                     on_delete: if columns { f.on_delete } else { "" }.to_string(),
                     history: columns && f.history,
+                    max_size: f.max_size,
+                    accept: f.accept.iter().map(|a| a.to_string()).collect(),
+                    settings: f
+                        .settings
+                        .iter()
+                        .map(|(k, v)| {
+                            let v = serde_json::from_str(v).unwrap_or(serde_json::Value::Null);
+                            (k.to_string(), v)
+                        })
+                        .collect(),
                 })
                 .collect()
         };
@@ -1280,7 +1305,13 @@ impl Plugin {
             lake_tables,
             lake_models,
             loads,
+            settings: None,
         };
+        d.settings = self.settings.as_ref().map(|s| settings_section(s, &d));
+        // upload inputs carry their file field's options, so a screen checks a file before uploading it
+        if let Some(ui) = d.ui.as_mut() {
+            fill_uploads(ui, &d.endpoints, &d.messages);
+        }
         // `history(.., all)`: the flag on every column it covers (the descriptor carries one per column), worked out
         // by the descriptor's own rule (the encrypted columns left out, and the masked ones without `unmasked`)
         if d.entities
@@ -1308,6 +1339,7 @@ impl Plugin {
             || !d.lake_models.is_empty()
             || !d.layers.is_empty()
             || !d.loads.is_empty()
+            || d.settings.is_some()
             || d.entities
                 .iter()
                 .any(|e| e.history.is_some() || !e.storage.is_empty()))
@@ -1322,6 +1354,8 @@ impl Plugin {
                         || e.code.starts_with("E_HISTORY_")
                         || e.code.starts_with("E_OLAP_")
                         || e.code.starts_with("E_LOAD_")
+                        || e.code.starts_with("E_SETTINGS_")
+                        || e.code == "E_FIELD_VALIDATOR_SCOPE"
                 })
                 .map(|e| {
                     let message = match e.help {
@@ -1384,6 +1418,50 @@ impl Plugin {
     }
 }
 
+/// The descriptor's `settings`: the message, whether the plugin checks a change, and the form — laid out by the plugin
+/// and completed from the fields, or derived from them (`celobus_descriptor::settings`, the rule every SDK follows).
+fn settings_section(
+    s: &crate::settings::SettingsDecl,
+    d: &Descriptor,
+) -> celobus_descriptor::settings::Settings {
+    use celobus_descriptor::settings::{SettingsForm, complete_form, derive_form};
+    let fields: Vec<celobus_descriptor::Field> = d
+        .messages
+        .iter()
+        .find(|m| m.name == s.message)
+        .map(|m| {
+            m.fields
+                .iter()
+                .filter_map(|f| serde_json::to_value(f).ok())
+                .filter_map(|v| serde_json::from_value(v).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let enums: Vec<celobus_descriptor::Enum> = d
+        .enums
+        .iter()
+        .map(|e| celobus_descriptor::Enum {
+            name: e.name.clone(),
+            values: e.values.clone(),
+        })
+        .collect();
+    let form = match &s.form {
+        Some(sections) => complete_form(
+            SettingsForm {
+                sections: sections.clone(),
+            },
+            &fields,
+            &enums,
+        ),
+        None => derive_form(&fields, &enums),
+    };
+    celobus_descriptor::settings::Settings {
+        message: s.message.to_string(),
+        on_change: s.on_change.is_some(),
+        form,
+    }
+}
+
 fn plugin_id_ok(id: &str) -> bool {
     let b = id.as_bytes();
     (2..=16).contains(&b.len())
@@ -1438,6 +1516,86 @@ fn semver_ok(v: &str) -> bool {
         pre_ok && build.is_none_or(ident_ok)
     };
     parts.len() == 3 && parts.iter().all(numeric) && rest_ok
+}
+
+/// Copies each `upload` input's file field options into it (`multiple` for a list of files, `max_size`, `accept`),
+/// from the request of its form's endpoint, inputs of a `repeat` included.
+fn fill_uploads(ui: &mut serde_json::Value, endpoints: &[EndpointDecl], messages: &[MessageDecl]) {
+    use serde_json::Value;
+    match ui {
+        Value::Object(m) => {
+            if let Some(Value::Object(form)) = m.get_mut("form")
+                && let Some(input) = form
+                    .get("endpoint")
+                    .and_then(Value::as_str)
+                    .and_then(|e| endpoints.iter().find(|x| x.name == e))
+                    .map(|e| e.input.clone())
+                && let Some(Value::Array(sections)) = form.get_mut("sections")
+            {
+                for s in sections {
+                    if let Some(Value::Array(inputs)) = s.get_mut("inputs") {
+                        fill_upload_inputs(inputs, &input, messages);
+                    }
+                }
+            }
+            for v in m.values_mut() {
+                fill_uploads(v, endpoints, messages);
+            }
+        }
+        Value::Array(a) => {
+            for v in a {
+                fill_uploads(v, endpoints, messages);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fill_upload_inputs(inputs: &mut [serde_json::Value], msg: &str, messages: &[MessageDecl]) {
+    use serde_json::Value;
+    for i in inputs {
+        let Some(f) = i
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(|name| field_at(messages, msg, name))
+        else {
+            continue;
+        };
+        if i.get("control").and_then(Value::as_str) == Some("upload") && f.ty == "file" {
+            if f.repeated {
+                i["multiple"] = Value::Bool(true);
+            }
+            if let Some(n) = f.max_size {
+                i["max_size"] = Value::from(n);
+            }
+            if !f.accept.is_empty() {
+                i["accept"] = Value::from(f.accept.clone());
+            }
+        }
+        if let Some(m) = f.ty.strip_prefix("message:")
+            && let Some(Value::Array(nested)) = i.get_mut("fields")
+        {
+            fill_upload_inputs(nested, m, messages);
+        }
+    }
+}
+
+/// A field of a message by its path (`customer.name`), through nested messages.
+fn field_at<'a>(messages: &'a [MessageDecl], msg: &str, path: &str) -> Option<&'a FieldDecl> {
+    let (head, rest) = match path.split_once('.') {
+        Some((h, r)) => (h, Some(r)),
+        None => (path, None),
+    };
+    let f = messages
+        .iter()
+        .find(|m| m.name == msg)?
+        .fields
+        .iter()
+        .find(|f| f.name == head)?;
+    match rest {
+        None => Some(f),
+        Some(r) => field_at(messages, f.ty.strip_prefix("message:")?, r),
+    }
 }
 
 fn humanize(id: &str) -> String {

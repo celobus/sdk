@@ -581,6 +581,9 @@ impl<Req> FormB<Req> {
                 label: title.name.into(),
                 ..Default::default()
             }),
+            max_size: None,
+            accept: vec![],
+            multiple: false,
         });
         PickRef { i, _r: PhantomData }
     }
@@ -1214,6 +1217,13 @@ impl<R> PostB<R> {
             duration: duration.row_path(),
             ..Default::default()
         });
+        self
+    }
+
+    /// The files of the row (a `File` or `Vec<File>` field): images as a grid, audio and video as players, other
+    /// files as cards with Download.
+    pub fn files<T>(mut self, f: impl RowPath<R, T = T>) -> Self {
+        self.p.files = Some(f.row_path());
         self
     }
 
@@ -1963,6 +1973,16 @@ impl ComposerB {
 
     pub fn tools(mut self, tools: impl IntoIterator<Item = ComposerTool>) -> Self {
         self.0.tools = tools.into_iter().collect();
+        self
+    }
+
+    /// The paperclip, paste and drop: files are uploaded for `field` (a `File` or `Vec<File>` field of the request
+    /// the send action calls) and their ids go in it with the text. Adds the `attach` tool.
+    pub fn attach<Req, T>(mut self, field: Field<Req, T>) -> Self {
+        if !self.0.tools.contains(&ComposerTool::Attach) {
+            self.0.tools.push(ComposerTool::Attach);
+        }
+        self.0.files = Some(field.name().into());
         self
     }
 
